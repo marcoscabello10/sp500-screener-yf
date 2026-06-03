@@ -489,7 +489,7 @@ function StartScreen({onStart, onStartClient, cacheInfo, onLoadCache, clientTick
       )}
 
       <div style={{fontSize:10,color:"#1e293b",fontFamily:"monospace"}}>
-        FMP API · Caché fundamentales: {CACHE_DAYS}d · Caché histórico: {HIST_CACHE_DAYS}d · Máx 100 tickers
+        Yahoo Finance · Caché fundamentales: {CACHE_DAYS}d · Caché histórico: {HIST_CACHE_DAYS}d · Máx 100 tickers
       </div>
     </div>
   );
@@ -904,20 +904,20 @@ export default function App() {
   const runP1 = useCallback(async () => {
     setPhase("loading"); setError(null);
     try {
-      setLp({step:"Verificando conexión con FMP API...",pct:2,phase:1});
+      setLp({step:"Verificando conexión con Yahoo Finance...",pct:2,phase:1});
       let res;
       try { res = await fetch(`${BASE}?action=sp500`); }
       catch(e) { throw new Error(`Error de red: ${e.message}`); }
-      if (!res.ok) throw new Error(`HTTP ${res.status} — verificá tu API key`);
+      if (!res.ok) throw new Error(`HTTP ${res.status} — error en el servidor`);
 
       const raw = await res.json();
       if (raw && !Array.isArray(raw)) {
         const msg = raw["Error Message"]||raw.message||raw.error||JSON.stringify(raw);
-        throw new Error(`FMP API: ${msg}`);
+        throw new Error(`Error: ${msg}`);
       }
       const constituents = raw;
       if (!constituents.length)
-        throw new Error("Sin datos. Posible límite diario alcanzado (250 req/día en plan gratuito).");
+        throw new Error("Sin datos del S&P 500. Verificá tu conexión a internet.");
 
       setLp({step:"Componentes del S&P 500 recibidos...",pct:5,phase:1});
       await delay(200);
@@ -1042,23 +1042,20 @@ export default function App() {
           return;
         }
       }
-      setLp({step:"Verificando conexión con FMP API...",pct:2,phase:1});
+      setLp({step:"Verificando conexión con Yahoo Finance...",pct:2,phase:1});
 
-      // 1. Batch quotes
+      // 1. Quotes — lotes de 5 para evitar timeout en Vercel
       const quotes = {};
-      const qc = chunk(tickers, 100);
-      for (let i=0; i<qc.length; i++) {
-        setLp({step:`Cotizaciones: lote ${i+1}/${qc.length}...`,pct:4+(i/qc.length)*18,phase:1});
+      let qDone = 0;
+      for (const batch of chunk(tickers, 5)) {
+        setLp({step:`Cotizaciones: ${qDone}/${tickers.length}...`,pct:4+(qDone/tickers.length)*18,phase:1});
         try {
-          const r = await fetch(`${BASE}?action=quote&symbols=${qc[i].join(",")}`);
+          const r = await fetch(`${BASE}?action=quote&symbols=${batch.join(",")}`);
           const d = await r.json();
-          if (!Array.isArray(d)) {
-            const msg = d["Error Message"]||d.message||JSON.stringify(d);
-            throw new Error(`FMP API: ${msg}`);
-          }
-          d.forEach(q=>{ quotes[q.symbol]=q; });
-        } catch(e) { if(e.message.startsWith("FMP API")) throw e; }
-        await delay(200);
+          if (Array.isArray(d)) d.forEach(q=>{ quotes[q.symbol]=q; });
+        } catch {}
+        qDone += batch.length;
+        await delay(150);
       }
 
       // 2. Profiles for sector info (batch of 20)
@@ -1463,7 +1460,7 @@ export default function App() {
       <div style={{background:"#0c1a0c",border:"1px solid #166534",borderRadius:10,padding:"12px 18px",maxWidth:480,width:"100%"}}>
         <div style={{fontSize:10,color:"#4ade80",marginBottom:5,fontWeight:700}}>Posibles causas</div>
         <div style={{fontSize:10,color:"#86efac",lineHeight:1.8}}>
-          Límite diario FMP (250 req/día plan gratuito) · API key inválida · Sin conexión a internet
+          Yahoo Finance puede estar caído · Sin conexión a internet · Intentá de nuevo en unos minutos
         </div>
       </div>
       <button onClick={()=>setPhase("idle")} style={{marginTop:4,background:"#1e293b",border:"1px solid #334155",borderRadius:8,padding:"10px 28px",color:"#e2e8f0",cursor:"pointer",fontSize:12}}>
@@ -2145,7 +2142,7 @@ export default function App() {
       )}
 
       <div style={{textAlign:"center",padding:"4px 0 18px",fontSize:9,color:"#0c1524",fontFamily:"monospace"}}>
-        Solo informativo · No constituye asesoramiento de inversión · FMP API
+        Solo informativo · No constituye asesoramiento de inversión · Yahoo Finance
       </div>
 
       {/* ── Export bar ── */}

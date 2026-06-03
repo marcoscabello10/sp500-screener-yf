@@ -3,8 +3,8 @@ import { ScatterChart, Scatter, XAxis, YAxis, CartesianGrid, Tooltip, Responsive
 import * as XLSX from "xlsx";
 import * as math from "mathjs";
 
-const API_KEY    = ""; // clave en variable de entorno Vercel FMP_API_KEY
-const BASE       = "/api/fmp"; // proxy serverless Vercel
+const API_KEY    = ""; // sin API key — yfinance es gratuito
+const BASE       = "/api/data"; // proxy Python yfinance
 const CACHE_KEY  = "sp500_screener_fund_v2";
 const CACHE_DAYS = 15;
 
@@ -906,7 +906,7 @@ export default function App() {
     try {
       setLp({step:"Verificando conexión con FMP API...",pct:2,phase:1});
       let res;
-      try { res = await fetch(`${BASE}?path=sp500_constituent`); }
+      try { res = await fetch(`${BASE}?action=sp500`); }
       catch(e) { throw new Error(`Error de red: ${e.message}`); }
       if (!res.ok) throw new Error(`HTTP ${res.status} — verificá tu API key`);
 
@@ -935,14 +935,14 @@ export default function App() {
       const qc = chunk(allSyms, 100);
       for (let i=0; i<qc.length; i++) {
         setLp({step:`Cotizaciones lote ${i+1}/${qc.length}...`,pct:6+(i/qc.length)*20,phase:1});
-        const r=await fetch(`${BASE}?path=quote&symbol=${qc[i].join(",")}`);
+        const r=await fetch(`${BASE}?action=quote&symbols=${qc[i].join(",")}`);
         const d=await r.json();
         if (Array.isArray(d)) d.forEach(q=>{quotes[q.symbol]=q;});
         await delay(200);
       }
 
       setLp({step:"Benchmark SPY...",pct:27,phase:1});
-      const spyRes = await fetch(`${BASE}?path=quote&symbol=SPY`);
+      const spyRes = await fetch(`${BASE}?action=quote&symbols=SPY`);
       const spyD   = await spyRes.json();
       const spyObj = Array.isArray(spyD)?spyD[0]:spyD;
       setSpy(spyObj);
@@ -966,7 +966,7 @@ export default function App() {
       for (const batch of chunk(allC, 5)) {
         await Promise.all(batch.map(async({sym})=>{
           try {
-            const r=await fetch(`${BASE}?path=ratios-ttm&symbol=${sym}`);
+            const r=await fetch(`${BASE}?action=ratios&symbol=${sym}`);
             const d=await r.json();
             const ratioData = Array.isArray(d) ? d[0] : d; if (ratioData && typeof ratioData === "object") ratios[sym]=ratioData;
           } catch{}
@@ -1050,7 +1050,7 @@ export default function App() {
       for (let i=0; i<qc.length; i++) {
         setLp({step:`Cotizaciones: lote ${i+1}/${qc.length}...`,pct:4+(i/qc.length)*18,phase:1});
         try {
-          const r = await fetch(`${BASE}?path=quote&symbol=${qc[i].join(",")}`);
+          const r = await fetch(`${BASE}?action=quote&symbols=${qc[i].join(",")}`);
           const d = await r.json();
           if (!Array.isArray(d)) {
             const msg = d["Error Message"]||d.message||JSON.stringify(d);
@@ -1066,7 +1066,7 @@ export default function App() {
       const profiles = {};
       for (const batch of chunk(tickers, 20)) {
         try {
-          const r = await fetch(`${BASE}?path=profile&symbol=${batch.join(",")}`);
+          const r = await fetch(`${BASE}?action=profile&symbols=${batch.join(",")}`);
           const d = await r.json();
           if (Array.isArray(d)) d.forEach(p=>{ profiles[p.symbol]=p; });
         } catch {}
@@ -1075,7 +1075,7 @@ export default function App() {
 
       // 3. SPY benchmark
       setLp({step:"Benchmark SPY...",pct:34,phase:1});
-      const spyRes = await fetch(`${BASE}?path=quote&symbol=SPY`);
+      const spyRes = await fetch(`${BASE}?action=quote&symbols=SPY`);
       const spyD   = await spyRes.json();
       setSpy(Array.isArray(spyD)?spyD[0]:spyD);
       await delay(200);
@@ -1086,7 +1086,7 @@ export default function App() {
       for (const batch of chunk(tickers, 5)) {
         await Promise.all(batch.map(async sym=>{
           try {
-            const r = await fetch(`${BASE}?path=ratios-ttm&symbol=${sym}`);
+            const r = await fetch(`${BASE}?action=ratios&symbol=${sym}`);
             const d = await r.json();
             const ratioData = Array.isArray(d) ? d[0] : d; if (ratioData && typeof ratioData === "object") ratios[sym]=ratioData;
           } catch {}
@@ -1169,17 +1169,17 @@ export default function App() {
         done = total;
       } else {
         setLp({step:`Histórico SPY (${yBack} años)...`,pct:2,phase:2});
-        const spyH=await fetch(`${BASE}?path=historical-price-full/SPY&from=${from}`);
+        const spyH=await fetch(`${BASE}?action=history&symbol=SPY&from=${from}`);
         const spyHD=await spyH.json();
-        spyPrices=(spyHD.historical || (Array.isArray(spyHD) ? spyHD : [])).slice().reverse();
+        spyPrices=(Array.isArray(spyHD) ? spyHD : (spyHD.historical || [])).slice().reverse();
         done++;
 
         for (const batch of chunk(allSyms,4)) {
           await Promise.all(batch.map(async sym=>{
             try {
-              const r=await fetch(`${BASE}?path=historical-price-full/${sym}&from=${from}`);
+              const r=await fetch(`${BASE}?action=history&symbol=${sym}&from=${from}`);
               const d=await r.json();
-              hist[sym]=(d.historical || (Array.isArray(d) ? d : [])).slice().reverse();
+              hist[sym]=(Array.isArray(d) ? d : (d.historical || [])).slice().reverse();
             } catch{}
             done++;
             setLp({step:`Histórico: ${done}/${total} activos...`,pct:4+(done/total)*80,phase:2});
@@ -1231,17 +1231,17 @@ export default function App() {
         done = total;
       } else {
         setLp({step:"Histórico SPY para correlación...",pct:3,phase:3});
-        const spyH=await fetch(`${BASE}?path=historical-price-full/SPY&from=${from}`);
+        const spyH=await fetch(`${BASE}?action=history&symbol=SPY&from=${from}`);
         const spyHD=await spyH.json();
-        spyPrices=(spyHD.historical || (Array.isArray(spyHD) ? spyHD : [])).slice().reverse();
+        spyPrices=(Array.isArray(spyHD) ? spyHD : (spyHD.historical || [])).slice().reverse();
         done++;
 
         for (const batch of chunk(allSyms,4)) {
           await Promise.all(batch.map(async sym=>{
             try {
-              const r=await fetch(`${BASE}?path=historical-price-full/${sym}&from=${from}`);
+              const r=await fetch(`${BASE}?action=history&symbol=${sym}&from=${from}`);
               const d=await r.json();
-              hist[sym]=(d.historical || (Array.isArray(d) ? d : [])).slice().reverse();
+              hist[sym]=(Array.isArray(d) ? d : (d.historical || [])).slice().reverse();
             } catch{}
             done++;
             setLp({step:`Histórico: ${done}/${total} activos...`,pct:5+(done/total)*70,phase:3});
@@ -1299,17 +1299,17 @@ export default function App() {
         done = total;
       } else {
         setLp({step:"Histórico SPY para optimización...",pct:2,phase:4});
-        const spyH=await fetch(`${BASE}?path=historical-price-full/SPY&from=${from}`);
+        const spyH=await fetch(`${BASE}?action=history&symbol=SPY&from=${from}`);
         const spyHD=await spyH.json();
-        spyPrices=(spyHD.historical || (Array.isArray(spyHD) ? spyHD : [])).slice().reverse();
+        spyPrices=(Array.isArray(spyHD) ? spyHD : (spyHD.historical || [])).slice().reverse();
         done++;
 
         for (const batch of chunk(allSyms,4)) {
           await Promise.all(batch.map(async sym=>{
             try {
-              const r=await fetch(`${BASE}?path=historical-price-full/${sym}&from=${from}`);
+              const r=await fetch(`${BASE}?action=history&symbol=${sym}&from=${from}`);
               const d=await r.json();
-              hist[sym]=(d.historical || (Array.isArray(d) ? d : [])).slice().reverse();
+              hist[sym]=(Array.isArray(d) ? d : (d.historical || [])).slice().reverse();
             } catch{}
             done++;
             setLp({step:`Histórico: ${done}/${total} activos...`,pct:4+(done/total)*50,phase:4});

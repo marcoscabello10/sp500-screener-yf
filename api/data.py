@@ -29,8 +29,50 @@ class handler(BaseHTTPRequestHandler):
         # ── action=sp500 ──────────────────────────────────────────────────────
         if action == 'sp500':
             import urllib.request, re
+
+            # Mapa de normalización: cualquier variante → nombre exacto que usa App.jsx
+            SECTOR_MAP = {
+                # Inglés canónico (Wikipedia EN)
+                'Information Technology': 'Technology',
+                'Health Care': 'Healthcare',
+                'Financials': 'Financials',
+                'Consumer Discretionary': 'Consumer Discretionary',
+                'Communication Services': 'Communication Services',
+                'Industrials': 'Industrials',
+                'Consumer Staples': 'Consumer Staples',
+                'Energy': 'Energy',
+                'Utilities': 'Utilities',
+                'Real Estate': 'Real Estate',
+                'Materials': 'Materials',
+                # Español (por si Wikipedia devuelve versión traducida)
+                'Tecnología de la información': 'Technology',
+                'Tecnología': 'Technology',
+                'Atención sanitaria': 'Healthcare',
+                'Salud': 'Healthcare',
+                'Cuidado de la salud': 'Healthcare',
+                'Finanzas': 'Financials',
+                'Servicios financieros': 'Financials',
+                'Consumo discrecional': 'Consumer Discretionary',
+                'Bienes de consumo discrecional': 'Consumer Discretionary',
+                'Servicios de comunicación': 'Communication Services',
+                'Comunicaciones': 'Communication Services',
+                'Industria': 'Industrials',
+                'Industriales': 'Industrials',
+                'Artículos de primera necesidad': 'Consumer Staples',
+                'Consumo básico': 'Consumer Staples',
+                'Productos de primera necesidad': 'Consumer Staples',
+                'Energía': 'Energy',
+                'Servicios públicos': 'Utilities',
+                'Inmobiliario': 'Real Estate',
+                'Bienes raíces': 'Real Estate',
+                'Materiales': 'Materials',
+            }
+
             url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
-            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+            req = urllib.request.Request(url, headers={
+                'User-Agent': 'Mozilla/5.0',
+                'Accept-Language': 'en-US,en;q=0.9',  # forzar inglés
+            })
             with urllib.request.urlopen(req, timeout=15) as resp:
                 html = resp.read().decode('utf-8')
             rows = re.findall(r'<tr[^>]*>(.*?)</tr>', html, re.DOTALL)
@@ -40,8 +82,10 @@ class handler(BaseHTTPRequestHandler):
                 if len(cells) >= 4:
                     sym    = re.sub(r'<[^>]+>', '', cells[0]).strip().replace('.', '-')
                     name   = re.sub(r'<[^>]+>', '', cells[1]).strip()
-                    sector = re.sub(r'<[^>]+>', '', cells[3]).strip()
-                    if sym and 1 <= len(sym) <= 5:
+                    sector_raw = re.sub(r'<[^>]+>', '', cells[3]).strip()
+                    # Normalizar sector — primero buscar en mapa, si no está dejarlo como está
+                    sector = SECTOR_MAP.get(sector_raw, sector_raw)
+                    if sym and 1 <= len(sym) <= 5 and sector:
                         constituents.append({'symbol': sym, 'name': name, 'sector': sector})
             return constituents
 
@@ -84,7 +128,7 @@ class handler(BaseHTTPRequestHandler):
                 'peRatioTTM':                   info.get('trailingPE'),
                 'priceToBookRatioTTM':          info.get('priceToBook'),
                 'returnOnEquityTTM':            info.get('returnOnEquity'),
-                'debtEquityRatioTTM':           info.get('debtToEquity'),
+                'debtEquityRatioTTM':           (info.get('debtToEquity') or 0) / 100 if info.get('debtToEquity') is not None else None,
                 'enterpriseValueMultipleTTM':   info.get('enterpriseToEbitda'),
                 'netProfitMarginTTM':           info.get('profitMargins'),
                 'dividendYieldTTM':             info.get('dividendYield'),

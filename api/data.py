@@ -126,6 +126,53 @@ class handler(BaseHTTPRequestHandler):
                 "Metal, Glass & Plastic Containers": "Materials",
                 "Aluminum": "Materials", "Gold": "Materials",
                 "Construction Materials": "Materials",
+                "Analog Devices": "Technology",  # empresa mal parseada como sector
+                # Subsectores adicionales detectados en producción
+                "Soft Drinks & Non-alcoholic Beverages": "Consumer Staples",
+                "Consumer Staples Merchandise Retail": "Consumer Staples",
+                "Home Improvement Retail": "Consumer Discretionary",
+                "Apparel Retail": "Consumer Discretionary",
+                "Apparel, Accessories & Luxury Goods": "Consumer Discretionary",
+                "Other Specialty Retail": "Consumer Discretionary",
+                "Footwear": "Consumer Discretionary",
+                "Homefurnishing Retail": "Consumer Discretionary",
+                "Specialized Consumer Services": "Consumer Discretionary",
+                "Internet & Direct Marketing Retail": "Consumer Discretionary",
+                "Computer & Electronics Retail": "Consumer Discretionary",
+                "Casinos & Gaming": "Consumer Discretionary",
+                "Automobile Manufacturers": "Consumer Discretionary",
+                "Passenger Airlines": "Industrials",
+                "Rail Transportation": "Industrials",
+                "Cargo Ground Transportation": "Industrials",
+                "Passenger Ground Transportation": "Industrials",
+                "Trading Companies & Distributors": "Industrials",
+                "Construction & Engineering": "Industrials",
+                "Industrial Machinery & Supplies & Components": "Industrials",
+                "Electronic Manufacturing Services": "Industrials",
+                "Electronic Equipment & Instruments": "Industrials",
+                "Heavy Electrical Equipment": "Industrials",
+                "Agricultural & Farm Machinery": "Industrials",
+                "Food Distributors": "Consumer Staples",
+                "Homebuilding": "Consumer Discretionary",
+                "IT Consulting & Other Services": "Technology",
+                "Interactive Home Entertainment": "Communication Services",
+                "Broadcasting": "Communication Services",
+                "Movies & Entertainment": "Communication Services",
+                "Self-Storage REITs": "Real Estate",
+                "Single-Family Residential REITs": "Real Estate",
+                "Other Specialized REITs": "Real Estate",
+                "Timber REITs": "Real Estate",
+                "Health Care REITs": "Real Estate",
+                "Health Care Facilities": "Healthcare",
+                "Copper": "Materials",
+                "Consumer Electronics": "Consumer Discretionary",
+                "Multi-Sector Holdings": "Financials",
+                "Reinsurance": "Financials",
+                "Life & Health Insurance": "Financials",
+                "Oil & Gas Storage & Transportation": "Energy",
+                "Oil & Gas Refining & Marketing": "Energy",
+                "Independent Power Producers & Energy Traders": "Energy",
+                "Research & Consulting Services": "Industrials",
             }
 
             url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
@@ -143,6 +190,8 @@ class handler(BaseHTTPRequestHandler):
                     sym    = re.sub(r'<[^>]+>', '', cells[0]).strip().replace('.', '-')
                     name   = re.sub(r'<[^>]+>', '', cells[1]).strip()
                     sector_raw = re.sub(r'<[^>]+>', '', cells[3]).strip()
+                    # Decodificar entidades HTML (&amp; → &, etc.)
+                    sector_raw = sector_raw.replace('&amp;', '&').replace('&lt;', '<').replace('&gt;', '>').replace('&nbsp;', ' ').strip()
                     # Normalizar sector — primero buscar en mapa, si no está dejarlo como está
                     sector = SECTOR_MAP.get(sector_raw, sector_raw)
                     if sym and 1 <= len(sym) <= 5 and sector:

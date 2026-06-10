@@ -291,7 +291,9 @@ class handler(BaseHTTPRequestHandler):
                     })
                 except Exception:
                     pass
-            return result
+            # Devolver descendente (más nuevo primero) para que
+            # App.jsx pueda hacer .reverse() y obtener ascendente
+            return result[::-1]
 
         else:
             return {'error': f'action desconocida: {action}'}

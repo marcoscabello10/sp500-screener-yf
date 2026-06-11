@@ -265,35 +265,68 @@ class handler(BaseHTTPRequestHandler):
                     result.append({'symbol': sym, 'sector': 'Unknown', 'companyName': sym})
             return result
 
-        # ── action=history&symbol=AAPL&from=2019-01-01 ───────────────────────
+        # ── action=history&symbol=AAPL,MSFT&from=2019-01-01 ────────────────────
+        # Acepta uno o múltiples símbolos separados por coma
         elif action == 'history':
-            sym       = params.get('symbol', [''])[0].strip()
+            sym_raw   = params.get('symbol', [''])[0].strip()
             from_date = params.get('from',   ['2019-01-01'])[0]
-            if not sym:
-                return []
-            df = yf.download(sym, start=from_date, progress=False, auto_adjust=True)
+            if not sym_raw:
+                return {} if ',' not in sym_raw else []
+
+            symbols = [s.strip() for s in sym_raw.split(',') if s.strip()]
+            multi   = len(symbols) > 1
+
+            # yf.download con múltiples símbolos: 1 sola llamada HTTP — mucho más rápido
+            tickers_str = ' '.join(symbols)
+            df = yf.download(tickers_str, start=from_date, progress=False, auto_adjust=True)
             if df.empty:
-                return []
-            # Aplanar MultiIndex si existe
+                return {} if multi else []
+
+            # Aplanar MultiIndex
             if hasattr(df.columns, 'levels'):
-                df.columns = df.columns.get_level_values(0)
-            result = []
-            for date, row in df.iterrows():
-                try:
-                    result.append({
-                        'date':     date.strftime('%Y-%m-%d'),
-                        'close':    round(float(row['Close']), 4),
-                        'adjClose': round(float(row['Close']), 4),
-                        'open':     round(float(row['Open']),  4),
-                        'high':     round(float(row['High']),  4),
-                        'low':      round(float(row['Low']),   4),
-                        'volume':   int(row['Volume']),
-                    })
-                except Exception:
-                    pass
-            # Devolver descendente (más nuevo primero) para que
-            # App.jsx pueda hacer .reverse() y obtener ascendente
-            return result[::-1]
+                df.columns = ['_'.join(c).strip() for c in df.columns.values]
+
+            if multi:
+                # Devolver dict: { "AAPL": [...], "MSFT": [...] }
+                result = {sym: [] for sym in symbols}
+                for date, row in df.iterrows():
+                    date_str = date.strftime('%Y-%m-%d')
+                    for sym in symbols:
+                        try:
+                            close_col = f'Close_{sym}'
+                            close = float(row[close_col]) if close_col in row.index else None
+                            if close and close > 0:
+                                result[sym].append({
+                                    'date':     date_str,
+                                    'close':    round(close, 4),
+                                    'adjClose': round(close, 4),
+                                })
+                        except Exception:
+                            pass
+                # Invertir cada array (descendente: nuevo primero)
+                return {sym: arr[::-1] for sym, arr in result.items()}
+            else:
+                # Símbolo único — backward compatible
+                sym = symbols[0]
+                # Con un solo símbolo las columnas son Close, Open, etc.
+                close_col = f'Close_{sym}' if f'Close_{sym}' in df.columns else 'Close'
+                result = []
+                for date, row in df.iterrows():
+                    try:
+                        close = float(row[close_col])
+                        if close > 0:
+                            result.append({
+                                'date':     date.strftime('%Y-%m-%d'),
+                                'close':    round(close, 4),
+                                'adjClose': round(close, 4),
+                                'open':     round(float(row.get(f'Open_{sym}', row.get('Open', 0))), 4),
+                                'high':     round(float(row.get(f'High_{sym}', row.get('High', 0))), 4),
+                                'low':      round(float(row.get(f'Low_{sym}',  row.get('Low',  0))), 4),
+                                'volume':   int(row.get(f'Volume_{sym}', row.get('Volume', 0))),
+                            })
+                    except Exception:
+                        pass
+                return result[::-1]
 
         else:
             return {'error': f'action desconocida: {action}'}

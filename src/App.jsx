@@ -1165,24 +1165,32 @@ export default function App() {
         setLp({step:`⚡ Histórico desde caché (${HIST_CACHE_DAYS} días)...`,pct:84,phase:2});
         done = total;
       } else {
-        setLp({step:`Histórico SPY (${yBack} años)...`,pct:2,phase:2});
-        const spyH=await fetch(`${BASE}?action=history&symbol=SPY&from=${from}`);
-        const spyHD=await spyH.json();
-        spyPrices=(Array.isArray(spyHD) ? spyHD : (spyHD.historical || [])).slice().reverse();
-        done++;
-
-        for (const batch of chunk(allSyms,4)) {
-          await Promise.all(batch.map(async sym=>{
-            try {
-              const r=await fetch(`${BASE}?action=history&symbol=${sym}&from=${from}`);
-              const d=await r.json();
-              hist[sym]=(Array.isArray(d) ? d : (d.historical || [])).slice().reverse();
-            } catch{}
-            done++;
-            setLp({step:`Histórico: ${done}/${total} activos...`,pct:4+(done/total)*80,phase:2});
-          }));
-          await delay(150);
+        // Un fetch por lote de 20 símbolos — mucho más rápido que individual
+        const allWithSpy = ['SPY', ...allSyms];
+        setLp({step:`Descargando histórico (${allWithSpy.length} activos)...`,pct:3,phase:2});
+        for (const batch of chunk(allWithSpy, 20)) {
+          try {
+            const r = await fetch(`${BASE}?action=history&symbol=${batch.join(',')}&from=${from}`);
+            const d = await r.json();
+            if (d && typeof d === 'object' && !Array.isArray(d)) {
+              // Multi-símbolo → dict { SYM: [...] }
+              for (const [sym, prices] of Object.entries(d)) {
+                const arr = Array.isArray(prices) ? prices : [];
+                if (sym === 'SPY') spyPrices = arr.slice().reverse();
+                else hist[sym] = arr.slice().reverse();
+              }
+            } else if (batch.length === 1) {
+              // Fallback símbolo único
+              const arr = (Array.isArray(d) ? d : (d.historical||[]));
+              if (batch[0] === 'SPY') spyPrices = arr.slice().reverse();
+              else hist[batch[0]] = arr.slice().reverse();
+            }
+          } catch {}
+          done += batch.length;
+          setLp({step:`Histórico: ${done}/${total} activos...`,pct:4+(done/total)*80,phase:2});
+          await delay(100);
         }
+        if (!spyPrices) spyPrices = [];
         histCacheSave(hist, spyPrices, from);
       }
 
@@ -1227,24 +1235,29 @@ export default function App() {
         setLp({step:"⚡ Histórico desde caché — calculando correlaciones...",pct:76,phase:3});
         done = total;
       } else {
-        setLp({step:"Histórico SPY para correlación...",pct:3,phase:3});
-        const spyH=await fetch(`${BASE}?action=history&symbol=SPY&from=${from}`);
-        const spyHD=await spyH.json();
-        spyPrices=(Array.isArray(spyHD) ? spyHD : (spyHD.historical || [])).slice().reverse();
-        done++;
-
-        for (const batch of chunk(allSyms,4)) {
-          await Promise.all(batch.map(async sym=>{
-            try {
-              const r=await fetch(`${BASE}?action=history&symbol=${sym}&from=${from}`);
-              const d=await r.json();
-              hist[sym]=(Array.isArray(d) ? d : (d.historical || [])).slice().reverse();
-            } catch{}
-            done++;
-            setLp({step:`Histórico: ${done}/${total} activos...`,pct:5+(done/total)*70,phase:3});
-          }));
-          await delay(150);
+        const allWithSpy = ['SPY', ...allSyms];
+        setLp({step:`Descargando histórico correlación (${allWithSpy.length} activos)...`,pct:3,phase:3});
+        for (const batch of chunk(allWithSpy, 20)) {
+          try {
+            const r = await fetch(`${BASE}?action=history&symbol=${batch.join(',')}&from=${from}`);
+            const d = await r.json();
+            if (d && typeof d === 'object' && !Array.isArray(d)) {
+              for (const [sym, prices] of Object.entries(d)) {
+                const arr = Array.isArray(prices) ? prices : [];
+                if (sym === 'SPY') spyPrices = arr.slice().reverse();
+                else hist[sym] = arr.slice().reverse();
+              }
+            } else if (batch.length === 1) {
+              const arr = (Array.isArray(d) ? d : (d.historical||[]));
+              if (batch[0] === 'SPY') spyPrices = arr.slice().reverse();
+              else hist[batch[0]] = arr.slice().reverse();
+            }
+          } catch {}
+          done += batch.length;
+          setLp({step:`Histórico: ${done}/${total} activos...`,pct:5+(done/total)*70,phase:3});
+          await delay(100);
         }
+        if (!spyPrices) spyPrices = [];
         histCacheSave(hist, spyPrices, from);
       }
 
@@ -1295,24 +1308,29 @@ export default function App() {
         setLp({step:"⚡ Histórico desde caché — construyendo covarianza...",pct:55,phase:4});
         done = total;
       } else {
-        setLp({step:"Histórico SPY para optimización...",pct:2,phase:4});
-        const spyH=await fetch(`${BASE}?action=history&symbol=SPY&from=${from}`);
-        const spyHD=await spyH.json();
-        spyPrices=(Array.isArray(spyHD) ? spyHD : (spyHD.historical || [])).slice().reverse();
-        done++;
-
-        for (const batch of chunk(allSyms,4)) {
-          await Promise.all(batch.map(async sym=>{
-            try {
-              const r=await fetch(`${BASE}?action=history&symbol=${sym}&from=${from}`);
-              const d=await r.json();
-              hist[sym]=(Array.isArray(d) ? d : (d.historical || [])).slice().reverse();
-            } catch{}
-            done++;
-            setLp({step:`Histórico: ${done}/${total} activos...`,pct:4+(done/total)*50,phase:4});
-          }));
-          await delay(150);
+        const allWithSpy = ['SPY', ...allSyms];
+        setLp({step:`Descargando histórico optimización (${allWithSpy.length} activos)...`,pct:2,phase:4});
+        for (const batch of chunk(allWithSpy, 20)) {
+          try {
+            const r = await fetch(`${BASE}?action=history&symbol=${batch.join(',')}&from=${from}`);
+            const d = await r.json();
+            if (d && typeof d === 'object' && !Array.isArray(d)) {
+              for (const [sym, prices] of Object.entries(d)) {
+                const arr = Array.isArray(prices) ? prices : [];
+                if (sym === 'SPY') spyPrices = arr.slice().reverse();
+                else hist[sym] = arr.slice().reverse();
+              }
+            } else if (batch.length === 1) {
+              const arr = (Array.isArray(d) ? d : (d.historical||[]));
+              if (batch[0] === 'SPY') spyPrices = arr.slice().reverse();
+              else hist[batch[0]] = arr.slice().reverse();
+            }
+          } catch {}
+          done += batch.length;
+          setLp({step:`Histórico: ${done}/${total} activos...`,pct:4+(done/total)*50,phase:4});
+          await delay(100);
         }
+        if (!spyPrices) spyPrices = [];
         histCacheSave(hist, spyPrices, from);
       }
 

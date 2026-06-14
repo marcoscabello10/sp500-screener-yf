@@ -328,5 +328,16 @@ class handler(BaseHTTPRequestHandler):
                         pass
                 return result[::-1]
 
+elif action == 'debug':
+            syms = params.get('symbol', ['AAPL,MSFT'])[0]
+            symbols = [s.strip() for s in syms.split(',') if s.strip()]
+            df = yf.download(' '.join(symbols), start='2024-01-01', progress=False, auto_adjust=True)
+            return {
+                'empty': df.empty,
+                'shape': str(df.shape),
+                'columns': [str(c) for c in df.columns.tolist()],
+                'first_row': df.iloc[0].to_dict() if not df.empty else {}
+            }
+
         else:
             return {'error': f'action desconocida: {action}'}

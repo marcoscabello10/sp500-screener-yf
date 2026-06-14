@@ -1,5 +1,11 @@
 {
   "buildCommand": "npx vite build",
   "outputDirectory": "dist",
-  "framework": null
+  "framework": null,
+  "functions": {
+    "api/data.py": {
+      "runtime": "python3.12",
+      "maxDuration": 30
+    }
+  }
 }

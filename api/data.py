@@ -310,15 +310,32 @@ class handler(BaseHTTPRequestHandler):
                 return fetch_one(symbols[0])
 
         elif action == 'debug':
-            syms = params.get('symbol', ['AAPL,MSFT'])[0]
-            symbols = [s.strip() for s in syms.split(',') if s.strip()]
-            df = yf.download(' '.join(symbols), start='2024-01-01', progress=False, auto_adjust=True)
-            return {
-                'empty': bool(df.empty),
-                'shape': str(df.shape),
-                'columns': [str(c) for c in df.columns.tolist()],
-                'first_row': {str(k): str(v) for k, v in df.iloc[0].to_dict().items()} if not df.empty else {}
-            }
+            syms = params.get('symbol', ['SPY'])[0]
+            sym = [s.strip() for s in syms.split(',') if s.strip()][0]
+            out = {'symbol': sym, 'tests': {}}
+
+            try:
+                df1 = yf.download(sym, start='2024-01-01', progress=False, auto_adjust=True)
+                out['tests']['download'] = {'empty': bool(df1.empty), 'shape': str(df1.shape)}
+            except Exception as e:
+                out['tests']['download'] = {'error': f'{type(e).__name__}: {e}'}
+
+            try:
+                df2 = yf.Ticker(sym).history(start='2024-01-01', auto_adjust=True)
+                out['tests']['ticker_history'] = {'empty': bool(df2.empty), 'shape': str(df2.shape)}
+            except Exception as e:
+                out['tests']['ticker_history'] = {'error': f'{type(e).__name__}: {e}'}
+
+            try:
+                info = yf.Ticker(sym).info
+                out['tests']['ticker_info'] = {
+                    'ok': bool(info.get('currentPrice') or info.get('regularMarketPrice')),
+                    'keys_sample': list(info.keys())[:5]
+                }
+            except Exception as e:
+                out['tests']['ticker_info'] = {'error': f'{type(e).__name__}: {e}'}
+
+            return out
 
         else:
             return {'error': f'action desconocida: {action}'}

@@ -176,6 +176,9 @@ function calcRisk(al, rf) {
 
 // ── Math: correlation + portfolio optimization ────────────────────────────────
 function buildCovAndCorr(retArrays) {
+  if (!retArrays.length) {
+    throw new Error('No se pudo construir la matriz: 0 activos con histórico suficiente. El proxy de datos (yfinance) no está devolviendo precios — revisá ?action=debug.');
+  }
   const n = retArrays.length, T = retArrays[0].length;
   const means = retArrays.map(r => r.reduce((a,b)=>a+b,0)/T);
   const cov = Array.from({length:n}, ()=> new Array(n).fill(0));
@@ -1207,6 +1210,10 @@ export default function App() {
           const al=alignedRet(p,spyMap);
           return {...stk, rcp:calcRisk(al.slice(-cpD),rf), rlp:calcRisk(al.slice(-lpD),rf)};
         });
+      }
+      const totalValid = Object.values(rr).flat().filter(s=>s.rcp!=null).length;
+      if (totalValid === 0) {
+        throw new Error('No se pudo descargar histórico de precios para ningún activo. El proxy de datos (yfinance) no está devolviendo datos — revisá ?action=debug.');
       }
       setRiskData(rr);
       setTab("risk");

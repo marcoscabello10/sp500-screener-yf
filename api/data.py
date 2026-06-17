@@ -266,67 +266,48 @@ class handler(BaseHTTPRequestHandler):
             return result
 
         # ── action=history&symbol=AAPL,MSFT&from=2019-01-01 ────────────────────
-        # Acepta uno o múltiples símbolos separados por coma
+        # Fetches individuales por símbolo (multi-ticker falla en Vercel)
         elif action == 'history':
             sym_raw   = params.get('symbol', [''])[0].strip()
             from_date = params.get('from',   ['2019-01-01'])[0]
             if not sym_raw:
-                return {} if ',' not in sym_raw else []
+                return {}
 
             symbols = [s.strip() for s in sym_raw.split(',') if s.strip()]
             multi   = len(symbols) > 1
 
-            # yf.download con múltiples símbolos: 1 sola llamada HTTP — mucho más rápido
-            tickers_str = ' '.join(symbols)
-            df = yf.download(tickers_str, start=from_date, progress=False, auto_adjust=True)
-            if df.empty:
-                return {} if multi else []
-
-            # Aplanar MultiIndex
-            if hasattr(df.columns, 'levels'):
-                df.columns = ['_'.join(c).strip() for c in df.columns.values]
-
-            if multi:
-                # Devolver dict: { "AAPL": [...], "MSFT": [...] }
-                result = {sym: [] for sym in symbols}
-                for date, row in df.iterrows():
-                    date_str = date.strftime('%Y-%m-%d')
-                    for sym in symbols:
+            def fetch_one(sym):
+                try:
+                    df = yf.download(sym, start=from_date, progress=False, auto_adjust=True)
+                    if df.empty:
+                        return []
+                    # Aplanar columnas si hay MultiIndex
+                    if hasattr(df.columns, 'levels'):
+                        df.columns = df.columns.get_level_values(0)
+                    result = []
+                    for date, row in df.iterrows():
                         try:
-                            close_col = f'Close_{sym}'
-                            close = float(row[close_col]) if close_col in row.index else None
-                            if close and close > 0:
-                                result[sym].append({
-                                    'date':     date_str,
+                            close = float(row['Close'])
+                            if close > 0:
+                                result.append({
+                                    'date':     date.strftime('%Y-%m-%d'),
                                     'close':    round(close, 4),
                                     'adjClose': round(close, 4),
+                                    'open':     round(float(row.get('Open',   close)), 4),
+                                    'high':     round(float(row.get('High',   close)), 4),
+                                    'low':      round(float(row.get('Low',    close)), 4),
+                                    'volume':   int(row.get('Volume', 0)),
                                 })
                         except Exception:
                             pass
-                # Invertir cada array (descendente: nuevo primero)
-                return {sym: arr[::-1] for sym, arr in result.items()}
+                    return result[::-1]  # descendente: más nuevo primero
+                except Exception:
+                    return []
+
+            if multi:
+                return {sym: fetch_one(sym) for sym in symbols}
             else:
-                # Símbolo único — backward compatible
-                sym = symbols[0]
-                # Con un solo símbolo las columnas son Close, Open, etc.
-                close_col = f'Close_{sym}' if f'Close_{sym}' in df.columns else 'Close'
-                result = []
-                for date, row in df.iterrows():
-                    try:
-                        close = float(row[close_col])
-                        if close > 0:
-                            result.append({
-                                'date':     date.strftime('%Y-%m-%d'),
-                                'close':    round(close, 4),
-                                'adjClose': round(close, 4),
-                                'open':     round(float(row.get(f'Open_{sym}', row.get('Open', 0))), 4),
-                                'high':     round(float(row.get(f'High_{sym}', row.get('High', 0))), 4),
-                                'low':      round(float(row.get(f'Low_{sym}',  row.get('Low',  0))), 4),
-                                'volume':   int(row.get(f'Volume_{sym}', row.get('Volume', 0))),
-                            })
-                    except Exception:
-                        pass
-                return result[::-1]
+                return fetch_one(symbols[0])
 
         elif action == 'debug':
             syms = params.get('symbol', ['AAPL,MSFT'])[0]

@@ -1168,7 +1168,7 @@ export default function App() {
         // Un fetch por lote de 20 símbolos — mucho más rápido que individual
         const allWithSpy = ['SPY', ...allSyms];
         setLp({step:`Descargando histórico (${allWithSpy.length} activos)...`,pct:3,phase:2});
-        for (const batch of chunk(allWithSpy, 20)) {
+        for (const batch of chunk(allWithSpy, 5)) {
           try {
             const r = await fetch(`${BASE}?action=history&symbol=${batch.join(',')}&from=${from}`);
             const d = await r.json();
@@ -1237,7 +1237,7 @@ export default function App() {
       } else {
         const allWithSpy = ['SPY', ...allSyms];
         setLp({step:`Descargando histórico correlación (${allWithSpy.length} activos)...`,pct:3,phase:3});
-        for (const batch of chunk(allWithSpy, 20)) {
+        for (const batch of chunk(allWithSpy, 5)) {
           try {
             const r = await fetch(`${BASE}?action=history&symbol=${batch.join(',')}&from=${from}`);
             const d = await r.json();
@@ -1310,7 +1310,7 @@ export default function App() {
       } else {
         const allWithSpy = ['SPY', ...allSyms];
         setLp({step:`Descargando histórico optimización (${allWithSpy.length} activos)...`,pct:2,phase:4});
-        for (const batch of chunk(allWithSpy, 20)) {
+        for (const batch of chunk(allWithSpy, 5)) {
           try {
             const r = await fetch(`${BASE}?action=history&symbol=${batch.join(',')}&from=${from}`);
             const d = await r.json();

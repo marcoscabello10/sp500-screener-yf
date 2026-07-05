@@ -283,9 +283,11 @@ class handler(BaseHTTPRequestHandler):
             return result
 
         # ── action=history&symbol=AAPL,MSFT&from=2019-01-01 ────────────────────
-        # Fuente: Stooq via pandas_datareader (Yahoo bloquea IPs de Vercel)
+        # Fuente: Stooq CSV directo por HTTP (sin pandas_datareader, sin API key)
+        # Yahoo Finance bloquea IPs de Vercel en el endpoint de histórico
         elif action == 'history':
-            from pandas_datareader import data as pdr
+            import csv, io
+            from datetime import datetime as dt
 
             sym_raw   = params.get('symbol', [''])[0].strip()
             from_date = params.get('from',   ['2019-01-01'])[0]
@@ -295,33 +297,34 @@ class handler(BaseHTTPRequestHandler):
             symbols = [s.strip() for s in sym_raw.split(',') if s.strip()]
             multi   = len(symbols) > 1
 
-            def stooq_sym(s):
-                """Stooq usa guiones en lugar de puntos (BRK.B → BRK-B)."""
-                return s.replace('.', '-')
-
             def fetch_one(sym):
                 try:
-                    df = pdr.DataReader(stooq_sym(sym), 'stooq', start=from_date)
-                    if df.empty:
+                    stooq_sym = sym.lower().replace('.', '-') + '.us'
+                    d1 = from_date.replace('-', '')
+                    d2 = dt.now().strftime('%Y%m%d')
+                    url = f'https://stooq.com/q/d/l/?s={stooq_sym}&d1={d1}&d2={d2}&i=d'
+                    resp = _make_session().get(url, timeout=10)
+                    if resp.status_code != 200:
                         return []
+                    reader = csv.DictReader(io.StringIO(resp.text))
                     result = []
-                    for date, row in df.iterrows():
+                    for row in reader:
                         try:
-                            close = float(row['Close'])
+                            close = float(row.get('Close', 0) or 0)
                             if close > 0:
                                 result.append({
-                                    'date':     date.strftime('%Y-%m-%d'),
+                                    'date':     row['Date'],
                                     'close':    round(close, 4),
                                     'adjClose': round(close, 4),
-                                    'open':     round(float(row.get('Open',   close)), 4),
-                                    'high':     round(float(row.get('High',   close)), 4),
-                                    'low':      round(float(row.get('Low',    close)), 4),
-                                    'volume':   int(row.get('Volume', 0)),
+                                    'open':     round(float(row.get('Open',   close) or close), 4),
+                                    'high':     round(float(row.get('High',   close) or close), 4),
+                                    'low':      round(float(row.get('Low',    close) or close), 4),
+                                    'volume':   int(float(row.get('Volume', 0) or 0)),
                                 })
                         except Exception:
                             pass
-                    # Ordenar descendente (más nuevo primero), App.jsx hace .reverse()
-                    return sorted(result, key=lambda x: x['date'], reverse=True)
+                    # Stooq devuelve ascendente, revertimos a descendente (App.jsx hace .reverse())
+                    return result[::-1]
                 except Exception:
                     return []
 
@@ -331,24 +334,28 @@ class handler(BaseHTTPRequestHandler):
                 return fetch_one(symbols[0])
 
         elif action == 'debug':
-            from pandas_datareader import data as pdr
+            import csv, io
+            from datetime import datetime as dt
             syms = params.get('symbol', ['SPY'])[0]
             sym = [s.strip() for s in syms.split(',') if s.strip()][0]
             out = {'symbol': sym, 'tests': {}}
 
-            # Test 1: Stooq histórico (fuente nueva)
+            # Test 1: Stooq HTTP directo
             try:
-                df1 = pdr.DataReader(sym.replace('.', '-'), 'stooq', start='2024-01-01')
-                out['tests']['stooq_history'] = {
-                    'empty': bool(df1.empty),
-                    'rows': len(df1),
-                    'cols': list(df1.columns),
-                    'sample_date': str(df1.index[0].date()) if not df1.empty else None,
+                stooq_sym = sym.lower().replace('.', '-') + '.us'
+                url = f'https://stooq.com/q/d/l/?s={stooq_sym}&d1=20240101&d2={dt.now().strftime("%Y%m%d")}&i=d'
+                resp = _make_session().get(url, timeout=10)
+                rows = list(csv.DictReader(io.StringIO(resp.text)))
+                out['tests']['stooq_direct'] = {
+                    'status': resp.status_code,
+                    'rows': len(rows),
+                    'cols': list(rows[0].keys()) if rows else [],
+                    'sample': rows[0] if rows else None,
                 }
             except Exception as e:
-                out['tests']['stooq_history'] = {'error': f'{type(e).__name__}: {e}'}
+                out['tests']['stooq_direct'] = {'error': f'{type(e).__name__}: {e}'}
 
-            # Test 2: yfinance .info con session (usado en F1/quote/ratios/profile)
+            # Test 2: yfinance .info (usado en F1/quote/ratios)
             try:
                 info = yf.Ticker(sym, session=_make_session()).info
                 out['tests']['yf_info'] = {

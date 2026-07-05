@@ -283,8 +283,10 @@ class handler(BaseHTTPRequestHandler):
             return result
 
         # ── action=history&symbol=AAPL,MSFT&from=2019-01-01 ────────────────────
-        # Fetches individuales por símbolo (multi-ticker falla en Vercel)
+        # Fuente: Stooq via pandas_datareader (Yahoo bloquea IPs de Vercel)
         elif action == 'history':
+            from pandas_datareader import data as pdr
+
             sym_raw   = params.get('symbol', [''])[0].strip()
             from_date = params.get('from',   ['2019-01-01'])[0]
             if not sym_raw:
@@ -293,10 +295,13 @@ class handler(BaseHTTPRequestHandler):
             symbols = [s.strip() for s in sym_raw.split(',') if s.strip()]
             multi   = len(symbols) > 1
 
+            def stooq_sym(s):
+                """Stooq usa guiones en lugar de puntos (BRK.B → BRK-B)."""
+                return s.replace('.', '-')
+
             def fetch_one(sym):
                 try:
-                    sess = _make_session()
-                    df = yf.Ticker(sym, session=sess).history(start=from_date, auto_adjust=True)
+                    df = pdr.DataReader(stooq_sym(sym), 'stooq', start=from_date)
                     if df.empty:
                         return []
                     result = []
@@ -315,7 +320,8 @@ class handler(BaseHTTPRequestHandler):
                                 })
                         except Exception:
                             pass
-                    return result[::-1]  # descendente: más nuevo primero
+                    # Ordenar descendente (más nuevo primero), App.jsx hace .reverse()
+                    return sorted(result, key=lambda x: x['date'], reverse=True)
                 except Exception:
                     return []
 
@@ -325,38 +331,32 @@ class handler(BaseHTTPRequestHandler):
                 return fetch_one(symbols[0])
 
         elif action == 'debug':
+            from pandas_datareader import data as pdr
             syms = params.get('symbol', ['SPY'])[0]
             sym = [s.strip() for s in syms.split(',') if s.strip()][0]
-            out = {'symbol': sym, 'session_headers': True, 'tests': {}}
+            out = {'symbol': sym, 'tests': {}}
 
-            # Test 1: Ticker.history SIN session (método viejo)
+            # Test 1: Stooq histórico (fuente nueva)
             try:
-                df1 = yf.Ticker(sym).history(start='2024-01-01', auto_adjust=True)
-                out['tests']['history_no_session'] = {'empty': bool(df1.empty), 'shape': str(df1.shape)}
+                df1 = pdr.DataReader(sym.replace('.', '-'), 'stooq', start='2024-01-01')
+                out['tests']['stooq_history'] = {
+                    'empty': bool(df1.empty),
+                    'rows': len(df1),
+                    'cols': list(df1.columns),
+                    'sample_date': str(df1.index[0].date()) if not df1.empty else None,
+                }
             except Exception as e:
-                out['tests']['history_no_session'] = {'error': f'{type(e).__name__}: {e}'}
-            time.sleep(0.5)
+                out['tests']['stooq_history'] = {'error': f'{type(e).__name__}: {e}'}
 
-            # Test 2: Ticker.history CON session de browser (método nuevo)
+            # Test 2: yfinance .info con session (usado en F1/quote/ratios/profile)
             try:
-                sess = _make_session()
-                df2 = yf.Ticker(sym, session=sess).history(start='2024-01-01', auto_adjust=True)
-                out['tests']['history_with_session'] = {'empty': bool(df2.empty), 'shape': str(df2.shape),
-                    'rows': len(df2), 'first_date': str(df2.index[0].date()) if not df2.empty else None}
-            except Exception as e:
-                out['tests']['history_with_session'] = {'error': f'{type(e).__name__}: {e}'}
-            time.sleep(0.5)
-
-            # Test 3: Ticker.info CON session
-            try:
-                sess2 = _make_session()
-                info = yf.Ticker(sym, session=sess2).info
-                out['tests']['info_with_session'] = {
+                info = yf.Ticker(sym, session=_make_session()).info
+                out['tests']['yf_info'] = {
                     'ok': bool(info.get('currentPrice') or info.get('regularMarketPrice')),
                     'price': info.get('currentPrice') or info.get('regularMarketPrice'),
                 }
             except Exception as e:
-                out['tests']['info_with_session'] = {'error': f'{type(e).__name__}: {e}'}
+                out['tests']['yf_info'] = {'error': f'{type(e).__name__}: {e}'}
 
             return out
 

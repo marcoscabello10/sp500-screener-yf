@@ -1,7 +1,23 @@
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 import json
+import time
+import requests
 import yfinance as yf
+
+def _make_session():
+    """Session con headers de browser para evitar YFRateLimitError en IPs de datacenter."""
+    s = requests.Session()
+    s.headers.update({
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Connection': 'keep-alive',
+        'Cache-Control': 'no-cache',
+        'Pragma': 'no-cache',
+    })
+    return s
 
 class handler(BaseHTTPRequestHandler):
 
@@ -205,10 +221,9 @@ class handler(BaseHTTPRequestHandler):
             if not symbols:
                 return []
             result = []
-            # Usamos .info en lugar de fast_info para obtener datos completos
             for sym in symbols:
                 try:
-                    info = yf.Ticker(sym).info
+                    info = yf.Ticker(sym, session=_make_session()).info
                     price      = info.get('currentPrice') or info.get('regularMarketPrice') or info.get('previousClose') or 0
                     prev_close = info.get('previousClose') or info.get('regularMarketPreviousClose') or 0
                     change_pct = round(((price - prev_close) / prev_close * 100), 4) if prev_close else 0
@@ -224,6 +239,7 @@ class handler(BaseHTTPRequestHandler):
                 except Exception:
                     result.append({'symbol': sym, 'price': 0, 'marketCap': 0,
                                    'pe': None, 'changesPercentage': 0, 'name': sym})
+                time.sleep(0.3)
             return result
 
         # ── action=ratios&symbol=AAPL ─────────────────────────────────────────
@@ -231,7 +247,7 @@ class handler(BaseHTTPRequestHandler):
             sym = params.get('symbol', [''])[0].strip()
             if not sym:
                 return [{}]
-            info = yf.Ticker(sym).info
+            info = yf.Ticker(sym, session=_make_session()).info
             return [{
                 'symbol':                       sym,
                 'peRatioTTM':                   info.get('trailingPE'),
@@ -253,7 +269,7 @@ class handler(BaseHTTPRequestHandler):
             result = []
             for sym in symbols:
                 try:
-                    info = yf.Ticker(sym).info
+                    info = yf.Ticker(sym, session=_make_session()).info
                     result.append({
                         'symbol':      sym,
                         'sector':      info.get('sector', 'Unknown'),
@@ -263,6 +279,7 @@ class handler(BaseHTTPRequestHandler):
                     })
                 except Exception:
                     result.append({'symbol': sym, 'sector': 'Unknown', 'companyName': sym})
+                time.sleep(0.3)
             return result
 
         # ── action=history&symbol=AAPL,MSFT&from=2019-01-01 ────────────────────
@@ -278,12 +295,10 @@ class handler(BaseHTTPRequestHandler):
 
             def fetch_one(sym):
                 try:
-                    df = yf.download(sym, start=from_date, progress=False, auto_adjust=True)
+                    sess = _make_session()
+                    df = yf.Ticker(sym, session=sess).history(start=from_date, auto_adjust=True)
                     if df.empty:
                         return []
-                    # Aplanar columnas si hay MultiIndex
-                    if hasattr(df.columns, 'levels'):
-                        df.columns = df.columns.get_level_values(0)
                     result = []
                     for date, row in df.iterrows():
                         try:
@@ -312,28 +327,36 @@ class handler(BaseHTTPRequestHandler):
         elif action == 'debug':
             syms = params.get('symbol', ['SPY'])[0]
             sym = [s.strip() for s in syms.split(',') if s.strip()][0]
-            out = {'symbol': sym, 'tests': {}}
+            out = {'symbol': sym, 'session_headers': True, 'tests': {}}
 
+            # Test 1: Ticker.history SIN session (método viejo)
             try:
-                df1 = yf.download(sym, start='2024-01-01', progress=False, auto_adjust=True)
-                out['tests']['download'] = {'empty': bool(df1.empty), 'shape': str(df1.shape)}
+                df1 = yf.Ticker(sym).history(start='2024-01-01', auto_adjust=True)
+                out['tests']['history_no_session'] = {'empty': bool(df1.empty), 'shape': str(df1.shape)}
             except Exception as e:
-                out['tests']['download'] = {'error': f'{type(e).__name__}: {e}'}
+                out['tests']['history_no_session'] = {'error': f'{type(e).__name__}: {e}'}
+            time.sleep(0.5)
 
+            # Test 2: Ticker.history CON session de browser (método nuevo)
             try:
-                df2 = yf.Ticker(sym).history(start='2024-01-01', auto_adjust=True)
-                out['tests']['ticker_history'] = {'empty': bool(df2.empty), 'shape': str(df2.shape)}
+                sess = _make_session()
+                df2 = yf.Ticker(sym, session=sess).history(start='2024-01-01', auto_adjust=True)
+                out['tests']['history_with_session'] = {'empty': bool(df2.empty), 'shape': str(df2.shape),
+                    'rows': len(df2), 'first_date': str(df2.index[0].date()) if not df2.empty else None}
             except Exception as e:
-                out['tests']['ticker_history'] = {'error': f'{type(e).__name__}: {e}'}
+                out['tests']['history_with_session'] = {'error': f'{type(e).__name__}: {e}'}
+            time.sleep(0.5)
 
+            # Test 3: Ticker.info CON session
             try:
-                info = yf.Ticker(sym).info
-                out['tests']['ticker_info'] = {
+                sess2 = _make_session()
+                info = yf.Ticker(sym, session=sess2).info
+                out['tests']['info_with_session'] = {
                     'ok': bool(info.get('currentPrice') or info.get('regularMarketPrice')),
-                    'keys_sample': list(info.keys())[:5]
+                    'price': info.get('currentPrice') or info.get('regularMarketPrice'),
                 }
             except Exception as e:
-                out['tests']['ticker_info'] = {'error': f'{type(e).__name__}: {e}'}
+                out['tests']['info_with_session'] = {'error': f'{type(e).__name__}: {e}'}
 
             return out
 

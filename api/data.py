@@ -283,83 +283,99 @@ class handler(BaseHTTPRequestHandler):
             return result
 
         # ── action=history&symbol=AAPL,MSFT&from=2019-01-01 ────────────────────
-        # Fuente: Stooq CSV directo por HTTP (sin pandas_datareader, sin API key)
-        # Yahoo Finance bloquea IPs de Vercel en el endpoint de histórico
+        # Fuente: Twelve Data (Yahoo y Stooq bloquean IPs de Vercel con bot protection)
+        # Requiere env var TWELVEDATA_API_KEY (free tier: 800 créditos/día)
         elif action == 'history':
-            import csv, io
-            from datetime import datetime as dt
+            import os
 
+            api_key   = os.environ.get('TWELVEDATA_API_KEY', '')
             sym_raw   = params.get('symbol', [''])[0].strip()
             from_date = params.get('from',   ['2019-01-01'])[0]
             if not sym_raw:
                 return {}
+            if not api_key:
+                return {'error': 'TWELVEDATA_API_KEY no configurada en variables de entorno de Vercel'}
 
             symbols = [s.strip() for s in sym_raw.split(',') if s.strip()]
             multi   = len(symbols) > 1
 
-            def fetch_one(sym):
-                try:
-                    stooq_sym = sym.lower().replace('.', '-') + '.us'
-                    d1 = from_date.replace('-', '')
-                    d2 = dt.now().strftime('%Y%m%d')
-                    url = f'https://stooq.com/q/d/l/?s={stooq_sym}&d1={d1}&d2={d2}&i=d'
-                    resp = _make_session().get(url, timeout=10)
-                    if resp.status_code != 200:
-                        return []
-                    reader = csv.DictReader(io.StringIO(resp.text))
-                    result = []
-                    for row in reader:
-                        try:
-                            close = float(row.get('Close', 0) or 0)
-                            if close > 0:
-                                result.append({
-                                    'date':     row['Date'],
-                                    'close':    round(close, 4),
-                                    'adjClose': round(close, 4),
-                                    'open':     round(float(row.get('Open',   close) or close), 4),
-                                    'high':     round(float(row.get('High',   close) or close), 4),
-                                    'low':      round(float(row.get('Low',    close) or close), 4),
-                                    'volume':   int(float(row.get('Volume', 0) or 0)),
-                                })
-                        except Exception:
-                            pass
-                    # Stooq devuelve ascendente, revertimos a descendente (App.jsx hace .reverse())
-                    return result[::-1]
-                except Exception:
-                    return []
+            # Una sola llamada para todos los símbolos del lote (hasta 5)
+            url = 'https://api.twelvedata.com/time_series'
+            req_params = {
+                'symbol':     ','.join(symbols),
+                'interval':   '1day',
+                'start_date': from_date,
+                'outputsize': 5000,
+                'order':      'DESC',   # más nuevo primero, App.jsx hace .reverse()
+                'apikey':     api_key,
+                'format':     'JSON',
+            }
+            resp = _make_session().get(url, params=req_params, timeout=25)
+            data = resp.json()
+
+            def parse_td(values):
+                result = []
+                for v in (values or []):
+                    try:
+                        close = float(v.get('close') or 0)
+                        if close > 0:
+                            result.append({
+                                'date':     v['datetime'][:10],
+                                'close':    round(close, 4),
+                                'adjClose': round(close, 4),
+                                'open':     round(float(v.get('open',   close) or close), 4),
+                                'high':     round(float(v.get('high',   close) or close), 4),
+                                'low':      round(float(v.get('low',    close) or close), 4),
+                                'volume':   int(float(v.get('volume', 0) or 0)),
+                            })
+                    except Exception:
+                        pass
+                return result  # ya viene DESC de la API
 
             if multi:
-                return {sym: fetch_one(sym) for sym in symbols}
+                # Respuesta multi: {"AAPL": {"values": [...]}, "MSFT": {"values": [...]}}
+                return {
+                    sym: parse_td((data.get(sym) or {}).get('values', []))
+                    for sym in symbols
+                }
             else:
-                return fetch_one(symbols[0])
+                # Respuesta single: {"values": [...], "meta": {...}}
+                return parse_td(data.get('values', []))
 
         elif action == 'debug':
-            import csv, io
-            from datetime import datetime as dt
+            import os
             syms = params.get('symbol', ['SPY'])[0]
             sym = [s.strip() for s in syms.split(',') if s.strip()][0]
-            out = {'symbol': sym, 'tests': {}}
+            api_key = os.environ.get('TWELVEDATA_API_KEY', '')
+            out = {'symbol': sym, 'twelvedata_key_set': bool(api_key), 'tests': {}}
 
-            # Test 1: Stooq HTTP directo
-            try:
-                stooq_sym = sym.lower().replace('.', '-') + '.us'
-                url = f'https://stooq.com/q/d/l/?s={stooq_sym}&d1=20240101&d2={dt.now().strftime("%Y%m%d")}&i=d'
-                resp = _make_session().get(url, timeout=10)
-                rows = list(csv.DictReader(io.StringIO(resp.text)))
-                out['tests']['stooq_direct'] = {
-                    'status': resp.status_code,
-                    'rows': len(rows),
-                    'cols': list(rows[0].keys()) if rows else [],
-                    'sample': rows[0] if rows else None,
-                }
-            except Exception as e:
-                out['tests']['stooq_direct'] = {'error': f'{type(e).__name__}: {e}'}
+            # Test 1: Twelve Data histórico
+            if api_key:
+                try:
+                    url = 'https://api.twelvedata.com/time_series'
+                    resp = _make_session().get(url, params={
+                        'symbol': sym, 'interval': '1day',
+                        'outputsize': 5, 'apikey': api_key,
+                    }, timeout=15)
+                    data = resp.json()
+                    vals = data.get('values', [])
+                    out['tests']['twelvedata'] = {
+                        'status':   resp.status_code,
+                        'rows':     len(vals),
+                        'sample':   vals[0] if vals else None,
+                        'api_code': data.get('code'),   # 429 = rate limit, 401 = key inválida
+                        'api_msg':  data.get('message'),
+                    }
+                except Exception as e:
+                    out['tests']['twelvedata'] = {'error': f'{type(e).__name__}: {e}'}
+            else:
+                out['tests']['twelvedata'] = {'error': 'TWELVEDATA_API_KEY no seteada en Vercel'}
 
-            # Test 2: yfinance .info (usado en F1/quote/ratios)
+            # Test 2: yfinance .info (F1/quote/ratios/profile)
             try:
                 info = yf.Ticker(sym, session=_make_session()).info
                 out['tests']['yf_info'] = {
-                    'ok': bool(info.get('currentPrice') or info.get('regularMarketPrice')),
+                    'ok':    bool(info.get('currentPrice') or info.get('regularMarketPrice')),
                     'price': info.get('currentPrice') or info.get('regularMarketPrice'),
                 }
             except Exception as e:

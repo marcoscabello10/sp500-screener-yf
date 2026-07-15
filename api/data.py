@@ -215,30 +215,52 @@ class handler(BaseHTTPRequestHandler):
             return constituents
 
         # ── action=quote&symbols=AAPL,MSFT ───────────────────────────────────
+        # Fuente: Twelve Data /quote (yfinance se rate-limita en loop desde Vercel)
         elif action == 'quote':
+            import os
             symbols_raw = params.get('symbols', [''])[0]
             symbols = [s.strip() for s in symbols_raw.split(',') if s.strip()]
             if not symbols:
                 return []
-            result = []
-            for sym in symbols:
+
+            api_key = os.environ.get('TWELVEDATA_API_KEY', '')
+            fallback = [{'symbol': s, 'price': 0, 'marketCap': 0, 'pe': None,
+                         'changesPercentage': 0, 'name': s} for s in symbols]
+
+            if not api_key:
+                return fallback
+
+            try:
+                resp = _make_session().get('https://api.twelvedata.com/quote', params={
+                    'symbol': ','.join(symbols), 'apikey': api_key,
+                }, timeout=25)
+                data = resp.json()
+            except Exception:
+                return fallback
+
+            def parse_one(d, sym):
                 try:
-                    info = yf.Ticker(sym).info
-                    price      = info.get('currentPrice') or info.get('regularMarketPrice') or info.get('previousClose') or 0
-                    prev_close = info.get('previousClose') or info.get('regularMarketPreviousClose') or 0
-                    change_pct = round(((price - prev_close) / prev_close * 100), 4) if prev_close else 0
-                    result.append({
+                    price = float(d.get('close') or 0)
+                    pct   = float(d.get('percent_change') or 0)
+                    return {
                         'symbol':            sym,
-                        'price':             price,
-                        'marketCap':         info.get('marketCap') or 0,
-                        'pe':                info.get('trailingPE') or info.get('forwardPE') or None,
-                        'changesPercentage': change_pct,
-                        'name':              info.get('shortName', sym),
-                        'exchange':          info.get('exchange', ''),
-                    })
+                        'price':             round(price, 4),
+                        'marketCap':         0,    # TD /quote free tier no incluye market cap
+                        'pe':                None, # se obtiene de action=ratios
+                        'changesPercentage': round(pct, 4),
+                        'name':              d.get('name', sym),
+                        'exchange':          d.get('exchange', ''),
+                    }
                 except Exception:
-                    result.append({'symbol': sym, 'price': 0, 'marketCap': 0,
-                                   'pe': None, 'changesPercentage': 0, 'name': sym})
+                    return {'symbol': sym, 'price': 0, 'marketCap': 0,
+                            'pe': None, 'changesPercentage': 0, 'name': sym}
+
+            result = []
+            if len(symbols) == 1:
+                result.append(parse_one(data, symbols[0]))
+            else:
+                for sym in symbols:
+                    result.append(parse_one(data.get(sym, {}), sym))
             return result
 
         # ── action=ratios&symbol=AAPL ─────────────────────────────────────────

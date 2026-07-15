@@ -935,7 +935,7 @@ export default function App() {
 
       const allSyms = constituents.map(c=>c.symbol).filter(Boolean);
       const quotes  = {};
-      const qc = chunk(allSyms, 100);
+      const qc = chunk(allSyms, 5);
       for (let i=0; i<qc.length; i++) {
         setLp({step:`Cotizaciones lote ${i+1}/${qc.length}...`,pct:6+(i/qc.length)*20,phase:1});
         const r=await fetch(`${BASE}?action=quote&symbols=${qc[i].join(",")}`);

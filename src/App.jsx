@@ -647,6 +647,31 @@ function CorrelationHeatmap({stocks, corrMatrix}) {
 }
 
 // ── Efficient Frontier Chart ──────────────────────────────────────────────────
+// Reoptimiza sobre un subconjunto de activos usando cov/annRets ya calculados
+function doReoptimize(stocks, annRets, cov, excluded, rf, minWf, maxWf) {
+  const idxs   = stocks.map((s,i)=>i).filter(i=>!excluded.has(stocks[i].symbol));
+  if (idxs.length < 3) return null;
+  const subRets = idxs.map(i=>annRets[i]);
+  const subCov  = idxs.map(i=>idxs.map(j=>cov[i][j]));
+  const subStks = idxs.map(i=>stocks[i]);
+  const mc      = runMonteCarlo(subRets, subCov, rf, 3000, minWf, maxWf);
+  const minVar  = mc.reduce((b,p)=>p.vol<b.vol?p:b, mc[0]);
+  const maxShp  = mc.reduce((b,p)=>p.sharpe>b.sharpe?p:b, mc[0]);
+  const rpW     = riskParityW(subCov);
+  const rpSt    = portStats(rpW, subRets, subCov, rf);
+  const ewW     = new Array(subStks.length).fill(1/subStks.length);
+  const ewSt    = portStats(ewW, subRets, subCov, rf);
+  // Mapear pesos de vuelta al arreglo original (excluidos = 0)
+  const full = (w) => { const a=new Array(stocks.length).fill(0); idxs.forEach((oi,ni)=>{a[oi]=w[ni];}); return a; };
+  return {
+    stocks: subStks, idxs,
+    minVar: {...minVar, weights: full(minVar.weights), label:"Mínima Varianza"},
+    maxShp: {...maxShp, weights: full(maxShp.weights), label:"Máximo Sharpe"},
+    rp:     {...rpSt,   weights: full(rpW),            label:"Risk Parity"},
+    ew:     {...ewSt,   weights: full(ewW),            label:"Equal Weight"},
+  };
+}
+
 function FrontierChart({mcPorts, special}) {
   const sample = mcPorts.filter((_,i)=>i%3===0);
   const mkPt = pts => pts ? [pts] : [];
@@ -870,6 +895,8 @@ export default function App() {
   const [riskData,     setRiskData]     = useState({});
   const [corrData,     setCorrData]     = useState(null);
   const [optData,      setOptData]      = useState(null);
+  const [excludedSyms, setExcludedSyms] = useState(new Set());
+  const [reoptData,    setReoptData]    = useState(null);
   const [spy,          setSpy]          = useState(null);
   const [spyRisk,      setSpyRisk]      = useState(null);
   const [cacheInfo,    setCacheInfo]    = useState(null);
@@ -1310,6 +1337,9 @@ export default function App() {
 
   // ── Phase 4: Optimization ────────────────────────────────────────────────────
   const runOpt = useCallback(async()=>{
+    // reset exclusiones al recalcular desde cero
+    setExcludedSyms(new Set());
+    setReoptData(null);
     setPhase("loading");
     const rf=rfRate/100;
     const minWf=minW/100, maxWf=maxW/100;
@@ -1405,6 +1435,26 @@ export default function App() {
       setPhase("done4");
     } catch(err) { setError(err.message); setPhase("error"); }
   },[fundData,rfRate,optY,minW,maxW]);
+
+  const toggleExclude = useCallback((sym) => {
+    if (!optData) return;
+    const total     = optData.stocks.length;
+    const minIncl   = Math.max(3, Math.ceil(total * 0.75));
+    const next      = new Set(excludedSyms);
+    if (next.has(sym)) {
+      next.delete(sym);
+    } else {
+      if (total - next.size - 1 < minIncl) return; // bloquear si quedarían pocos
+      next.add(sym);
+    }
+    setExcludedSyms(next);
+    if (next.size === 0) {
+      setReoptData(null);
+    } else {
+      const res = doReoptimize(optData.stocks, optData.annRets, optData.cov, next, rfRate/100, minW/100, maxW/100);
+      setReoptData(res);
+    }
+  }, [optData, excludedSyms, rfRate, minW, maxW]);
 
   // ── Black-Litterman ───────────────────────────────────────────────────────────
   function computeBL(stocks, cov, annRets, views, tau, delta) {
@@ -1694,13 +1744,36 @@ export default function App() {
 
           {/* Weights table */}
           <div style={{marginTop:14,background:"#040c1a",border:"1px solid #1e293b",borderRadius:12,overflow:"hidden"}}>
-            <div style={{padding:"11px 14px",borderBottom:"1px solid #1e293b",fontSize:11,color:"#475569",fontFamily:"monospace",textTransform:"uppercase",letterSpacing:2}}>
-              Asignación de Pesos — Top 15 por Máximo Sharpe
+            <div style={{padding:"11px 14px",borderBottom:"1px solid #1e293b",display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:8}}>
+              <span style={{fontSize:11,color:"#475569",fontFamily:"monospace",textTransform:"uppercase",letterSpacing:2}}>
+                Asignación de Pesos — Top 15 por Máximo Sharpe
+              </span>
+              {excludedSyms.size > 0 && (
+                <div style={{display:"flex",alignItems:"center",gap:8}}>
+                  <span style={{fontSize:10,color:"#f97316",fontFamily:"monospace"}}>
+                    {optData.stocks.length - excludedSyms.size}/{optData.stocks.length} activos activos
+                  </span>
+                  <button onClick={()=>{setExcludedSyms(new Set());setReoptData(null);}}
+                    style={{background:"#1e293b",border:"1px solid #334155",borderRadius:6,padding:"3px 8px",color:"#94a3b8",fontSize:10,fontFamily:"monospace",cursor:"pointer"}}>
+                    Resetear
+                  </button>
+                </div>
+              )}
             </div>
+            {excludedSyms.size > 0 && (
+              <div style={{padding:"8px 14px",borderBottom:"1px solid #1e293b",background:"#0a0f1a",fontSize:10,color:"#64748b",fontFamily:"monospace"}}>
+                ⚡ Optimización recalculada sin{' '}
+                {[...excludedSyms].map(s=>(
+                  <span key={s} style={{background:"#1e293b",color:"#f97316",borderRadius:4,padding:"1px 6px",marginRight:4,display:"inline-block"}}>{s}</span>
+                ))}
+                · mín {Math.max(3, Math.ceil(optData.stocks.length*0.75))}/{optData.stocks.length} activos requeridos
+              </div>
+            )}
             <div style={{overflowX:"auto"}}>
               <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
                 <thead>
                   <tr>
+                    <th style={{...TH,textAlign:"left",width:32}}></th>
                     <th style={{...TH,textAlign:"left"}}>Ticker</th>
                     <th style={{...TH,textAlign:"left"}}>Sector</th>
                     <th style={{...TH,color:PORT_STYLES.maxShp.color}}>Max Sharpe</th>
@@ -1710,30 +1783,62 @@ export default function App() {
                   </tr>
                 </thead>
                 <tbody>
-                  {optData.stocks
-                    .map((stk,i)=>({stk,msW:optData.maxShp.weights?.[i]||0,mvW:optData.minVar.weights?.[i]||0,rpW:optData.rp.weights?.[i]||0,ewW:optData.ew.weights?.[i]||0}))
-                    .sort((a,b)=>b.msW-a.msW)
-                    .slice(0,15)
-                    .map(({stk,msW,mvW,rpW,ewW},idx)=>{
-                      const sc=SECTOR_COLORS[stk.sector]||"#64748b";
-                      return (
-                        <tr key={stk.symbol} style={{borderBottom:"1px solid #0a1628",background:idx%2===0?"transparent":"#04080f"}}>
-                          <td style={{...TD,textAlign:"left",fontWeight:700,color:"#f1f5f9",fontFamily:"monospace"}}>{stk.symbol}</td>
-                          <td style={{...TD,textAlign:"left",fontSize:10,color:sc,fontFamily:"monospace"}}>{stk.sector?.slice(0,20)}</td>
-                          <td style={{...TD,textAlign:"right"}}>
-                            <div style={{display:"flex",alignItems:"center",gap:6}}>
-                              <div style={{flex:1,height:4,background:"#1e293b",borderRadius:2,overflow:"hidden"}}>
-                                <div style={{width:`${msW*100}%`,height:"100%",background:PORT_STYLES.maxShp.color,borderRadius:2}}/>
-                              </div>
-                              <span style={{fontFamily:"monospace",color:PORT_STYLES.maxShp.color,minWidth:40,fontSize:11}}>{fmtPct(msW*100,1)}</span>
-                            </div>
-                          </td>
-                          <td style={{...TD,textAlign:"right",fontFamily:"monospace",color:PORT_STYLES.minVar.color,fontSize:11}}>{fmtPct(mvW*100,1)}</td>
-                          <td style={{...TD,textAlign:"right",fontFamily:"monospace",color:PORT_STYLES.rp.color,fontSize:11}}>{fmtPct(rpW*100,1)}</td>
-                          <td style={{...TD,textAlign:"right",fontFamily:"monospace",color:"#475569",fontSize:11}}>{fmtPct(ewW*100,1)}</td>
-                        </tr>
-                      );
-                    })}
+                  {(() => {
+                    const src     = reoptData || optData;
+                    const total   = optData.stocks.length;
+                    const minIncl = Math.max(3, Math.ceil(total * 0.75));
+                    const canExcl = total - excludedSyms.size - 1 >= minIncl;
+                    return optData.stocks
+                      .map((stk,i)=>({stk,i,
+                        msW: src.maxShp.weights?.[i]||0,
+                        mvW: src.minVar.weights?.[i]||0,
+                        rpW: src.rp.weights?.[i]||0,
+                        ewW: src.ew.weights?.[i]||0,
+                        excl: excludedSyms.has(stk.symbol),
+                      }))
+                      .sort((a,b)=> a.excl!==b.excl ? (a.excl?1:-1) : b.msW-a.msW)
+                      .slice(0,15)
+                      .map(({stk,i,msW,mvW,rpW,ewW,excl},idx)=>{
+                        const sc = SECTOR_COLORS[stk.sector]||"#64748b";
+                        const opacity = excl ? 0.35 : 1;
+                        return (
+                          <tr key={stk.symbol} style={{borderBottom:"1px solid #0a1628",background:excl?"#05080f":idx%2===0?"transparent":"#04080f",opacity}}>
+                            <td style={{...TD,paddingLeft:10}}>
+                              <button
+                                title={excl ? "Incluir en optimización" : (canExcl || excl ? "Excluir de optimización" : `Mín ${minIncl} activos requeridos`)}
+                                onClick={()=>toggleExclude(stk.symbol)}
+                                style={{
+                                  background: excl?"#1e293b":"transparent",
+                                  border:`1px solid ${excl?"#334155":"#1e293b"}`,
+                                  borderRadius:4, width:20, height:20,
+                                  cursor: (canExcl||excl)?"pointer":"not-allowed",
+                                  color: excl?"#34d399":"#475569",
+                                  fontSize:11, fontWeight:700,
+                                  display:"flex",alignItems:"center",justifyContent:"center",
+                                  opacity:(canExcl||excl)?1:0.4,
+                                }}>
+                                {excl?"✓":"×"}
+                              </button>
+                            </td>
+                            <td style={{...TD,textAlign:"left",fontWeight:700,color:excl?"#475569":"#f1f5f9",fontFamily:"monospace",textDecoration:excl?"line-through":"none"}}>{stk.symbol}</td>
+                            <td style={{...TD,textAlign:"left",fontSize:10,color:sc,fontFamily:"monospace"}}>{stk.sector?.slice(0,20)}</td>
+                            <td style={{...TD,textAlign:"right"}}>
+                              {!excl ? (
+                                <div style={{display:"flex",alignItems:"center",gap:6}}>
+                                  <div style={{flex:1,height:4,background:"#1e293b",borderRadius:2,overflow:"hidden"}}>
+                                    <div style={{width:`${msW*100}%`,height:"100%",background:PORT_STYLES.maxShp.color,borderRadius:2}}/>
+                                  </div>
+                                  <span style={{fontFamily:"monospace",color:PORT_STYLES.maxShp.color,minWidth:40,fontSize:11}}>{fmtPct(msW*100,1)}</span>
+                                </div>
+                              ) : <span style={{fontFamily:"monospace",color:"#334155",fontSize:11}}>0.0%</span>}
+                            </td>
+                            <td style={{...TD,textAlign:"right",fontFamily:"monospace",color:excl?"#334155":PORT_STYLES.minVar.color,fontSize:11}}>{excl?"0.0%":fmtPct(mvW*100,1)}</td>
+                            <td style={{...TD,textAlign:"right",fontFamily:"monospace",color:excl?"#334155":PORT_STYLES.rp.color,fontSize:11}}>{excl?"0.0%":fmtPct(rpW*100,1)}</td>
+                            <td style={{...TD,textAlign:"right",fontFamily:"monospace",color:excl?"#334155":"#475569",fontSize:11}}>{excl?"0.0%":fmtPct(ewW*100,1)}</td>
+                          </tr>
+                        );
+                      });
+                  })()}
                 </tbody>
               </table>
             </div>

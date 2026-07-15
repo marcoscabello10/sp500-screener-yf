@@ -239,7 +239,6 @@ class handler(BaseHTTPRequestHandler):
                 except Exception:
                     result.append({'symbol': sym, 'price': 0, 'marketCap': 0,
                                    'pe': None, 'changesPercentage': 0, 'name': sym})
-                time.sleep(0.3)
             return result
 
         # ── action=ratios&symbol=AAPL ─────────────────────────────────────────
@@ -279,7 +278,6 @@ class handler(BaseHTTPRequestHandler):
                     })
                 except Exception:
                     result.append({'symbol': sym, 'sector': 'Unknown', 'companyName': sym})
-                time.sleep(0.3)
             return result
 
         # ── action=history&symbol=AAPL,MSFT&from=2019-01-01 ────────────────────

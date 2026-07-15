@@ -223,7 +223,7 @@ class handler(BaseHTTPRequestHandler):
             result = []
             for sym in symbols:
                 try:
-                    info = yf.Ticker(sym, session=_make_session()).info
+                    info = yf.Ticker(sym).info
                     price      = info.get('currentPrice') or info.get('regularMarketPrice') or info.get('previousClose') or 0
                     prev_close = info.get('previousClose') or info.get('regularMarketPreviousClose') or 0
                     change_pct = round(((price - prev_close) / prev_close * 100), 4) if prev_close else 0
@@ -246,7 +246,7 @@ class handler(BaseHTTPRequestHandler):
             sym = params.get('symbol', [''])[0].strip()
             if not sym:
                 return [{}]
-            info = yf.Ticker(sym, session=_make_session()).info
+            info = yf.Ticker(sym).info
             return [{
                 'symbol':                       sym,
                 'peRatioTTM':                   info.get('trailingPE'),
@@ -268,7 +268,7 @@ class handler(BaseHTTPRequestHandler):
             result = []
             for sym in symbols:
                 try:
-                    info = yf.Ticker(sym, session=_make_session()).info
+                    info = yf.Ticker(sym).info
                     result.append({
                         'symbol':      sym,
                         'sector':      info.get('sector', 'Unknown'),

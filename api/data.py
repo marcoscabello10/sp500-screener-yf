@@ -357,15 +357,23 @@ class handler(BaseHTTPRequestHandler):
                         'symbol': sym, 'interval': '1day',
                         'outputsize': 5, 'apikey': api_key,
                     }, timeout=15)
-                    data = resp.json()
-                    vals = data.get('values', [])
-                    out['tests']['twelvedata'] = {
-                        'status':   resp.status_code,
-                        'rows':     len(vals),
-                        'sample':   vals[0] if vals else None,
-                        'api_code': data.get('code'),   # 429 = rate limit, 401 = key inválida
-                        'api_msg':  data.get('message'),
-                    }
+                    raw = resp.text[:800]
+                    try:
+                        data = resp.json()
+                        vals = data.get('values', [])
+                        out['tests']['twelvedata'] = {
+                            'status':   resp.status_code,
+                            'rows':     len(vals),
+                            'sample':   vals[0] if vals else None,
+                            'api_code': data.get('code'),
+                            'api_msg':  data.get('message'),
+                        }
+                    except Exception:
+                        out['tests']['twelvedata'] = {
+                            'status':       resp.status_code,
+                            'raw_response': raw,
+                            'error':        'JSON parse failed — respuesta no es JSON válido',
+                        }
                 except Exception as e:
                     out['tests']['twelvedata'] = {'error': f'{type(e).__name__}: {e}'}
             else:

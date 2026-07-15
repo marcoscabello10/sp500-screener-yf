@@ -523,8 +523,10 @@ function LoadingScreen({progress}) {
 function CorrelationHeatmap({stocks, corrMatrix}) {
   const [hovered, setHovered] = useState(null);
   const n = stocks.length;
-  const CELL = Math.max(10, Math.min(16, Math.floor(420/n)));
-  const LABEL_W = 46;
+  const CELL    = Math.max(38, Math.min(72, Math.floor(560/n)));
+  const LABEL_W = Math.max(52, Math.min(80, CELL + 8));
+  const FONT    = Math.max(9,  Math.min(13, Math.floor(CELL * 0.22)));
+  const showNum = CELL >= 38;
 
   const highPairs = [];
   for (let i=0; i<n; i++) for (let j=i+1; j<n; j++)
@@ -556,8 +558,8 @@ function CorrelationHeatmap({stocks, corrMatrix}) {
           {/* Column labels */}
           <div style={{display:"flex",marginLeft:LABEL_W,marginBottom:2}}>
             {stocks.map((s,j)=>(
-              <div key={j} style={{width:CELL,flexShrink:0,overflow:"hidden"}}>
-                <div style={{fontSize:CELL>12?7:6,color:hovered&&(hovered.i===j||hovered.j===j)?"#f1f5f9":"#334155",fontFamily:"monospace",writingMode:"vertical-rl",textOrientation:"mixed",height:LABEL_W,textAlign:"right",lineHeight:1}}>
+              <div style={{width:CELL,flexShrink:0,overflow:"hidden"}}>
+                <div style={{fontSize:FONT,color:hovered&&(hovered.i===j||hovered.j===j)?"#f1f5f9":"#94a3b8",fontFamily:"monospace",fontWeight:600,writingMode:"vertical-rl",textOrientation:"mixed",height:LABEL_W,textAlign:"right",lineHeight:1}}>
                   {s.symbol}
                 </div>
               </div>
@@ -566,21 +568,32 @@ function CorrelationHeatmap({stocks, corrMatrix}) {
 
           {/* Rows */}
           {stocks.map((si,i)=>(
-            <div key={i} style={{display:"flex",alignItems:"center",marginBottom:1}}>
-              <div style={{width:LABEL_W,fontSize:CELL>12?7:6,color:hovered&&(hovered.i===i||hovered.j===i)?"#f1f5f9":"#334155",fontFamily:"monospace",textAlign:"right",paddingRight:4,flexShrink:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+            <div key={i} style={{display:"flex",alignItems:"center",marginBottom:2}}>
+              <div style={{width:LABEL_W,fontSize:FONT,color:hovered&&(hovered.i===i||hovered.j===i)?"#f1f5f9":"#94a3b8",fontFamily:"monospace",fontWeight:600,textAlign:"right",paddingRight:6,flexShrink:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
                 {si.symbol}
               </div>
               {stocks.map((sj,j)=>{
                 const r = corrMatrix[i][j];
                 const isHigh = i!==j && r>0.75;
                 const isHov  = hovered && hovered.i===i && hovered.j===j;
+                const isDiag = i===j;
+                const textColor = Math.abs(r) > 0.5 ? "#fff" : "#cbd5e1";
                 return (
                   <div key={j}
                     onMouseEnter={()=>setHovered({i,j,r,a:si.symbol,b:sj.symbol})}
                     onMouseLeave={()=>setHovered(null)}
                     style={{width:CELL,height:CELL,flexShrink:0,background:corrColor(r),cursor:"default",
+                      display:"flex",alignItems:"center",justifyContent:"center",
                       outline:isHov?"2px solid white":"none",
-                      boxShadow:isHigh&&i!==j?"inset 0 0 0 1px rgba(255,100,100,0.6)":"none"}}/>
+                      marginRight:2,
+                      boxShadow:isHigh?"inset 0 0 0 2px rgba(255,100,100,0.8)":"none"}}>
+                    {showNum && (
+                      <span style={{fontSize:Math.max(8, CELL*0.22),fontFamily:"monospace",fontWeight:700,
+                        color:textColor,textShadow:"0 1px 2px rgba(0,0,0,0.6)",lineHeight:1,userSelect:"none"}}>
+                        {isDiag ? "1.0" : r.toFixed(2)}
+                      </span>
+                    )}
+                  </div>
                 );
               })}
             </div>

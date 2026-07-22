@@ -214,54 +214,52 @@ class handler(BaseHTTPRequestHandler):
                         constituents.append({'symbol': sym, 'name': name, 'sector': sector})
             return constituents
 
-        # ── action=quote&symbols=AAPL,MSFT ───────────────────────────────────
-        # Fuente: Twelve Data /quote (yfinance se rate-limita en loop desde Vercel)
+        # ── action=quote&symbols=AAPL,MSFT ───────────────────────────────────────
+        # Yahoo Finance batch endpoint: 1 sola request HTTP para todos los símbolos del lote
+        # Mismo dominio que .info (confirmado funcional desde Vercel). Sin Twelve Data.
         elif action == 'quote':
-            import os
             symbols_raw = params.get('symbols', [''])[0]
             symbols = [s.strip() for s in symbols_raw.split(',') if s.strip()]
             if not symbols:
                 return []
 
-            api_key = os.environ.get('TWELVEDATA_API_KEY', '')
-            fallback = [{'symbol': s, 'price': 0, 'marketCap': 0, 'pe': None,
-                         'changesPercentage': 0, 'name': s} for s in symbols]
-
-            if not api_key:
-                return fallback
+            def _fallback(sym):
+                return {'symbol': sym, 'price': 0, 'marketCap': 0,
+                        'pe': None, 'changesPercentage': 0, 'name': sym}
 
             try:
-                resp = _make_session().get('https://api.twelvedata.com/quote', params={
-                    'symbol': ','.join(symbols), 'apikey': api_key,
-                }, timeout=25)
-                data = resp.json()
-            except Exception:
-                return fallback
-
-            def parse_one(d, sym):
-                try:
-                    price = float(d.get('close') or 0)
-                    pct   = float(d.get('percent_change') or 0)
-                    return {
-                        'symbol':            sym,
-                        'price':             round(price, 4),
-                        'marketCap':         0,    # TD /quote free tier no incluye market cap
-                        'pe':                None, # se obtiene de action=ratios
-                        'changesPercentage': round(pct, 4),
-                        'name':              d.get('name', sym),
-                        'exchange':          d.get('exchange', ''),
-                    }
-                except Exception:
-                    return {'symbol': sym, 'price': 0, 'marketCap': 0,
-                            'pe': None, 'changesPercentage': 0, 'name': sym}
-
-            result = []
-            if len(symbols) == 1:
-                result.append(parse_one(data, symbols[0]))
-            else:
+                resp = _make_session().get(
+                    'https://query1.finance.yahoo.com/v7/finance/quote',
+                    params={
+                        'symbols':   ','.join(symbols),
+                        'fields':    'regularMarketPrice,regularMarketPreviousClose,'
+                                     'marketCap,trailingPE,forwardPE,shortName,exchange',
+                        'formatted': 'false',
+                        'lang':      'en-US',
+                        'region':    'US',
+                    },
+                    timeout=15,
+                )
+                quotes = resp.json().get('quoteResponse', {}).get('result', [])
+                q_map  = {q.get('symbol', ''): q for q in quotes}
+                result = []
                 for sym in symbols:
-                    result.append(parse_one(data.get(sym, {}), sym))
-            return result
+                    q     = q_map.get(sym, {})
+                    price = float(q.get('regularMarketPrice') or 0)
+                    prev  = float(q.get('regularMarketPreviousClose') or price)
+                    pct   = round((price - prev) / prev * 100, 4) if prev else 0
+                    result.append({
+                        'symbol':            sym,
+                        'price':             price,
+                        'marketCap':         q.get('marketCap') or 0,
+                        'pe':                q.get('trailingPE') or q.get('forwardPE') or None,
+                        'changesPercentage': pct,
+                        'name':              q.get('shortName', sym),
+                        'exchange':          q.get('exchange', ''),
+                    })
+                return result
+            except Exception:
+                return [_fallback(sym) for sym in symbols]
 
         # ── action=ratios&symbol=AAPL ─────────────────────────────────────────
         elif action == 'ratios':

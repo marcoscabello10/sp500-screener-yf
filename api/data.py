@@ -214,52 +214,48 @@ class handler(BaseHTTPRequestHandler):
                         constituents.append({'symbol': sym, 'name': name, 'sector': sector})
             return constituents
 
-        # ── action=quote&symbols=AAPL,MSFT ───────────────────────────────────────
-        # Yahoo Finance batch endpoint: 1 sola request HTTP para todos los símbolos del lote
-        # Mismo dominio que .info (confirmado funcional desde Vercel). Sin Twelve Data.
+        # ── action=quote&symbols=AAPL,MSFT ─────────────────────────────────────
+        # ThreadPoolExecutor: 20 llamadas paralelas a yf.info (confirmado funcional desde Vercel)
+        # /v7/finance/quote batch requiere crumb de auth → no funciona sin yfinance
         elif action == 'quote':
+            from concurrent.futures import ThreadPoolExecutor, as_completed
             symbols_raw = params.get('symbols', [''])[0]
             symbols = [s.strip() for s in symbols_raw.split(',') if s.strip()]
             if not symbols:
                 return []
 
-            def _fallback(sym):
-                return {'symbol': sym, 'price': 0, 'marketCap': 0,
-                        'pe': None, 'changesPercentage': 0, 'name': sym}
-
-            try:
-                resp = _make_session().get(
-                    'https://query1.finance.yahoo.com/v7/finance/quote',
-                    params={
-                        'symbols':   ','.join(symbols),
-                        'fields':    'regularMarketPrice,regularMarketPreviousClose,'
-                                     'marketCap,trailingPE,forwardPE,shortName,exchange',
-                        'formatted': 'false',
-                        'lang':      'en-US',
-                        'region':    'US',
-                    },
-                    timeout=15,
-                )
-                quotes = resp.json().get('quoteResponse', {}).get('result', [])
-                q_map  = {q.get('symbol', ''): q for q in quotes}
-                result = []
-                for sym in symbols:
-                    q     = q_map.get(sym, {})
-                    price = float(q.get('regularMarketPrice') or 0)
-                    prev  = float(q.get('regularMarketPreviousClose') or price)
+            def fetch_one(sym):
+                try:
+                    info  = yf.Ticker(sym).info
+                    price = float(info.get('currentPrice') or info.get('regularMarketPrice') or 0)
+                    prev  = float(info.get('previousClose') or info.get('regularMarketPreviousClose') or price)
                     pct   = round((price - prev) / prev * 100, 4) if prev else 0
-                    result.append({
+                    return {
                         'symbol':            sym,
                         'price':             price,
-                        'marketCap':         q.get('marketCap') or 0,
-                        'pe':                q.get('trailingPE') or q.get('forwardPE') or None,
+                        'marketCap':         info.get('marketCap') or 0,
+                        'pe':                info.get('trailingPE') or info.get('forwardPE') or None,
                         'changesPercentage': pct,
-                        'name':              q.get('shortName', sym),
-                        'exchange':          q.get('exchange', ''),
-                    })
-                return result
-            except Exception:
-                return [_fallback(sym) for sym in symbols]
+                        'name':              info.get('shortName', sym),
+                        'exchange':          info.get('exchange', ''),
+                    }
+                except Exception:
+                    return {'symbol': sym, 'price': 0, 'marketCap': 0,
+                            'pe': None, 'changesPercentage': 0, 'name': sym}
+
+            results_map = {}
+            with ThreadPoolExecutor(max_workers=min(len(symbols), 20)) as ex:
+                futures = {ex.submit(fetch_one, sym): sym for sym in symbols}
+                for future in as_completed(futures, timeout=28):
+                    try:
+                        r = future.result()
+                        results_map[r['symbol']] = r
+                    except Exception:
+                        sym = futures[future]
+                        results_map[sym] = {'symbol': sym, 'price': 0, 'marketCap': 0,
+                                            'pe': None, 'changesPercentage': 0, 'name': sym}
+            return [results_map.get(sym, {'symbol': sym, 'price': 0, 'marketCap': 0,
+                    'pe': None, 'changesPercentage': 0, 'name': sym}) for sym in symbols]
 
         # ── action=ratios&symbol=AAPL ─────────────────────────────────────────
         elif action == 'ratios':

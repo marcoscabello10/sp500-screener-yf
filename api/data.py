@@ -215,47 +215,78 @@ class handler(BaseHTTPRequestHandler):
             return constituents
 
         # ── action=quote&symbols=AAPL,MSFT ─────────────────────────────────────
-        # ThreadPoolExecutor: 20 llamadas paralelas a yf.info (confirmado funcional desde Vercel)
-        # /v7/finance/quote batch requiere crumb de auth → no funciona sin yfinance
+        # Estrategia: yfinance fast_info obtiene el crumb → batch /v7/finance/quote para N símbolos
+        # fallback: fast_info individual si el crumb no está disponible
         elif action == 'quote':
-            from concurrent.futures import ThreadPoolExecutor, as_completed
             symbols_raw = params.get('symbols', [''])[0]
             symbols = [s.strip() for s in symbols_raw.split(',') if s.strip()]
             if not symbols:
                 return []
 
-            def fetch_one(sym):
-                try:
-                    info  = yf.Ticker(sym).info
-                    price = float(info.get('currentPrice') or info.get('regularMarketPrice') or 0)
-                    prev  = float(info.get('previousClose') or info.get('regularMarketPreviousClose') or price)
-                    pct   = round((price - prev) / prev * 100, 4) if prev else 0
-                    return {
-                        'symbol':            sym,
-                        'price':             price,
-                        'marketCap':         info.get('marketCap') or 0,
-                        'pe':                info.get('trailingPE') or info.get('forwardPE') or None,
-                        'changesPercentage': pct,
-                        'name':              info.get('shortName', sym),
-                        'exchange':          info.get('exchange', ''),
-                    }
-                except Exception:
-                    return {'symbol': sym, 'price': 0, 'marketCap': 0,
-                            'pe': None, 'changesPercentage': 0, 'name': sym}
+            def _fb(sym):
+                return {'symbol': sym, 'price': 0, 'marketCap': 0,
+                        'pe': None, 'changesPercentage': 0, 'name': sym}
 
-            results_map = {}
-            with ThreadPoolExecutor(max_workers=min(len(symbols), 20)) as ex:
-                futures = {ex.submit(fetch_one, sym): sym for sym in symbols}
-                for future in as_completed(futures, timeout=28):
-                    try:
-                        r = future.result()
-                        results_map[r['symbol']] = r
-                    except Exception:
-                        sym = futures[future]
-                        results_map[sym] = {'symbol': sym, 'price': 0, 'marketCap': 0,
-                                            'pe': None, 'changesPercentage': 0, 'name': sym}
-            return [results_map.get(sym, {'symbol': sym, 'price': 0, 'marketCap': 0,
-                    'pe': None, 'changesPercentage': 0, 'name': sym}) for sym in symbols]
+            def _parse(q, sym):
+                price = float(q.get('regularMarketPrice') or 0)
+                prev  = float(q.get('regularMarketPreviousClose') or price)
+                pct   = round((price - prev) / prev * 100, 4) if prev else 0
+                return {
+                    'symbol': sym, 'price': price,
+                    'marketCap': q.get('marketCap') or 0,
+                    'pe':       q.get('trailingPE') or q.get('forwardPE') or None,
+                    'changesPercentage': pct,
+                    'name':    q.get('shortName', sym),
+                    'exchange': q.get('exchange', ''),
+                }
+
+            # Paso 1 — obtener crumb via yfinance (una sola llamada fast_info)
+            crumb = None
+            try:
+                _ = yf.Ticker(symbols[0]).fast_info
+                # yfinance guarda el crumb en YfData como variable de clase
+                from yfinance.data import YfData
+                crumb = YfData._crumb
+            except Exception:
+                pass
+
+            # Paso 2 — batch con crumb: 1 request para todos los símbolos
+            if crumb:
+                try:
+                    sess = _make_session()
+                    resp = sess.get(
+                        'https://query2.finance.yahoo.com/v7/finance/quote',
+                        params={
+                            'symbols':   ','.join(symbols),
+                            'crumb':     crumb,
+                            'fields':    'regularMarketPrice,regularMarketPreviousClose,'
+                                         'marketCap,trailingPE,forwardPE,shortName,exchange',
+                            'formatted': 'false',
+                            'lang': 'en-US', 'region': 'US',
+                        },
+                        timeout=12,
+                    )
+                    quotes = resp.json().get('quoteResponse', {}).get('result', [])
+                    if quotes:
+                        q_map = {q.get('symbol', ''): q for q in quotes}
+                        return [_parse(q_map.get(s, {}), s) for s in symbols]
+                except Exception:
+                    pass
+
+            # Paso 3 — fallback: fast_info individual (más rápido que .info, sin PE)
+            result = []
+            for sym in symbols:
+                try:
+                    fi    = yf.Ticker(sym).fast_info
+                    price = float(getattr(fi, 'last_price', None) or 0)
+                    prev  = float(getattr(fi, 'previous_close', None) or price)
+                    mc    = int(getattr(fi, 'market_cap', None) or 0)
+                    pct   = round((price - prev) / prev * 100, 4) if prev else 0
+                    result.append({'symbol': sym, 'price': price, 'marketCap': mc,
+                                   'pe': None, 'changesPercentage': pct, 'name': sym})
+                except Exception:
+                    result.append(_fb(sym))
+            return result
 
         # ── action=ratios&symbol=AAPL ─────────────────────────────────────────
         elif action == 'ratios':

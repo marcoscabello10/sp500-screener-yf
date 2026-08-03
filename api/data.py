@@ -241,16 +241,18 @@ class handler(BaseHTTPRequestHandler):
                     'exchange': q.get('exchange', ''),
                 }
 
-            # Paso 1 — warmup con .info (CONFIRMADO funcional desde Vercel)
-            # Esto inicializa el singleton YfData y obtiene crumb + cookies de auth
+            # Paso 1 — warmup con session de browser (CONFIRMADO funcional en debug endpoint)
+            # session=_make_session() es la clave: yfinance usa nuestras browser headers
+            # y popula el singleton YfData con crumb + cookies de Yahoo
             crumb = None
             yf_sess = None
+            sess = _make_session()
             try:
-                _ = yf.Ticker(symbols[0]).info  # .info es el endpoint que sabemos que funciona
+                _ = yf.Ticker(symbols[0], session=sess).info  # session= es lo que hace funcionar en Vercel
                 from yfinance.data import YfData
-                _yfd = YfData()              # singleton — misma instancia que hizo el auth
-                crumb   = _yfd._crumb        # instancia, no clase — el bug anterior era YfData._crumb
-                yf_sess = _yfd._session      # sesión con cookies de auth
+                _yfd = YfData()          # singleton — misma instancia inicializada arriba
+                crumb   = _yfd._crumb   # crumb obtenido durante el .info con browser session
+                yf_sess = _yfd._session  # sesión del singleton (con cookies de Yahoo)
             except Exception:
                 pass
 
@@ -276,11 +278,11 @@ class handler(BaseHTTPRequestHandler):
                 except Exception:
                     pass
 
-            # Paso 3 — fallback: .info individual (lento pero funciona desde Vercel)
+            # Paso 3 — fallback: .info individual con session= (CONFIRMADO funcional en Vercel)
             result = []
             for sym in symbols:
                 try:
-                    info  = yf.Ticker(sym).info
+                    info  = yf.Ticker(sym, session=_make_session()).info
                     price = float(info.get('currentPrice') or info.get('regularMarketPrice') or 0)
                     prev  = float(info.get('previousClose') or info.get('regularMarketPreviousClose') or price)
                     pct   = round((price - prev) / prev * 100, 4) if prev else 0

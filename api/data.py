@@ -215,8 +215,9 @@ class handler(BaseHTTPRequestHandler):
             return constituents
 
         # ── action=quote&symbols=AAPL,MSFT ─────────────────────────────────────
-        # Estrategia: yfinance fast_info obtiene el crumb → batch /v7/finance/quote para N símbolos
-        # fallback: fast_info individual si el crumb no está disponible
+        # Estrategia: usar .info para warmup (confirmado funcional en Vercel) →
+        # extraer crumb del singleton YfData() → batch /v7/finance/quote con la
+        # misma sesión autenticada. Fallback: .info individual secuencial.
         elif action == 'quote':
             symbols_raw = params.get('symbols', [''])[0]
             symbols = [s.strip() for s in symbols_raw.split(',') if s.strip()]
@@ -240,21 +241,23 @@ class handler(BaseHTTPRequestHandler):
                     'exchange': q.get('exchange', ''),
                 }
 
-            # Paso 1 — obtener crumb via yfinance (una sola llamada fast_info)
+            # Paso 1 — warmup con .info (CONFIRMADO funcional desde Vercel)
+            # Esto inicializa el singleton YfData y obtiene crumb + cookies de auth
             crumb = None
+            yf_sess = None
             try:
-                _ = yf.Ticker(symbols[0]).fast_info
-                # yfinance guarda el crumb en YfData como variable de clase
+                _ = yf.Ticker(symbols[0]).info  # .info es el endpoint que sabemos que funciona
                 from yfinance.data import YfData
-                crumb = YfData._crumb
+                _yfd = YfData()              # singleton — misma instancia que hizo el auth
+                crumb   = _yfd._crumb        # instancia, no clase — el bug anterior era YfData._crumb
+                yf_sess = _yfd._session      # sesión con cookies de auth
             except Exception:
                 pass
 
-            # Paso 2 — batch con crumb: 1 request para todos los símbolos
-            if crumb:
+            # Paso 2 — batch: 1 sola request para todos los símbolos del lote
+            if crumb and yf_sess:
                 try:
-                    sess = _make_session()
-                    resp = sess.get(
+                    resp = yf_sess.get(
                         'https://query2.finance.yahoo.com/v7/finance/quote',
                         params={
                             'symbols':   ','.join(symbols),
@@ -273,17 +276,21 @@ class handler(BaseHTTPRequestHandler):
                 except Exception:
                     pass
 
-            # Paso 3 — fallback: fast_info individual (más rápido que .info, sin PE)
+            # Paso 3 — fallback: .info individual (lento pero funciona desde Vercel)
             result = []
             for sym in symbols:
                 try:
-                    fi    = yf.Ticker(sym).fast_info
-                    price = float(getattr(fi, 'last_price', None) or 0)
-                    prev  = float(getattr(fi, 'previous_close', None) or price)
-                    mc    = int(getattr(fi, 'market_cap', None) or 0)
+                    info  = yf.Ticker(sym).info
+                    price = float(info.get('currentPrice') or info.get('regularMarketPrice') or 0)
+                    prev  = float(info.get('previousClose') or info.get('regularMarketPreviousClose') or price)
                     pct   = round((price - prev) / prev * 100, 4) if prev else 0
-                    result.append({'symbol': sym, 'price': price, 'marketCap': mc,
-                                   'pe': None, 'changesPercentage': pct, 'name': sym})
+                    result.append({
+                        'symbol': sym, 'price': price,
+                        'marketCap': info.get('marketCap') or 0,
+                        'pe': info.get('trailingPE') or info.get('forwardPE') or None,
+                        'changesPercentage': pct,
+                        'name': info.get('shortName', sym),
+                    })
                 except Exception:
                     result.append(_fb(sym))
             return result

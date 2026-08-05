@@ -215,12 +215,14 @@ class handler(BaseHTTPRequestHandler):
             return constituents
 
         # ── action=quote&symbols=AAPL,MSFT ─────────────────────────────────────
-        # Estrategia: usar .info para warmup (confirmado funcional en Vercel) →
-        # extraer crumb del singleton YfData() → batch /v7/finance/quote con la
-        # misma sesión autenticada. Fallback: .info individual secuencial.
+        # Fuente: Twelve Data — no rate-limita por IP de cloud (a diferencia de Yahoo)
+        # Yahoo rate-limita cuando App.jsx hace 100+ requests seguidas desde Vercel
+        # TWELVEDATA_API_KEY ya está configurada en Vercel env vars
         elif action == 'quote':
+            import os
+            api_key     = os.environ.get('TWELVEDATA_API_KEY', '')
             symbols_raw = params.get('symbols', [''])[0]
-            symbols = [s.strip() for s in symbols_raw.split(',') if s.strip()]
+            symbols     = [s.strip() for s in symbols_raw.split(',') if s.strip()]
             if not symbols:
                 return []
 
@@ -228,74 +230,40 @@ class handler(BaseHTTPRequestHandler):
                 return {'symbol': sym, 'price': 0, 'marketCap': 0,
                         'pe': None, 'changesPercentage': 0, 'name': sym}
 
-            def _parse(q, sym):
-                price = float(q.get('regularMarketPrice') or 0)
-                prev  = float(q.get('regularMarketPreviousClose') or price)
-                pct   = round((price - prev) / prev * 100, 4) if prev else 0
-                return {
-                    'symbol': sym, 'price': price,
-                    'marketCap': q.get('marketCap') or 0,
-                    'pe':       q.get('trailingPE') or q.get('forwardPE') or None,
-                    'changesPercentage': pct,
-                    'name':    q.get('shortName', sym),
-                    'exchange': q.get('exchange', ''),
-                }
+            def _parse_td(d, sym):
+                try:
+                    price = float(d.get('close') or 0)
+                    pct   = float(d.get('percent_change') or 0)
+                    return {
+                        'symbol':            sym,
+                        'price':             round(price, 4),
+                        'marketCap':         0,     # TD /quote free tier no incluye marketCap
+                        'pe':                None,  # viene de action=ratios
+                        'changesPercentage': round(pct, 4),
+                        'name':              d.get('name', sym),
+                        'exchange':          d.get('exchange', ''),
+                    }
+                except Exception:
+                    return _fb(sym)
 
-            # Paso 1 — warmup con session de browser (CONFIRMADO funcional en debug endpoint)
-            # session=_make_session() es la clave: yfinance usa nuestras browser headers
-            # y popula el singleton YfData con crumb + cookies de Yahoo
-            crumb = None
-            yf_sess = None
-            sess = _make_session()
+            if not api_key:
+                return [_fb(sym) for sym in symbols]
+
             try:
-                _ = yf.Ticker(symbols[0], session=sess).info  # session= es lo que hace funcionar en Vercel
-                from yfinance.data import YfData
-                _yfd = YfData()          # singleton — misma instancia inicializada arriba
-                crumb   = _yfd._crumb   # crumb obtenido durante el .info con browser session
-                yf_sess = _yfd._session  # sesión del singleton (con cookies de Yahoo)
+                resp = _make_session().get(
+                    'https://api.twelvedata.com/quote',
+                    params={'symbol': ','.join(symbols), 'apikey': api_key},
+                    timeout=15,
+                )
+                data = resp.json()
+                # Respuesta single: {close:..., name:...}
+                # Respuesta multi:  {SYM: {close:..., name:...}, SYM2: {...}}
+                if len(symbols) == 1:
+                    return [_parse_td(data, symbols[0])]
+                else:
+                    return [_parse_td(data.get(sym, {}), sym) for sym in symbols]
             except Exception:
-                pass
-
-            # Paso 2 — batch: 1 sola request para todos los símbolos del lote
-            if crumb and yf_sess:
-                try:
-                    resp = yf_sess.get(
-                        'https://query2.finance.yahoo.com/v7/finance/quote',
-                        params={
-                            'symbols':   ','.join(symbols),
-                            'crumb':     crumb,
-                            'fields':    'regularMarketPrice,regularMarketPreviousClose,'
-                                         'marketCap,trailingPE,forwardPE,shortName,exchange',
-                            'formatted': 'false',
-                            'lang': 'en-US', 'region': 'US',
-                        },
-                        timeout=12,
-                    )
-                    quotes = resp.json().get('quoteResponse', {}).get('result', [])
-                    if quotes:
-                        q_map = {q.get('symbol', ''): q for q in quotes}
-                        return [_parse(q_map.get(s, {}), s) for s in symbols]
-                except Exception:
-                    pass
-
-            # Paso 3 — fallback: .info individual con session= (CONFIRMADO funcional en Vercel)
-            result = []
-            for sym in symbols:
-                try:
-                    info  = yf.Ticker(sym, session=_make_session()).info
-                    price = float(info.get('currentPrice') or info.get('regularMarketPrice') or 0)
-                    prev  = float(info.get('previousClose') or info.get('regularMarketPreviousClose') or price)
-                    pct   = round((price - prev) / prev * 100, 4) if prev else 0
-                    result.append({
-                        'symbol': sym, 'price': price,
-                        'marketCap': info.get('marketCap') or 0,
-                        'pe': info.get('trailingPE') or info.get('forwardPE') or None,
-                        'changesPercentage': pct,
-                        'name': info.get('shortName', sym),
-                    })
-                except Exception:
-                    result.append(_fb(sym))
-            return result
+                return [_fb(sym) for sym in symbols]
 
         # ── action=ratios&symbol=AAPL ─────────────────────────────────────────
         elif action == 'ratios':

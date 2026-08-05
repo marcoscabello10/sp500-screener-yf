@@ -248,14 +248,21 @@ function corrColor(r) {
 }
 
 // ── Small UI components ───────────────────────────────────────────────────────
-function ScoreBar({score}) {
+function ScoreBar({score, nUsed, nTotal}) {
   const c = score>=70?"#34d399":score>=45?"#fbbf24":"#f87171";
+  const incomplete = nTotal!=null && nUsed < nTotal;
   return (
     <div style={{display:"flex",alignItems:"center",gap:6}}>
       <div style={{flex:1,height:5,background:"#1e293b",borderRadius:3,overflow:"hidden"}}>
         <div style={{width:`${score}%`,height:"100%",background:c,borderRadius:3}}/>
       </div>
       <span style={{fontSize:11,fontWeight:700,color:c,minWidth:26,fontFamily:"monospace"}}>{score.toFixed(0)}</span>
+      {incomplete && (
+        <span title={`Score calculado con ${nUsed}/${nTotal} métricas — faltan datos para el resto`}
+          style={{fontSize:9,color:"#f97316",fontFamily:"monospace",background:"#1e1208",border:"1px solid #7c3a0a",borderRadius:3,padding:"1px 4px",cursor:"help"}}>
+          {nUsed}/{nTotal}
+        </span>
+      )}
     </div>
   );
 }
@@ -1051,12 +1058,12 @@ export default function App() {
           };
         });
         const scored=enriched.map(stk=>{
-          let score=0,tw=0;
+          let score=0,tw=0,nUsed=0;
           for (const m of FUND_METRICS) {
             const n=norm(enriched.map(s=>s[m.key]),stk[m.key],m.hb);
-            if (n!=null){score+=n*m.w;tw+=m.w;}
+            if (n!=null){score+=n*m.w;tw+=m.w;nUsed++;}
           }
-          return {...stk, score:tw>0?(score/tw)*100:0};
+          return {...stk, score:tw>0?(score/tw)*100:0, nUsed, nTotal:FUND_METRICS.length};
         });
         results[sector]=scored.sort((a,b)=>b.score-a.score).slice(0,5);
       }
@@ -1174,12 +1181,12 @@ export default function App() {
           netMargin:r.netProfitMarginTTM!=null?r.netProfitMarginTTM*100:null,
         }));
         const scored = enriched.map(stk=>{
-          let score=0, tw=0;
+          let score=0, tw=0, nUsed=0;
           for (const m of FUND_METRICS) {
             const n=norm(enriched.map(s=>s[m.key]),stk[m.key],m.hb);
-            if (n!=null){score+=n*m.w;tw+=m.w;}
+            if (n!=null){score+=n*m.w;tw+=m.w;nUsed++;}
           }
-          return {...stk, score:tw>0?(score/tw)*100:0};
+          return {...stk, score:tw>0?(score/tw)*100:0, nUsed, nTotal:FUND_METRICS.length};
         });
         // Client mode: show ALL tickers sorted by score (no top-5 cap)
         results[sector] = scored.sort((a,b)=>b.score-a.score);
@@ -2207,7 +2214,7 @@ export default function App() {
                             :<span style={{color:"#e2e8f0"}}>{stk[m.key].toFixed(1)}x</span>}
                       </td>
                     ))}
-                    {!isRisk&&<td style={TD}><ScoreBar score={stk.score}/></td>}
+                    {!isRisk&&<td style={TD}><ScoreBar score={stk.score} nUsed={stk.nUsed} nTotal={stk.nTotal}/></td>}
                     {isRisk&&<>
                       <td style={{...TD,textAlign:"right"}}><Stack cpV={stk.rcp?.annRet} lpV={stk.rlp?.annRet} cpL={cpL} lpL={lpL} render={v=><CN v={v} suf="%" d={1}/>}/></td>
                       <td style={{...TD,textAlign:"right"}}><Stack cpV={stk.rcp?.sVol} lpV={stk.rlp?.sVol} cpL={cpL} lpL={lpL} render={v=><span style={{fontFamily:"monospace",color:"#64748b"}}>{v!=null?`${v.toFixed(1)}%`:"—"}</span>}/></td>

@@ -320,7 +320,7 @@ class handler(BaseHTTPRequestHandler):
             sym = params.get('symbol', [''])[0].strip()
             if not sym:
                 return [{}]
-            info = yf.Ticker(sym).info
+            info = yf.Ticker(sym, session=_make_session()).info
             return [{
                 'symbol':                       sym,
                 'peRatioTTM':                   info.get('trailingPE'),
@@ -342,7 +342,7 @@ class handler(BaseHTTPRequestHandler):
             result = []
             for sym in symbols:
                 try:
-                    info = yf.Ticker(sym).info
+                    info = yf.Ticker(sym, session=_make_session()).info
                     result.append({
                         'symbol':      sym,
                         'sector':      info.get('sector', 'Unknown'),
@@ -383,7 +383,18 @@ class handler(BaseHTTPRequestHandler):
                 'format':     'JSON',
             }
             resp = _make_session().get(url, params=req_params, timeout=25)
-            data = resp.json()
+            try:
+                data = resp.json()
+            except Exception:
+                return {'error': f'TD respuesta no-JSON, status {resp.status_code}: {resp.text[:200]}'}
+
+            # TD devuelve error como {"code": 429/401/..., "message": "..."} —
+            # detectarlo explícitamente en vez de dejar que parse_td silencie todo a []
+            if isinstance(data, dict) and 'code' in data and 'status' in data:
+                err = f"TD error {data.get('code')}: {data.get('message')}"
+                if multi:
+                    return {sym: {'_error': err} for sym in symbols}
+                return {'_error': err}
 
             def parse_td(values):
                 result = []
@@ -406,10 +417,16 @@ class handler(BaseHTTPRequestHandler):
 
             if multi:
                 # Respuesta multi: {"AAPL": {"values": [...]}, "MSFT": {"values": [...]}}
-                return {
-                    sym: parse_td((data.get(sym) or {}).get('values', []))
-                    for sym in symbols
-                }
+                # Un símbolo individual puede fallar aunque el resto funcione:
+                # {"AAPL": {"code": 400, "message": "...", "status": "error"}}
+                result = {}
+                for sym in symbols:
+                    entry = data.get(sym) or {}
+                    if isinstance(entry, dict) and entry.get('status') == 'error':
+                        result[sym] = {'_error': f"TD {entry.get('code')}: {entry.get('message')}"}
+                    else:
+                        result[sym] = parse_td(entry.get('values', []))
+                return result
             else:
                 # Respuesta single: {"values": [...], "meta": {...}}
                 return parse_td(data.get('values', []))

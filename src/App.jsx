@@ -975,12 +975,16 @@ export default function App() {
 
       const allSyms = constituents.map(c=>c.symbol).filter(Boolean);
       const quotes  = {};
-      const qc = chunk(allSyms, 20);
+      const qc = chunk(allSyms, 5);
       for (let i=0; i<qc.length; i++) {
         setLp({step:`Cotizaciones lote ${i+1}/${qc.length}...`,pct:6+(i/qc.length)*20,phase:1});
-        const r=await fetch(`${BASE}?action=quote&symbols=${qc[i].join(",")}`);
-        const d=await r.json();
-        if (Array.isArray(d)) d.forEach(q=>{quotes[q.symbol]=q;});
+        try {
+          const r=await fetch(`${BASE}?action=quote&symbols=${qc[i].join(",")}`);
+          if (r.ok) {
+            const d=await r.json();
+            if (Array.isArray(d)) d.forEach(q=>{quotes[q.symbol]=q;});
+          }
+        } catch(e) { /* batch falló — continuar con el siguiente */ }
         await delay(200);
       }
 

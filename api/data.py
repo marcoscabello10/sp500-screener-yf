@@ -256,6 +256,10 @@ class handler(BaseHTTPRequestHandler):
                     timeout=15,
                 )
                 data = resp.json()
+                # Detectar error de TD (rate limit 429, key inválida 401, etc.)
+                # El error viene como {"code": 429, "message": "Too many requests"}
+                if isinstance(data, dict) and 'code' in data and not any(s in data for s in symbols):
+                    return [_fb(sym) for sym in symbols]
                 # Respuesta single: {close:..., name:...}
                 # Respuesta multi:  {SYM: {close:..., name:...}, SYM2: {...}}
                 if len(symbols) == 1:

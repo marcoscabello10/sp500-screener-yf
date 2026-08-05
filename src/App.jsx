@@ -975,7 +975,7 @@ export default function App() {
 
       const allSyms = constituents.map(c=>c.symbol).filter(Boolean);
       const quotes  = {};
-      const qc = chunk(allSyms, 20);
+      const qc = chunk(allSyms, 50);
       for (let i=0; i<qc.length; i++) {
         setLp({step:`Cotizaciones lote ${i+1}/${qc.length}...`,pct:6+(i/qc.length)*20,phase:1});
         try {
@@ -985,7 +985,7 @@ export default function App() {
             if (Array.isArray(d)) d.forEach(q=>{quotes[q.symbol]=q;});
           }
         } catch(e) { /* batch falló — continuar con el siguiente */ }
-        await delay(1500);
+        await delay(8000);
       }
 
       setLp({step:"Benchmark SPY...",pct:27,phase:1});

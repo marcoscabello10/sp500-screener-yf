@@ -1006,6 +1006,8 @@ export default function App() {
           .sort((a,b)=>(b.q.marketCap||0)-(a.q.marketCap||0)||(a.idx-b.idx))
           .slice(0,12);
       }
+
+      const allC = Object.values(cands).flat();
       const ratios={};
       let done=0;
       for (const batch of chunk(allC, 5)) {

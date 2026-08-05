@@ -219,10 +219,16 @@ class handler(BaseHTTPRequestHandler):
         # Yahoo rate-limita cuando App.jsx hace 100+ requests seguidas desde Vercel
         # TWELVEDATA_API_KEY ya está configurada en Vercel env vars
         elif action == 'quote':
-            import os
-            api_key     = os.environ.get('TWELVEDATA_API_KEY', '')
+            # Estrategia: TODO dentro de UNA sola invocación de Vercel para minimizar
+            # cuántas veces golpeamos a Yahoo. 1 warm-up (obtiene crumb+session) →
+            # N sub-batches de 100 símbolos a Yahoo (misma sesión) → fallback acotado
+            # por tiempo para los que falten. Sin Twelve Data — sin riesgo de costo.
+            import time as _time
+            t0 = _time.time()
+            BUDGET = 26.0  # segundos — dejamos margen bajo los 30s de Vercel
+
             symbols_raw = params.get('symbols', [''])[0]
-            symbols     = [s.strip() for s in symbols_raw.split(',') if s.strip()]
+            symbols = [s.strip() for s in symbols_raw.split(',') if s.strip()]
             if not symbols:
                 return []
 
@@ -230,44 +236,84 @@ class handler(BaseHTTPRequestHandler):
                 return {'symbol': sym, 'price': 0, 'marketCap': 0,
                         'pe': None, 'changesPercentage': 0, 'name': sym}
 
-            def _parse_td(d, sym):
+            def _parse_yh(q, sym):
+                price = float(q.get('regularMarketPrice') or 0)
+                prev  = float(q.get('regularMarketPreviousClose') or price)
+                pct   = round((price - prev) / prev * 100, 4) if prev else 0
+                return {
+                    'symbol': sym, 'price': price,
+                    'marketCap': q.get('marketCap') or 0,
+                    'pe': q.get('trailingPE') or q.get('forwardPE') or None,
+                    'changesPercentage': pct,
+                    'name': q.get('shortName', sym),
+                    'exchange': q.get('exchange', ''),
+                }
+
+            results_map = {}
+
+            # Paso 1 — warm-up ÚNICO: .info confirmado funcional desde Vercel con
+            # session= (browser headers). Inicializa el singleton YfData con crumb.
+            crumb, yf_sess = None, None
+            try:
+                _ = yf.Ticker(symbols[0], session=_make_session()).info
+                from yfinance.data import YfData
+                _yfd    = YfData()          # singleton — misma instancia
+                crumb   = _yfd._crumb       # atributo de INSTANCIA (no de clase)
+                yf_sess = _yfd._session
+            except Exception:
+                pass
+
+            # Paso 2 — sub-batches de 100 símbolos a Yahoo, TODOS con el mismo
+            # crumb+session, dentro de esta misma invocación (no reinicia auth)
+            if crumb and yf_sess:
+                CH = 100
+                for i in range(0, len(symbols), CH):
+                    if _time.time() - t0 > BUDGET:
+                        break
+                    sub = symbols[i:i+CH]
+                    try:
+                        resp = yf_sess.get(
+                            'https://query2.finance.yahoo.com/v7/finance/quote',
+                            params={
+                                'symbols':   ','.join(sub),
+                                'crumb':     crumb,
+                                'fields':    'regularMarketPrice,regularMarketPreviousClose,'
+                                             'marketCap,trailingPE,forwardPE,shortName,exchange',
+                                'formatted': 'false',
+                                'lang': 'en-US', 'region': 'US',
+                            },
+                            timeout=10,
+                        )
+                        quotes = resp.json().get('quoteResponse', {}).get('result', [])
+                        for q in quotes:
+                            s = q.get('symbol', '')
+                            if s:
+                                results_map[s] = _parse_yh(q, s)
+                    except Exception:
+                        pass  # este sub-batch falló, seguimos con el resto
+
+            # Paso 3 — fallback acotado por tiempo: .info individual solo para lo
+            # que falte, hasta agotar el presupuesto de tiempo restante
+            missing = [s for s in symbols if s not in results_map]
+            for sym in missing:
+                if _time.time() - t0 > BUDGET:
+                    break
                 try:
-                    price = float(d.get('close') or 0)
-                    pct   = float(d.get('percent_change') or 0)
-                    return {
-                        'symbol':            sym,
-                        'price':             round(price, 4),
-                        'marketCap':         0,     # TD /quote free tier no incluye marketCap
-                        'pe':                None,  # viene de action=ratios
-                        'changesPercentage': round(pct, 4),
-                        'name':              d.get('name', sym),
-                        'exchange':          d.get('exchange', ''),
+                    info  = yf.Ticker(sym, session=_make_session()).info
+                    price = float(info.get('currentPrice') or info.get('regularMarketPrice') or 0)
+                    prev  = float(info.get('previousClose') or info.get('regularMarketPreviousClose') or price)
+                    pct   = round((price - prev) / prev * 100, 4) if prev else 0
+                    results_map[sym] = {
+                        'symbol': sym, 'price': price,
+                        'marketCap': info.get('marketCap') or 0,
+                        'pe': info.get('trailingPE') or info.get('forwardPE') or None,
+                        'changesPercentage': pct,
+                        'name': info.get('shortName', sym),
                     }
                 except Exception:
-                    return _fb(sym)
+                    pass
 
-            if not api_key:
-                return [_fb(sym) for sym in symbols]
-
-            try:
-                resp = _make_session().get(
-                    'https://api.twelvedata.com/quote',
-                    params={'symbol': ','.join(symbols), 'apikey': api_key},
-                    timeout=15,
-                )
-                data = resp.json()
-                # Detectar error de TD (rate limit 429, key inválida 401, etc.)
-                # El error viene como {"code": 429, "message": "Too many requests"}
-                if isinstance(data, dict) and 'code' in data and not any(s in data for s in symbols):
-                    return [_fb(sym) for sym in symbols]
-                # Respuesta single: {close:..., name:...}
-                # Respuesta multi:  {SYM: {close:..., name:...}, SYM2: {...}}
-                if len(symbols) == 1:
-                    return [_parse_td(data, symbols[0])]
-                else:
-                    return [_parse_td(data.get(sym, {}), sym) for sym in symbols]
-            except Exception:
-                return [_fb(sym) for sym in symbols]
+            return [results_map.get(sym, _fb(sym)) for sym in symbols]
 
         # ── action=ratios&symbol=AAPL ─────────────────────────────────────────
         elif action == 'ratios':

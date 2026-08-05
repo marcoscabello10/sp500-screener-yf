@@ -975,7 +975,10 @@ export default function App() {
 
       const allSyms = constituents.map(c=>c.symbol).filter(Boolean);
       const quotes  = {};
-      const qc = chunk(allSyms, 50);
+      // Pocas requests GRANDES (no muchas chicas): cada request al backend hace
+      // su propio warm-up + sub-batches internos a Yahoo en una sola invocación,
+      // lo que evita repetir el "baile" de autenticación decenas de veces.
+      const qc = chunk(allSyms, 260);
       for (let i=0; i<qc.length; i++) {
         setLp({step:`Cotizaciones lote ${i+1}/${qc.length}...`,pct:6+(i/qc.length)*20,phase:1});
         try {
@@ -985,7 +988,7 @@ export default function App() {
             if (Array.isArray(d)) d.forEach(q=>{quotes[q.symbol]=q;});
           }
         } catch(e) { /* batch falló — continuar con el siguiente */ }
-        await delay(8000);
+        await delay(500);
       }
 
       setLp({step:"Benchmark SPY...",pct:27,phase:1});

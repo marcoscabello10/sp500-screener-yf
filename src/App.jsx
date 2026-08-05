@@ -972,6 +972,10 @@ export default function App() {
         if (!bySector[c.sector]) bySector[c.sector]=[];
         bySector[c.sector].push(c.symbol);
       }
+      console.log('[F1-DEBUG] constituents:', constituents.length,
+        '| bySector sectors:', Object.keys(bySector).length,
+        '| sample sector:', Object.keys(bySector)[0],
+        '| first symbols:', Object.values(bySector)[0]?.slice(0,3));
 
       const allSyms = constituents.map(c=>c.symbol).filter(Boolean);
       const quotes  = {};
@@ -987,6 +991,10 @@ export default function App() {
         } catch(e) { /* batch falló — continuar con el siguiente */ }
         await delay(200);
       }
+      const priceCount = Object.values(quotes).filter(q=>q?.price>0).length;
+      console.log('[F1-DEBUG] quotes cargadas:', Object.keys(quotes).length,
+        '| con price>0:', priceCount,
+        '| muestra MMM:', quotes['MMM']?.price, quotes['MMM']?.marketCap);
 
       setLp({step:"Benchmark SPY...",pct:27,phase:1});
       const spyRes = await fetch(`${BASE}?action=quote&symbols=SPY`);
@@ -1006,8 +1014,9 @@ export default function App() {
           .sort((a,b)=>(b.q.marketCap||0)-(a.q.marketCap||0)||(a.idx-b.idx))
           .slice(0,12);
       }
-
-      const allC = Object.values(cands).flat();
+      const totalCands = Object.values(cands).flat().length;
+      console.log('[F1-DEBUG] cands total:', totalCands,
+        '| sectores con stocks:', Object.entries(cands).filter(([,v])=>v.length>0).map(([k,v])=>`${k}:${v.length}`).join(', '));
       const ratios={};
       let done=0;
       for (const batch of chunk(allC, 5)) {

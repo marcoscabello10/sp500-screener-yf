@@ -1245,6 +1245,7 @@ export default function App() {
         for (const batch of chunk(allWithSpy, 5)) {
           try {
             const r = await fetch(`${BASE}?action=history&symbol=${batch.join(',')}&from=${from}`);
+            if (!r.ok) throw new Error(`HTTP ${r.status}`);
             const d = await r.json();
             if (d && d._error) {
               batch.forEach(s => { histErrors[s] = d._error; });
@@ -1265,7 +1266,9 @@ export default function App() {
               if (batch[0] === 'SPY') spyPrices = arr.slice().reverse();
               else hist[batch[0]] = arr.slice().reverse();
             }
-          } catch {}
+          } catch (e) {
+            batch.forEach(s => { histErrors[s] = `Error de red: ${e.message}`; });
+          }
           done += batch.length;
           setLp({step:`Histórico: ${done}/${total} activos...`,pct:4+(done/total)*80,phase:2});
           await delay(8000);
@@ -1324,6 +1327,7 @@ export default function App() {
         for (const batch of chunk(allWithSpy, 5)) {
           try {
             const r = await fetch(`${BASE}?action=history&symbol=${batch.join(',')}&from=${from}`);
+            if (!r.ok) throw new Error(`HTTP ${r.status}`);
             const d = await r.json();
             if (d && d._error) {
               // Error global del batch (ej. rate-limit de TD) — aplica a todos los símbolos del lote
@@ -1343,7 +1347,9 @@ export default function App() {
               if (batch[0] === 'SPY') spyPrices = arr.slice().reverse();
               else hist[batch[0]] = arr.slice().reverse();
             }
-          } catch {}
+          } catch (e) {
+            batch.forEach(s => { histErrors[s] = `Error de red: ${e.message}`; });
+          }
           done += batch.length;
           setLp({step:`Histórico: ${done}/${total} activos...`,pct:5+(done/total)*70,phase:3});
           await delay(8000);
@@ -1416,6 +1422,7 @@ export default function App() {
         for (const batch of chunk(allWithSpy, 5)) {
           try {
             const r = await fetch(`${BASE}?action=history&symbol=${batch.join(',')}&from=${from}`);
+            if (!r.ok) throw new Error(`HTTP ${r.status}`);
             const d = await r.json();
             if (d && d._error) {
               // Error global del batch (ej. rate-limit de TD) — aplica a todos los símbolos del lote
@@ -1435,7 +1442,9 @@ export default function App() {
               if (batch[0] === 'SPY') spyPrices = arr.slice().reverse();
               else hist[batch[0]] = arr.slice().reverse();
             }
-          } catch {}
+          } catch (e) {
+            batch.forEach(s => { histErrors[s] = `Error de red: ${e.message}`; });
+          }
           done += batch.length;
           setLp({step:`Histórico: ${done}/${total} activos...`,pct:4+(done/total)*50,phase:4});
           await delay(8000);

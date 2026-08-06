@@ -318,6 +318,28 @@ function CacheBadge({info, onRefresh}) {
     </div>
   );
 }
+function SnapshotBadge({meta}) {
+  if (!meta || !meta.generatedAt) return null;
+  const genDate = new Date(meta.generatedAt);
+  const ageHours = (Date.now() - genDate.getTime()) / 3.6e6;
+  const stale = ageHours > 48; // más de 2 días sin correr el bot local
+  const label = ageHours < 1 ? "hace menos de 1h"
+    : ageHours < 24 ? `hace ${Math.round(ageHours)}h`
+    : `hace ${Math.round(ageHours/24)}d`;
+  return (
+    <div title={`Snapshot generado por local_bot/fetch_fundamentals.py el ${genDate.toLocaleString()}`}
+      style={{display:"flex",alignItems:"center",gap:8,background:stale?"#1e1208":"#0c1a0c",border:`1px solid ${stale?"#f97316":"#166534"}`,borderRadius:8,padding:"6px 12px",cursor:"help"}}>
+      <div>
+        <div style={{fontSize:9,color:stale?"#fb923c":"#4ade80",fontFamily:"monospace",fontWeight:700}}>
+          {stale?"⚠️ Snapshot desactualizado":"🖥️ Snapshot del bot local"}
+        </div>
+        <div style={{fontSize:9,color:"#64748b",fontFamily:"monospace"}}>
+          Generado {label} · {meta.count} empresas{meta.failedCount>0?` · ${meta.failedCount} fallaron`:""}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 // ── Screens ───────────────────────────────────────────────────────────────────
 function StartScreen({onStart, onStartClient, cacheInfo, onLoadCache, clientTickers, setClientTickers, clientName, setClientName, cedearFilter, setCedearFilter}) {
@@ -905,6 +927,7 @@ export default function App() {
   const [excludedSyms, setExcludedSyms] = useState(new Set());
   const [reoptData,    setReoptData]    = useState(null);
   const [spy,          setSpy]          = useState(null);
+  const [snapshotMeta, setSnapshotMeta] = useState(null);
   const [spyRisk,      setSpyRisk]      = useState(null);
   const [cacheInfo,    setCacheInfo]    = useState(null);
   const [activeSec,    setActiveSec]    = useState(null);
@@ -951,93 +974,55 @@ export default function App() {
   }, []);
 
   // ── Phase 1: Fundamental screening ──────────────────────────────────────────
+  // Lee del snapshot estático generado por local_bot/fetch_fundamentals.py
+  // (corrido desde una PC, no desde Vercel) — evita el bloqueo de IP que
+  // Yahoo Finance aplica a proveedores cloud. Ver local_bot/README.md.
   const runP1 = useCallback(async () => {
     setPhase("loading"); setError(null);
     try {
-      setLp({step:"Verificando conexión con Yahoo Finance...",pct:2,phase:1});
+      setLp({step:"Cargando snapshot de fundamentales...",pct:5,phase:1});
       let res;
-      try { res = await fetch(`${BASE}?action=sp500`); }
+      try { res = await fetch(`/data/sp500_fundamentals.json?t=${Date.now()}`); }
       catch(e) { throw new Error(`Error de red: ${e.message}`); }
-      if (!res.ok) throw new Error(`HTTP ${res.status} — error en el servidor`);
-
-      const raw = await res.json();
-      if (raw && !Array.isArray(raw)) {
-        const msg = raw["Error Message"]||raw.message||raw.error||JSON.stringify(raw);
-        throw new Error(`Error: ${msg}`);
-      }
-      const constituents = raw;
-      if (!constituents.length)
-        throw new Error("Sin datos del S&P 500. Verificá tu conexión a internet.");
-
-      setLp({step:"Componentes del S&P 500 recibidos...",pct:5,phase:1});
-      await delay(200);
-
-      const cmap={}, bySector={};
-      for (const c of constituents) {
-        cmap[c.symbol]=c;
-        if (!c.sector) continue;
-        if (!bySector[c.sector]) bySector[c.sector]=[];
-        bySector[c.sector].push(c.symbol);
+      if (!res.ok) {
+        throw new Error(
+          "No se encontró el snapshot de datos (public/data/sp500_fundamentals.json). " +
+          "Corré local_bot/fetch_fundamentals.py desde tu PC y pusheá el archivo generado."
+        );
       }
 
-      const allSyms = constituents.map(c=>c.symbol).filter(Boolean);
-      const quotes  = {};
-      // Pocas requests GRANDES (no muchas chicas): cada request al backend hace
-      // su propio warm-up + sub-batches internos a Yahoo en una sola invocación,
-      // lo que evita repetir el "baile" de autenticación decenas de veces.
-      const qc = chunk(allSyms, 260);
-      for (let i=0; i<qc.length; i++) {
-        setLp({step:`Cotizaciones lote ${i+1}/${qc.length}...`,pct:6+(i/qc.length)*20,phase:1});
-        try {
-          const r=await fetch(`${BASE}?action=quote&symbols=${qc[i].join(",")}`);
-          if (r.ok) {
-            const d=await r.json();
-            if (Array.isArray(d)) d.forEach(q=>{quotes[q.symbol]=q;});
-          }
-        } catch(e) { /* batch falló — continuar con el siguiente */ }
-        await delay(500);
-      }
+      const snap = await res.json();
+      const stocksSnap = Array.isArray(snap.stocks) ? snap.stocks : [];
+      if (!stocksSnap.length)
+        throw new Error("El snapshot de datos está vacío. Volvé a correr local_bot/fetch_fundamentals.py.");
 
-      setLp({step:"Benchmark SPY...",pct:27,phase:1});
-      const spyRes = await fetch(`${BASE}?action=quote&symbols=SPY`);
-      const spyD   = await spyRes.json();
-      const spyObj = Array.isArray(spyD)?spyD[0]:spyD;
+      setSnapshotMeta({generatedAt: snap.generated_at, count: snap.count, failedCount: snap.failed_count||0});
+      await delay(150);
+
+      const spyObj = stocksSnap.find(s => s.symbol === "SPY") || null;
       setSpy(spyObj);
-      await delay(200);
 
-      const symIndexMap = {};
-      allSyms.forEach((s,i) => { symIndexMap[s] = i; });
-      const cands={};
+      const bySector = {};
+      for (const s of stocksSnap) {
+        if (s.symbol === "SPY" || !s.sector) continue;
+        if (!bySector[s.sector]) bySector[s.sector] = [];
+        bySector[s.sector].push(s);
+      }
+
+      setLp({step:"Preseleccionando candidatos por sector...",pct:30,phase:1});
+      await delay(100);
+
+      const cands = {};
       for (const sector of Object.keys(bySector)) {
-        cands[sector]=(bySector[sector]||[])
-          .filter(sym => cedearFilter === "all" || CEDEAR_TICKERS.has(sym))
-          .map(sym=>({sym,q:quotes[sym],c:cmap[sym],idx:symIndexMap[sym]||9999}))
-          .filter(s=>s.q&&(s.q.marketCap>1e8||(!s.q.marketCap&&s.q.price>0)))
-          .sort((a,b)=>(b.q.marketCap||0)-(a.q.marketCap||0)||(a.idx-b.idx))
-          .slice(0,12);
+        cands[sector] = bySector[sector]
+          .filter(s => cedearFilter === "all" || CEDEAR_TICKERS.has(s.symbol))
+          .filter(s => s.marketCap > 1e8 || (!s.marketCap && s.price > 0))
+          .sort((a,b) => (b.marketCap||0) - (a.marketCap||0))
+          .slice(0, 12);
       }
 
-      const allC = Object.values(cands).flat();
-      const ratios={};
-      // Pocas requests GRANDES: cada una hace 1 sola autenticación con Yahoo
-      // y loopea internamente los ~35 símbolos del lote (mismo patrón que quote).
-      // Antes: 132 requests de 1 símbolo c/u → Yahoo bloqueaba la mayoría.
-      const rBatches = chunk(allC.map(c=>c.sym), 35);
-      let rDone=0;
-      for (const symsBatch of rBatches) {
-        setLp({step:`Ratios fundamentales lote ${rDone+1}/${rBatches.length}...`,pct:29+(rDone/rBatches.length)*54,phase:1});
-        try {
-          const r=await fetch(`${BASE}?action=ratios&symbol=${symsBatch.join(",")}`);
-          if (r.ok) {
-            const d=await r.json();
-            if (Array.isArray(d)) d.forEach(x=>{ if (x&&x.symbol) ratios[x.symbol]=x; });
-          }
-        } catch(e) { /* batch falló — continuar con el siguiente */ }
-        rDone++;
-        await delay(500);
-      }
-
-      setLp({step:"Calculando scores...",pct:85,phase:1});
+      setLp({step:"Calculando scores...",pct:70,phase:1});
+      await delay(100);
       const norm=(vals,val,hb)=>{
         const cl=vals.filter(v=>v!=null&&isFinite(v));
         if (cl.length<2||val==null||!isFinite(val)) return null;
@@ -1048,22 +1033,7 @@ export default function App() {
 
       const results={};
       for (const [sector,cs] of Object.entries(cands)) {
-        const enriched=cs.map(({sym,q,c})=>{
-          const r=ratios[sym]||{};
-          return {
-            symbol:sym, name:c?.name||q?.name||sym, sector,
-            price:q?.price, changePercent:q?.changesPercentage, marketCap:q?.marketCap,
-            pe:       (q?.pe>0&&q?.pe<600)?q.pe:(r.peRatioTTM>0&&r.peRatioTTM<600)?r.peRatioTTM:null,
-            pb:       r.priceToBookRatioTTM>0&&r.priceToBookRatioTTM<150?r.priceToBookRatioTTM:null,
-            roe:      r.returnOnEquityTTM!=null?r.returnOnEquityTTM*100:null,
-            de:       r.debtEquityRatioTTM!=null?Math.abs(r.debtEquityRatioTTM):null,
-            evEbitda: r.enterpriseValueMultipleTTM>0&&r.enterpriseValueMultipleTTM<250?r.enterpriseValueMultipleTTM:null,
-            netMargin:r.netProfitMarginTTM!=null?r.netProfitMarginTTM*100:null,
-            roa:      r.returnOnAssetsTTM!=null?r.returnOnAssetsTTM*100:null,
-            revGrowth:r.revenueGrowthTTM!=null?r.revenueGrowthTTM*100:null,
-            priceToSales: r.priceToSalesTTM>0&&r.priceToSalesTTM<100?r.priceToSalesTTM:null,
-          };
-        });
+        const enriched = cs.map(s=>({...s, changePercent:s.changePercent}));
         const scored=enriched.map(stk=>{
           let score=0,tw=0,nUsed=0;
           for (const m of FUND_METRICS) {
@@ -1222,6 +1192,9 @@ export default function App() {
     const from=`${new Date().getFullYear()-yBack}-01-01`;
     try {
       const allSyms=[...new Set(Object.values(fundData).flat().map(s=>s.symbol))];
+      if (allSyms.length === 0) {
+        throw new Error('No hay activos de la Fase 1 para analizar. F1 no devolvió resultados (probablemente el proxy de cotizaciones no respondió) — volvé a correr F1 primero y confirmá que muestre stocks antes de pasar a Fase 2.');
+      }
       let done=0; const total=allSyms.length+1;
       let hist={}, spyPrices;
 
@@ -1278,7 +1251,7 @@ export default function App() {
       }
       const totalValid = Object.values(rr).flat().filter(s=>s.rcp!=null).length;
       if (totalValid === 0) {
-        throw new Error('No se pudo descargar histórico de precios para ningún activo. El proxy de datos (yfinance) no está devolviendo datos — revisá ?action=debug.');
+        throw new Error(`No se pudo descargar histórico de precios para ninguno de los ${allSyms.length} activos de F1. El proxy de datos (Twelve Data) no está devolviendo datos — revisá ?action=debug&symbol=SPY para ver el error real.`);
       }
       setRiskData(rr);
       setTab("risk");
@@ -1623,6 +1596,7 @@ export default function App() {
         <div style={{display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
           {cacheInfo&&doneN>=1&&(
             <CacheBadge info={cacheInfo} onRefresh={forceRefresh}/>
+            <SnapshotBadge meta={snapshotMeta}/>
           )}
           {spy&&(
             <div style={{textAlign:"right"}}>

@@ -26,6 +26,11 @@ class handler(BaseHTTPRequestHandler):
         self.send_header('Content-Type', 'application/json')
         self.send_header('Access-Control-Allow-Origin', '*')
         self.send_header('Access-Control-Allow-Methods', 'GET, OPTIONS')
+        # CRÍTICO: sin esto, Vercel/CDN/navegador puede cachear respuestas de
+        # datos financieros dinámicos y servir precios/ratios viejos como si
+        # fueran frescos — causó horas de diagnóstico confuso hoy.
+        self.send_header('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0')
+        self.send_header('Pragma', 'no-cache')
         self.end_headers()
         params = parse_qs(urlparse(self.path).query)
         action = params.get('action', [''])[0]

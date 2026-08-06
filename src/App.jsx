@@ -1229,7 +1229,7 @@ export default function App() {
         throw new Error('No hay activos de la Fase 1 para analizar. F1 no devolvió resultados (probablemente el proxy de cotizaciones no respondió) — volvé a correr F1 primero y confirmá que muestre stocks antes de pasar a Fase 2.');
       }
       let done=0; const total=allSyms.length+1;
-      let hist={}, spyPrices;
+      let hist={}, spyPrices; const histErrors={};
 
       // ── Caché de histórico compartido (7 días) ──
       const cached = histCacheLoad(from);
@@ -1246,9 +1246,15 @@ export default function App() {
           try {
             const r = await fetch(`${BASE}?action=history&symbol=${batch.join(',')}&from=${from}`);
             const d = await r.json();
-            if (d && typeof d === 'object' && !Array.isArray(d)) {
+            if (d && d._error) {
+              batch.forEach(s => { histErrors[s] = d._error; });
+            } else if (d && typeof d === 'object' && !Array.isArray(d)) {
               // Multi-símbolo → dict { SYM: [...] }
               for (const [sym, prices] of Object.entries(d)) {
+                if (prices && !Array.isArray(prices) && prices._error) {
+                  histErrors[sym] = prices._error;
+                  continue;
+                }
                 const arr = Array.isArray(prices) ? prices : [];
                 if (sym === 'SPY') spyPrices = arr.slice().reverse();
                 else hist[sym] = arr.slice().reverse();
@@ -1303,7 +1309,7 @@ export default function App() {
     const allSyms=allStocks.map(s=>s.symbol);
     try {
       let done=0; const total=allSyms.length+1;
-      let hist={}, spyPrices;
+      let hist={}, spyPrices; const histErrors={};
 
       // ── Caché de histórico compartido (7 días) ──
       const cached = histCacheLoad(from);
@@ -1319,8 +1325,15 @@ export default function App() {
           try {
             const r = await fetch(`${BASE}?action=history&symbol=${batch.join(',')}&from=${from}`);
             const d = await r.json();
-            if (d && typeof d === 'object' && !Array.isArray(d)) {
+            if (d && d._error) {
+              // Error global del batch (ej. rate-limit de TD) — aplica a todos los símbolos del lote
+              batch.forEach(s => { histErrors[s] = d._error; });
+            } else if (d && typeof d === 'object' && !Array.isArray(d)) {
               for (const [sym, prices] of Object.entries(d)) {
+                if (prices && !Array.isArray(prices) && prices._error) {
+                  histErrors[sym] = prices._error;
+                  continue;
+                }
                 const arr = Array.isArray(prices) ? prices : [];
                 if (sym === 'SPY') spyPrices = arr.slice().reverse();
                 else hist[sym] = arr.slice().reverse();
@@ -1355,18 +1368,19 @@ export default function App() {
       }
 
       // Visibilidad: si algún sector quedó sin ningún activo con histórico
-      // suficiente, avisar en consola en vez de que pase desapercibido.
+      // suficiente, avisar con la causa REAL (antes se perdía en silencio).
       const sectorsWithData = new Set(validStocks.map(s=>s.sector));
       const sectorsMissing = [...new Set(allStocks.map(s=>s.sector))].filter(s=>!sectorsWithData.has(s));
+      const histErrSample = Object.values(histErrors)[0] || null;
       if (sectorsMissing.length > 0) {
-        console.warn(`F3: sin histórico suficiente para estos sectores: ${sectorsMissing.join(', ')}`);
+        console.warn(`F3: sin histórico suficiente para: ${sectorsMissing.join(', ')}`, histErrors);
       }
 
       const minLen=Math.min(...retArrays.map(r=>r.length));
       const trimmed=retArrays.map(r=>r.slice(r.length-minLen));
       const {corr}=buildCovAndCorr(trimmed);
 
-      setCorrData({stocks:validStocks, corrMatrix:corr, period:corrY, sectorsMissing});
+      setCorrData({stocks:validStocks, corrMatrix:corr, period:corrY, sectorsMissing, histErrSample});
       setTab("corr");
       setLp({step:"Fase 3 completada.",pct:100,phase:3});
       await delay(400);
@@ -1387,7 +1401,7 @@ export default function App() {
     const allSyms=allStocks.map(s=>s.symbol);
     try {
       let done=0; const total=allSyms.length+1;
-      let hist={}, spyPrices;
+      let hist={}, spyPrices; const histErrors={};
 
       // ── Caché de histórico compartido (7 días) ──
       const cached = histCacheLoad(from);
@@ -1403,8 +1417,15 @@ export default function App() {
           try {
             const r = await fetch(`${BASE}?action=history&symbol=${batch.join(',')}&from=${from}`);
             const d = await r.json();
-            if (d && typeof d === 'object' && !Array.isArray(d)) {
+            if (d && d._error) {
+              // Error global del batch (ej. rate-limit de TD) — aplica a todos los símbolos del lote
+              batch.forEach(s => { histErrors[s] = d._error; });
+            } else if (d && typeof d === 'object' && !Array.isArray(d)) {
               for (const [sym, prices] of Object.entries(d)) {
+                if (prices && !Array.isArray(prices) && prices._error) {
+                  histErrors[sym] = prices._error;
+                  continue;
+                }
                 const arr = Array.isArray(prices) ? prices : [];
                 if (sym === 'SPY') spyPrices = arr.slice().reverse();
                 else hist[sym] = arr.slice().reverse();
@@ -1732,6 +1753,7 @@ export default function App() {
               {corrData.sectorsMissing&&corrData.sectorsMissing.length>0&&(
                 <div style={{fontSize:10,color:"#f97316",fontFamily:"monospace",marginTop:4,background:"#1e1208",border:"1px solid #7c3a0a",borderRadius:6,padding:"4px 8px",display:"inline-block"}}>
                   ⚠️ Sin histórico suficiente: {corrData.sectorsMissing.join(", ")}
+                  {corrData.histErrSample && <div style={{marginTop:3,color:"#fb923c"}}>Causa: {corrData.histErrSample}</div>}
                 </div>
               )}
             </div>

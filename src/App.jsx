@@ -1019,18 +1019,22 @@ export default function App() {
 
       const allC = Object.values(cands).flat();
       const ratios={};
-      let done=0;
-      for (const batch of chunk(allC, 5)) {
-        await Promise.all(batch.map(async({sym})=>{
-          try {
-            const r=await fetch(`${BASE}?action=ratios&symbol=${sym}`);
+      // Pocas requests GRANDES: cada una hace 1 sola autenticación con Yahoo
+      // y loopea internamente los ~35 símbolos del lote (mismo patrón que quote).
+      // Antes: 132 requests de 1 símbolo c/u → Yahoo bloqueaba la mayoría.
+      const rBatches = chunk(allC.map(c=>c.sym), 35);
+      let rDone=0;
+      for (const symsBatch of rBatches) {
+        setLp({step:`Ratios fundamentales lote ${rDone+1}/${rBatches.length}...`,pct:29+(rDone/rBatches.length)*54,phase:1});
+        try {
+          const r=await fetch(`${BASE}?action=ratios&symbol=${symsBatch.join(",")}`);
+          if (r.ok) {
             const d=await r.json();
-            const ratioData = Array.isArray(d) ? d[0] : d; if (ratioData && typeof ratioData === "object") ratios[sym]=ratioData;
-          } catch{}
-          done++;
-          setLp({step:`Ratios fundamentales: ${done}/${allC.length}...`,pct:29+(done/allC.length)*54,phase:1});
-        }));
-        await delay(120);
+            if (Array.isArray(d)) d.forEach(x=>{ if (x&&x.symbol) ratios[x.symbol]=x; });
+          }
+        } catch(e) { /* batch falló — continuar con el siguiente */ }
+        rDone++;
+        await delay(500);
       }
 
       setLp({step:"Calculando scores...",pct:85,phase:1});
@@ -1055,6 +1059,9 @@ export default function App() {
             de:       r.debtEquityRatioTTM!=null?Math.abs(r.debtEquityRatioTTM):null,
             evEbitda: r.enterpriseValueMultipleTTM>0&&r.enterpriseValueMultipleTTM<250?r.enterpriseValueMultipleTTM:null,
             netMargin:r.netProfitMarginTTM!=null?r.netProfitMarginTTM*100:null,
+            roa:      r.returnOnAssetsTTM!=null?r.returnOnAssetsTTM*100:null,
+            revGrowth:r.revenueGrowthTTM!=null?r.revenueGrowthTTM*100:null,
+            priceToSales: r.priceToSalesTTM>0&&r.priceToSalesTTM<100?r.priceToSalesTTM:null,
           };
         });
         const scored=enriched.map(stk=>{
@@ -1134,20 +1141,21 @@ export default function App() {
       setSpy(Array.isArray(spyD)?spyD[0]:spyD);
       await delay(200);
 
-      // 4. Ratios TTM
+      // 4. Ratios TTM — pocas requests grandes (mismo patrón que F1 principal)
       const ratios = {};
-      let done = 0;
-      for (const batch of chunk(tickers, 5)) {
-        await Promise.all(batch.map(async sym=>{
-          try {
-            const r = await fetch(`${BASE}?action=ratios&symbol=${sym}`);
+      const rBatchesC = chunk(tickers, 35);
+      let rDoneC = 0;
+      for (const symsBatch of rBatchesC) {
+        setLp({step:`Ratios fundamentales lote ${rDoneC+1}/${rBatchesC.length}...`,pct:36+(rDoneC/rBatchesC.length)*50,phase:1});
+        try {
+          const r = await fetch(`${BASE}?action=ratios&symbol=${symsBatch.join(",")}`);
+          if (r.ok) {
             const d = await r.json();
-            const ratioData = Array.isArray(d) ? d[0] : d; if (ratioData && typeof ratioData === "object") ratios[sym]=ratioData;
-          } catch {}
-          done++;
-          setLp({step:`Ratios fundamentales: ${done}/${tickers.length}...`,pct:36+(done/tickers.length)*50,phase:1});
-        }));
-        await delay(120);
+            if (Array.isArray(d)) d.forEach(x=>{ if (x&&x.symbol) ratios[x.symbol]=x; });
+          }
+        } catch(e) { /* batch falló — continuar con el siguiente */ }
+        rDoneC++;
+        await delay(500);
       }
 
       // 5. Group by sector + score
@@ -1179,6 +1187,9 @@ export default function App() {
           de:       r.debtEquityRatioTTM!=null?Math.abs(r.debtEquityRatioTTM):null,
           evEbitda: r.enterpriseValueMultipleTTM>0&&r.enterpriseValueMultipleTTM<250?r.enterpriseValueMultipleTTM:null,
           netMargin:r.netProfitMarginTTM!=null?r.netProfitMarginTTM*100:null,
+          roa:      r.returnOnAssetsTTM!=null?r.returnOnAssetsTTM*100:null,
+          revGrowth:r.revenueGrowthTTM!=null?r.revenueGrowthTTM*100:null,
+          priceToSales: r.priceToSalesTTM>0&&r.priceToSalesTTM<100?r.priceToSalesTTM:null,
         }));
         const scored = enriched.map(stk=>{
           let score=0, tw=0, nUsed=0;

@@ -317,21 +317,51 @@ class handler(BaseHTTPRequestHandler):
 
         # ── action=ratios&symbol=AAPL ─────────────────────────────────────────
         elif action == 'ratios':
-            sym = params.get('symbol', [''])[0].strip()
-            if not sym:
+            # Acepta lista de símbolos (antes: 1 solo). Loop interno reutiliza el
+            # crumb que yfinance cachea automáticamente (singleton) dentro de esta
+            # misma invocación — evita renegociar auth con Yahoo por cada símbolo.
+            import time as _time
+            t0 = _time.time()
+            BUDGET = 26.0
+
+            sym_raw = params.get('symbol', [''])[0].strip()
+            symbols = [s.strip() for s in sym_raw.split(',') if s.strip()]
+            if not symbols:
                 return [{}]
-            info = yf.Ticker(sym, session=_make_session()).info
-            return [{
-                'symbol':                       sym,
-                'peRatioTTM':                   info.get('trailingPE'),
-                'priceToBookRatioTTM':          info.get('priceToBook'),
-                'returnOnEquityTTM':            info.get('returnOnEquity'),
-                'debtEquityRatioTTM':           (info.get('debtToEquity') or 0) / 100 if info.get('debtToEquity') is not None else None,
-                'enterpriseValueMultipleTTM':   info.get('enterpriseToEbitda'),
-                'netProfitMarginTTM':           info.get('profitMargins'),
-                'dividendYieldTTM':             info.get('dividendYield'),
-                'currentRatioTTM':              info.get('currentRatio'),
-            }]
+
+            def _empty(sym):
+                return {'symbol': sym, 'peRatioTTM': None, 'priceToBookRatioTTM': None,
+                        'returnOnEquityTTM': None, 'debtEquityRatioTTM': None,
+                        'enterpriseValueMultipleTTM': None, 'netProfitMarginTTM': None,
+                        'dividendYieldTTM': None, 'currentRatioTTM': None,
+                        'returnOnAssetsTTM': None, 'revenueGrowthTTM': None,
+                        'priceToSalesTTM': None}
+
+            sess = _make_session()  # 1 sola sesión, reutilizada en todo el loop
+            result = []
+            for sym in symbols:
+                if _time.time() - t0 > BUDGET:
+                    result.append(_empty(sym))
+                    continue
+                try:
+                    info = yf.Ticker(sym, session=sess).info
+                    result.append({
+                        'symbol':                       sym,
+                        'peRatioTTM':                   info.get('trailingPE'),
+                        'priceToBookRatioTTM':          info.get('priceToBook'),
+                        'returnOnEquityTTM':            info.get('returnOnEquity'),
+                        'debtEquityRatioTTM':           (info.get('debtToEquity') or 0) / 100 if info.get('debtToEquity') is not None else None,
+                        'enterpriseValueMultipleTTM':   info.get('enterpriseToEbitda'),
+                        'netProfitMarginTTM':           info.get('profitMargins'),
+                        'dividendYieldTTM':             info.get('dividendYield'),
+                        'currentRatioTTM':              info.get('currentRatio'),
+                        'returnOnAssetsTTM':             info.get('returnOnAssets'),
+                        'revenueGrowthTTM':              info.get('revenueGrowth'),
+                        'priceToSalesTTM':               info.get('priceToSalesTrailing12Months'),
+                    })
+                except Exception:
+                    result.append(_empty(sym))
+            return result
 
         # ── action=profile&symbols=AAPL,MSFT ─────────────────────────────────
         elif action == 'profile':
@@ -339,10 +369,11 @@ class handler(BaseHTTPRequestHandler):
             symbols = [s.strip() for s in symbols_raw.split(',') if s.strip()]
             if not symbols:
                 return []
+            sess = _make_session()  # 1 sola sesión, reutilizada en todo el loop
             result = []
             for sym in symbols:
                 try:
-                    info = yf.Ticker(sym, session=_make_session()).info
+                    info = yf.Ticker(sym, session=sess).info
                     result.append({
                         'symbol':      sym,
                         'sector':      info.get('sector', 'Unknown'),

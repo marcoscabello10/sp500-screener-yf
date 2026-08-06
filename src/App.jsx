@@ -1596,6 +1596,8 @@ export default function App() {
         <div style={{display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
           {cacheInfo&&doneN>=1&&(
             <CacheBadge info={cacheInfo} onRefresh={forceRefresh}/>
+          )}
+          {snapshotMeta&&doneN>=1&&(
             <SnapshotBadge meta={snapshotMeta}/>
           )}
           {spy&&(

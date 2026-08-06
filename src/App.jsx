@@ -147,6 +147,16 @@ function toDailyRet(prices) {
       out.push({ date: prices[i].date, r: (prices[i].close - prices[i-1].close) / prices[i-1].close });
   return out;
 }
+// Universo de activos para F3/F4: 'full' = todos los candidatos de F1
+// (hasta 55, 5 por sector) · 'top1' = solo el de mejor score por sector (11).
+// fundData[sector] ya viene ordenado desc por score (F1 lo arma así), así
+// que el top1 de cada sector es simplemente el primer elemento.
+function selectUniverse(fundData, mode) {
+  if (mode === 'top1') {
+    return Object.values(fundData).map(arr => arr && arr[0]).filter(Boolean);
+  }
+  return Object.values(fundData).flat();
+}
 function buildSpyMap(spyPrices) {
   const m = {}; toDailyRet(spyPrices).forEach(r => { m[r.date] = r.r; }); return m;
 }
@@ -315,6 +325,28 @@ function CacheBadge({info, onRefresh}) {
       <button onClick={onRefresh} style={{background:"transparent",border:"1px solid #334155",borderRadius:6,padding:"3px 8px",color:"#64748b",fontSize:9,cursor:"pointer",fontFamily:"monospace"}}>
         ↺ Forzar
       </button>
+    </div>
+  );
+}
+function UniverseToggle({value, onChange, fullCount}) {
+  const opts = [
+    {v:"full", label:`🌐 Completo (~${fullCount||55})`, tip:"Todos los candidatos de F1 con histórico válido — más diversificación intra-sector, ideal para Markowitz"},
+    {v:"top1", label:"🎯 1 por sector (11)", tip:"Solo el de mejor score de cada sector — cartera núcleo simple, menos opciones para el optimizador"},
+  ];
+  return (
+    <div style={{display:"flex",alignItems:"center",gap:4,background:"#0f172a",border:"1px solid #1e293b",borderRadius:8,padding:3}}>
+      {opts.map(o=>(
+        <button key={o.v} title={o.tip} onClick={()=>onChange(o.v)}
+          style={{
+            background: value===o.v ? "#1e293b" : "transparent",
+            border: value===o.v ? "1px solid #334155" : "1px solid transparent",
+            borderRadius:6, padding:"5px 10px", cursor:"pointer",
+            color: value===o.v ? "#f1f5f9" : "#64748b",
+            fontSize:10, fontFamily:"monospace", fontWeight:value===o.v?700:400,
+          }}>
+          {o.label}
+        </button>
+      ))}
     </div>
   );
 }
@@ -928,6 +960,7 @@ export default function App() {
   const [reoptData,    setReoptData]    = useState(null);
   const [spy,          setSpy]          = useState(null);
   const [snapshotMeta, setSnapshotMeta] = useState(null);
+  const [assetUniverse,setAssetUniverse]= useState('full'); // 'full' | 'top1'
   const [spyRisk,      setSpyRisk]      = useState(null);
   const [cacheInfo,    setCacheInfo]    = useState(null);
   const [activeSec,    setActiveSec]    = useState(null);
@@ -1266,7 +1299,7 @@ export default function App() {
     setPhase("loading");
     const corrY=Math.max(cpY,2);
     const from=`${new Date().getFullYear()-corrY}-01-01`;
-    const allStocks=Object.values(fundData).flat();
+    const allStocks=selectUniverse(fundData, assetUniverse);
     const allSyms=allStocks.map(s=>s.symbol);
     try {
       let done=0; const total=allSyms.length+1;
@@ -1339,7 +1372,7 @@ export default function App() {
       await delay(400);
       setPhase("done3");
     } catch(err) { setError(err.message); setPhase("error"); }
-  },[fundData,cpY]);
+  },[fundData,cpY,assetUniverse]);
 
   // ── Phase 4: Optimization ────────────────────────────────────────────────────
   const runOpt = useCallback(async()=>{
@@ -1350,7 +1383,7 @@ export default function App() {
     const rf=rfRate/100;
     const minWf=minW/100, maxWf=maxW/100;
     const from=`${new Date().getFullYear()-optY}-01-01`;
-    const allStocks=Object.values(fundData).flat();
+    const allStocks=selectUniverse(fundData, assetUniverse);
     const allSyms=allStocks.map(s=>s.symbol);
     try {
       let done=0; const total=allSyms.length+1;
@@ -1440,7 +1473,7 @@ export default function App() {
       await delay(400);
       setPhase("done4");
     } catch(err) { setError(err.message); setPhase("error"); }
-  },[fundData,rfRate,optY,minW,maxW]);
+  },[fundData,rfRate,optY,minW,maxW,assetUniverse]);
 
   const toggleExclude = useCallback((sym) => {
     if (!optData) return;
@@ -1652,6 +1685,7 @@ export default function App() {
             <NInput label="CP" value={cpY} onChange={v=>setCpY(Math.min(v,lpY-1))} min={1} max={4} unit="Y"/>
             <NInput label="LP" value={lpY} onChange={v=>setLpY(Math.max(v,cpY+1))} min={2} max={10} unit="Y"/>
             <button onClick={runP2} style={{background:"#1e293b",border:"1px solid #334155",borderRadius:8,padding:"7px 12px",color:"#a78bfa",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:"monospace"}}>↺ Riesgo</button>
+            <UniverseToggle value={assetUniverse} onChange={setAssetUniverse} fullCount={Object.values(fundData).flat().length}/>
             <button onClick={runCorr} style={{background:"linear-gradient(135deg,#0d9488,#0ea5e9)",border:"none",borderRadius:8,padding:"8px 14px",color:"white",fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"monospace",boxShadow:"0 0 16px rgba(13,148,136,0.3)"}}>
               Analizar Correlación →
             </button>
@@ -1666,6 +1700,7 @@ export default function App() {
             <NInput label="Min W" value={minW} onChange={v=>setMinW(Math.min(v,maxW-1))} min={0.5} max={10} step={0.5} unit="%"/>
             <NInput label="Max W" value={maxW} onChange={v=>setMaxW(Math.max(v,minW+1))} min={5} max={50} unit="%"/>
             <button onClick={runCorr} style={{background:"#1e293b",border:"1px solid #334155",borderRadius:8,padding:"7px 12px",color:"#34d399",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:"monospace"}}>↺ Corr</button>
+            <UniverseToggle value={assetUniverse} onChange={setAssetUniverse} fullCount={Object.values(fundData).flat().length}/>
             <button onClick={runOpt} style={{background:"linear-gradient(135deg,#059669,#0ea5e9)",border:"none",borderRadius:8,padding:"8px 14px",color:"white",fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"monospace",boxShadow:"0 0 16px rgba(5,150,105,0.3)"}}>
               Optimizar Cartera →
             </button>

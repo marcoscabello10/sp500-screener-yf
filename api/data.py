@@ -236,6 +236,8 @@ class handler(BaseHTTPRequestHandler):
             symbols = [s.strip() for s in symbols_raw.split(',') if s.strip()]
             if not symbols:
                 return []
+            debug_mode = params.get('debug', ['0'])[0] == '1'
+            diag = {'warmup_error': None, 'crumb_obtained': False, 'batch_errors': [], 'fallback_used': 0}
 
             def _fb(sym):
                 return {'symbol': sym, 'price': 0, 'marketCap': 0,
@@ -265,8 +267,9 @@ class handler(BaseHTTPRequestHandler):
                 _yfd    = YfData()          # singleton — misma instancia
                 crumb   = _yfd._crumb       # atributo de INSTANCIA (no de clase)
                 yf_sess = _yfd._session
-            except Exception:
-                pass
+                diag['crumb_obtained'] = bool(crumb)
+            except Exception as e:
+                diag['warmup_error'] = f'{type(e).__name__}: {e}'
 
             # Paso 2 — sub-batches de 100 símbolos a Yahoo, TODOS con el mismo
             # crumb+session, dentro de esta misma invocación (no reinicia auth)
@@ -294,8 +297,10 @@ class handler(BaseHTTPRequestHandler):
                             s = q.get('symbol', '')
                             if s:
                                 results_map[s] = _parse_yh(q, s)
-                    except Exception:
-                        pass  # este sub-batch falló, seguimos con el resto
+                        if not quotes:
+                            diag['batch_errors'].append(f'batch@{i}: status={resp.status_code} body={resp.text[:150]}')
+                    except Exception as e:
+                        diag['batch_errors'].append(f'batch@{i}: {type(e).__name__}: {e}')
 
             # Paso 3 — fallback acotado por tiempo: .info individual solo para lo
             # que falte, hasta agotar el presupuesto de tiempo restante
@@ -303,6 +308,7 @@ class handler(BaseHTTPRequestHandler):
             for sym in missing:
                 if _time.time() - t0 > BUDGET:
                     break
+                diag['fallback_used'] += 1
                 try:
                     info  = yf.Ticker(sym, session=_make_session()).info
                     price = float(info.get('currentPrice') or info.get('regularMarketPrice') or 0)
@@ -318,6 +324,8 @@ class handler(BaseHTTPRequestHandler):
                 except Exception:
                     pass
 
+            if debug_mode:
+                return {'diag': diag, 'results': [results_map.get(sym, _fb(sym)) for sym in symbols]}
             return [results_map.get(sym, _fb(sym)) for sym in symbols]
 
         # ── action=ratios&symbol=AAPL ─────────────────────────────────────────
@@ -342,14 +350,15 @@ class handler(BaseHTTPRequestHandler):
                         'returnOnAssetsTTM': None, 'revenueGrowthTTM': None,
                         'priceToSalesTTM': None}
 
-            sess = _make_session()  # 1 sola sesión, reutilizada en todo el loop
             result = []
             for sym in symbols:
                 if _time.time() - t0 > BUDGET:
                     result.append(_empty(sym))
                     continue
                 try:
-                    info = yf.Ticker(sym, session=sess).info
+                    # Sesión fresca por símbolo — igual al patrón de action=debug
+                    # que confirmamos que SÍ funciona (yf_info: ok=true)
+                    info = yf.Ticker(sym, session=_make_session()).info
                     result.append({
                         'symbol':                       sym,
                         'peRatioTTM':                   info.get('trailingPE'),
@@ -364,8 +373,11 @@ class handler(BaseHTTPRequestHandler):
                         'revenueGrowthTTM':              info.get('revenueGrowth'),
                         'priceToSalesTTM':               info.get('priceToSalesTrailing12Months'),
                     })
-                except Exception:
-                    result.append(_empty(sym))
+                except Exception as e:
+                    # Surfacing del error real — antes se perdía en un except silencioso
+                    r = _empty(sym)
+                    r['_error'] = f'{type(e).__name__}: {e}'
+                    result.append(r)
             return result
 
         # ── action=profile&symbols=AAPL,MSFT ─────────────────────────────────

@@ -1209,7 +1209,7 @@ export default function App() {
         // Un fetch por lote de 20 símbolos — mucho más rápido que individual
         const allWithSpy = ['SPY', ...allSyms];
         setLp({step:`Descargando histórico (${allWithSpy.length} activos)...`,pct:3,phase:2});
-        for (const batch of chunk(allWithSpy, 5)) {
+        for (const batch of chunk(allWithSpy, 25)) {
           try {
             const r = await fetch(`${BASE}?action=history&symbol=${batch.join(',')}&from=${from}`);
             const d = await r.json();
@@ -1229,7 +1229,7 @@ export default function App() {
           } catch {}
           done += batch.length;
           setLp({step:`Histórico: ${done}/${total} activos...`,pct:4+(done/total)*80,phase:2});
-          await delay(100);
+          await delay(3000);
         }
         if (!spyPrices) spyPrices = [];
         histCacheSave(hist, spyPrices, from);
@@ -1282,7 +1282,7 @@ export default function App() {
       } else {
         const allWithSpy = ['SPY', ...allSyms];
         setLp({step:`Descargando histórico correlación (${allWithSpy.length} activos)...`,pct:3,phase:3});
-        for (const batch of chunk(allWithSpy, 5)) {
+        for (const batch of chunk(allWithSpy, 25)) {
           try {
             const r = await fetch(`${BASE}?action=history&symbol=${batch.join(',')}&from=${from}`);
             const d = await r.json();
@@ -1300,7 +1300,7 @@ export default function App() {
           } catch {}
           done += batch.length;
           setLp({step:`Histórico: ${done}/${total} activos...`,pct:5+(done/total)*70,phase:3});
-          await delay(100);
+          await delay(3000);
         }
         if (!spyPrices) spyPrices = [];
         histCacheSave(hist, spyPrices, from);
@@ -1321,11 +1321,19 @@ export default function App() {
         retArrays.push(al);
       }
 
+      // Visibilidad: si algún sector quedó sin ningún activo con histórico
+      // suficiente, avisar en consola en vez de que pase desapercibido.
+      const sectorsWithData = new Set(validStocks.map(s=>s.sector));
+      const sectorsMissing = [...new Set(allStocks.map(s=>s.sector))].filter(s=>!sectorsWithData.has(s));
+      if (sectorsMissing.length > 0) {
+        console.warn(`F3: sin histórico suficiente para estos sectores: ${sectorsMissing.join(', ')}`);
+      }
+
       const minLen=Math.min(...retArrays.map(r=>r.length));
       const trimmed=retArrays.map(r=>r.slice(r.length-minLen));
       const {corr}=buildCovAndCorr(trimmed);
 
-      setCorrData({stocks:validStocks, corrMatrix:corr, period:corrY});
+      setCorrData({stocks:validStocks, corrMatrix:corr, period:corrY, sectorsMissing});
       setTab("corr");
       setLp({step:"Fase 3 completada.",pct:100,phase:3});
       await delay(400);
@@ -1358,7 +1366,7 @@ export default function App() {
       } else {
         const allWithSpy = ['SPY', ...allSyms];
         setLp({step:`Descargando histórico optimización (${allWithSpy.length} activos)...`,pct:2,phase:4});
-        for (const batch of chunk(allWithSpy, 5)) {
+        for (const batch of chunk(allWithSpy, 25)) {
           try {
             const r = await fetch(`${BASE}?action=history&symbol=${batch.join(',')}&from=${from}`);
             const d = await r.json();
@@ -1376,7 +1384,7 @@ export default function App() {
           } catch {}
           done += batch.length;
           setLp({step:`Histórico: ${done}/${total} activos...`,pct:4+(done/total)*50,phase:4});
-          await delay(100);
+          await delay(3000);
         }
         if (!spyPrices) spyPrices = [];
         histCacheSave(hist, spyPrices, from);
@@ -1686,6 +1694,11 @@ export default function App() {
               <div style={{fontSize:10,color:"#475569",fontFamily:"monospace"}}>
                 {corrData.stocks.length} activos · Período: {corrData.period} años · Rojo = alta correlación · Azul = correlación negativa (diversifica)
               </div>
+              {corrData.sectorsMissing&&corrData.sectorsMissing.length>0&&(
+                <div style={{fontSize:10,color:"#f97316",fontFamily:"monospace",marginTop:4,background:"#1e1208",border:"1px solid #7c3a0a",borderRadius:6,padding:"4px 8px",display:"inline-block"}}>
+                  ⚠️ Sin histórico suficiente: {corrData.sectorsMissing.join(", ")}
+                </div>
+              )}
             </div>
           </div>
           <CorrelationHeatmap stocks={corrData.stocks} corrMatrix={corrData.corrMatrix}/>

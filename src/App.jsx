@@ -1242,7 +1242,7 @@ export default function App() {
         // Un fetch por lote de 20 símbolos — mucho más rápido que individual
         const allWithSpy = ['SPY', ...allSyms];
         setLp({step:`Descargando histórico (${allWithSpy.length} activos)...`,pct:3,phase:2});
-        for (const batch of chunk(allWithSpy, 25)) {
+        for (const batch of chunk(allWithSpy, 5)) {
           try {
             const r = await fetch(`${BASE}?action=history&symbol=${batch.join(',')}&from=${from}`);
             const d = await r.json();
@@ -1262,7 +1262,7 @@ export default function App() {
           } catch {}
           done += batch.length;
           setLp({step:`Histórico: ${done}/${total} activos...`,pct:4+(done/total)*80,phase:2});
-          await delay(3000);
+          await delay(8000);
         }
         if (!spyPrices) spyPrices = [];
         histCacheSave(hist, spyPrices, from);
@@ -1315,7 +1315,7 @@ export default function App() {
       } else {
         const allWithSpy = ['SPY', ...allSyms];
         setLp({step:`Descargando histórico correlación (${allWithSpy.length} activos)...`,pct:3,phase:3});
-        for (const batch of chunk(allWithSpy, 25)) {
+        for (const batch of chunk(allWithSpy, 5)) {
           try {
             const r = await fetch(`${BASE}?action=history&symbol=${batch.join(',')}&from=${from}`);
             const d = await r.json();
@@ -1333,7 +1333,7 @@ export default function App() {
           } catch {}
           done += batch.length;
           setLp({step:`Histórico: ${done}/${total} activos...`,pct:5+(done/total)*70,phase:3});
-          await delay(3000);
+          await delay(8000);
         }
         if (!spyPrices) spyPrices = [];
         histCacheSave(hist, spyPrices, from);
@@ -1399,7 +1399,7 @@ export default function App() {
       } else {
         const allWithSpy = ['SPY', ...allSyms];
         setLp({step:`Descargando histórico optimización (${allWithSpy.length} activos)...`,pct:2,phase:4});
-        for (const batch of chunk(allWithSpy, 25)) {
+        for (const batch of chunk(allWithSpy, 5)) {
           try {
             const r = await fetch(`${BASE}?action=history&symbol=${batch.join(',')}&from=${from}`);
             const d = await r.json();
@@ -1417,7 +1417,7 @@ export default function App() {
           } catch {}
           done += batch.length;
           setLp({step:`Histórico: ${done}/${total} activos...`,pct:4+(done/total)*50,phase:4});
-          await delay(3000);
+          await delay(8000);
         }
         if (!spyPrices) spyPrices = [];
         histCacheSave(hist, spyPrices, from);

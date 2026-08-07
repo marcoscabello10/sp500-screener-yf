@@ -116,7 +116,15 @@ function histCacheLoad(fromRequired) {
   if (d.from > fromRequired) return null;
   return d;
 }
-function histCacheSave(hist, spyPrices, from) {
+function histCacheSave(hist, spyPrices, from, expectedCount) {
+  // No cachear resultados incompletos — si faltó más del 15% de los símbolos
+  // esperados, es mejor reintentar la próxima vez que guardar un caché roto
+  // que se reutilizaría durante 7 días sin volver a pedir lo que falta.
+  const gotCount = Object.keys(hist).length;
+  if (expectedCount && gotCount < expectedCount * 0.85) {
+    console.warn(`Histórico incompleto (${gotCount}/${expectedCount}) — no se cachea, para reintentar la próxima corrida.`);
+    return;
+  }
   lsSet(HIST_CACHE_KEY, { hist, spyPrices, from, timestamp: Date.now() });
 }
 function histCacheClear() {
@@ -1266,15 +1274,17 @@ export default function App() {
               if (batch[0] === 'SPY') spyPrices = arr.slice().reverse();
               else hist[batch[0]] = arr.slice().reverse();
             }
+            console.log(`[hist] lote ${batch.join(',')} → status ${r.status}`, d);
           } catch (e) {
             batch.forEach(s => { histErrors[s] = `Error de red: ${e.message}`; });
+            console.warn(`[hist] lote ${batch.join(',')} → excepción:`, e);
           }
           done += batch.length;
           setLp({step:`Histórico: ${done}/${total} activos...`,pct:4+(done/total)*80,phase:2});
-          await delay(8000);
+          await delay(10000);
         }
         if (!spyPrices) spyPrices = [];
-        histCacheSave(hist, spyPrices, from);
+        histCacheSave(hist, spyPrices, from, allSyms.length);
       }
 
       setLp({step:`Calculando CP (${cpY}Y) / LP (${lpY}Y)...`,pct:86,phase:2});
@@ -1347,15 +1357,17 @@ export default function App() {
               if (batch[0] === 'SPY') spyPrices = arr.slice().reverse();
               else hist[batch[0]] = arr.slice().reverse();
             }
+            console.log(`[hist] lote ${batch.join(',')} → status ${r.status}`, d);
           } catch (e) {
             batch.forEach(s => { histErrors[s] = `Error de red: ${e.message}`; });
+            console.warn(`[hist] lote ${batch.join(',')} → excepción:`, e);
           }
           done += batch.length;
           setLp({step:`Histórico: ${done}/${total} activos...`,pct:5+(done/total)*70,phase:3});
-          await delay(8000);
+          await delay(10000);
         }
         if (!spyPrices) spyPrices = [];
-        histCacheSave(hist, spyPrices, from);
+        histCacheSave(hist, spyPrices, from, allSyms.length);
       }
 
       setLp({step:"Calculando matriz de correlación...",pct:78,phase:3});
@@ -1442,15 +1454,17 @@ export default function App() {
               if (batch[0] === 'SPY') spyPrices = arr.slice().reverse();
               else hist[batch[0]] = arr.slice().reverse();
             }
+            console.log(`[hist] lote ${batch.join(',')} → status ${r.status}`, d);
           } catch (e) {
             batch.forEach(s => { histErrors[s] = `Error de red: ${e.message}`; });
+            console.warn(`[hist] lote ${batch.join(',')} → excepción:`, e);
           }
           done += batch.length;
           setLp({step:`Histórico: ${done}/${total} activos...`,pct:4+(done/total)*50,phase:4});
-          await delay(8000);
+          await delay(10000);
         }
         if (!spyPrices) spyPrices = [];
-        histCacheSave(hist, spyPrices, from);
+        histCacheSave(hist, spyPrices, from, allSyms.length);
       }
 
       setLp({step:"Construyendo matriz de covarianza...",pct:57,phase:4});

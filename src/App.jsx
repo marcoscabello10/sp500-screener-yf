@@ -158,17 +158,39 @@ function toDailyRet(prices) {
 // Elige N activos priorizando score fundamental PERO penalizando la correlación
 // con lo que ya se fue eligiendo — evita terminar con "Top N" concentrado en
 // 1-2 sectores altamente correlacionados entre sí. Algoritmo goloso:
-//   1) Arranca con el de mejor score.
-//   2) Cada elección siguiente pondera: score * (1 - correlación promedio con
-//      los ya elegidos). Un activo con score alto pero muy correlacionado con
-//      lo elegido pierde metric; uno con score algo menor pero descorrelacionado
-//      puede ganarle.
-function selectDiversifiedIndices(stocks, corrMatrix, n) {
-  if (stocks.length <= n) return stocks.map((_,i)=>i);
-  const remaining = new Set(stocks.map((_,i)=>i));
-  let first = [...remaining].reduce((best,i)=> (stocks[i].score||0) > (stocks[best].score||0) ? i : best);
-  const selected = [first];
-  remaining.delete(first);
+//   0) Se descartan por completo los activos de `excludedSectors`.
+//   1) Se garantiza 1 activo (el de mejor score) de cada sector en
+//      `forcedSectors`, aunque el algoritmo por sí solo no lo hubiera elegido.
+//   2) El resto de los cupos se llena de forma golosa: score * (1 - correlación
+//      promedio con lo ya elegido). Un activo con score alto pero muy
+//      correlacionado con lo elegido pierde metric frente a uno más descorrelacionado.
+function selectDiversifiedIndices(stocks, corrMatrix, n, forcedSectors=[], excludedSectors=[]) {
+  const excludedSet = new Set(excludedSectors);
+  const eligible = stocks.map((_,i)=>i).filter(i => !excludedSet.has(stocks[i].sector));
+  if (eligible.length <= n) return eligible;
+
+  const remaining = new Set(eligible);
+  const selected = [];
+
+  // Paso 1: garantizar los sectores pedidos explícitamente
+  for (const sec of forcedSectors) {
+    if (selected.length >= n) break;
+    const candidates = [...remaining].filter(i => stocks[i].sector === sec);
+    if (candidates.length === 0) continue; // no hay ningún elegible en ese sector
+    const best = candidates.reduce((b,i)=> (stocks[i].score||0) > (stocks[b].score||0) ? i : b);
+    selected.push(best);
+    remaining.delete(best);
+  }
+  if (selected.length >= n) return selected.slice(0, n);
+
+  // Paso 2: si todavía no hay ningún elegido, arrancar con el de mejor score
+  if (selected.length === 0) {
+    let first = [...remaining].reduce((best,i)=> (stocks[i].score||0) > (stocks[best].score||0) ? i : best);
+    selected.push(first);
+    remaining.delete(first);
+  }
+
+  // Paso 3: completar el resto de forma diversificada
   while (selected.length < n && remaining.size > 0) {
     let bestIdx=null, bestMetric=-Infinity;
     for (const i of remaining) {
@@ -181,10 +203,12 @@ function selectDiversifiedIndices(stocks, corrMatrix, n) {
   }
   return selected;
 }
-// El de mejor score de cada sector representado en `stocks`.
-function pickBestPerSectorIndices(stocks) {
+// El de mejor score de cada sector representado en `stocks` (respeta excludedSectors).
+function pickBestPerSectorIndices(stocks, excludedSectors=[]) {
+  const excludedSet = new Set(excludedSectors);
   const bestBySector = {};
   stocks.forEach((s,i)=>{
+    if (excludedSet.has(s.sector)) return;
     if (!(s.sector in bestBySector) || (s.score||0) > (stocks[bestBySector[s.sector]].score||0)) {
       bestBySector[s.sector] = i;
     }
@@ -194,11 +218,18 @@ function pickBestPerSectorIndices(stocks) {
 // Aplica el modo de universo (full/top1/topN) SOBRE datos ya calculados
 // (validStocks + su matriz de correlación completa) — así "Top N" puede usar
 // la correlación real entre TODOS los candidatos, no solo el score de F1.
-function applySelectionMode(mode, topN, validStocks, corr) {
+// forcedSectors/excludedSectors solo tienen efecto real en modo 'topN'
+// (en 'full' y 'top1' solo aplica la exclusión, que sí tiene sentido ahí).
+function applySelectionMode(mode, topN, validStocks, corr, forcedSectors=[], excludedSectors=[]) {
   let idxs;
-  if (mode === 'top1') idxs = pickBestPerSectorIndices(validStocks);
-  else if (mode === 'topN') idxs = selectDiversifiedIndices(validStocks, corr, Math.max(3, topN||6));
-  else idxs = validStocks.map((_,i)=>i);
+  const excludedSet = new Set(excludedSectors);
+  if (mode === 'top1') {
+    idxs = pickBestPerSectorIndices(validStocks, excludedSectors);
+  } else if (mode === 'topN') {
+    idxs = selectDiversifiedIndices(validStocks, corr, Math.max(3, topN||6), forcedSectors, excludedSectors);
+  } else {
+    idxs = validStocks.map((_,i)=>i).filter(i => !excludedSet.has(validStocks[i].sector));
+  }
   const stocks = idxs.map(i=>validStocks[i]);
   const subCorr = idxs.map(i=>idxs.map(j=>corr[i][j]));
   return { stocks, corr: subCorr, idxs };
@@ -404,6 +435,36 @@ function UniverseToggle({value, onChange, fullCount, topN, onTopNChange}) {
           <span style={{fontSize:9,color:"#475569",fontFamily:"monospace"}}>activos (mín 3)</span>
         </div>
       )}
+    </div>
+  );
+}
+function SectorFilter({forced, excluded, onToggle}) {
+  const sectors = Object.keys(SECTOR_COLORS);
+  return (
+    <div style={{display:"flex",flexWrap:"wrap",gap:5,alignItems:"center",background:"#0f172a",border:"1px solid #1e293b",borderRadius:8,padding:8}}>
+      <span style={{fontSize:9,color:"#475569",fontFamily:"monospace",marginRight:2}}>Sectores:</span>
+      {sectors.map(sec=>{
+        const isForced   = forced.has(sec);
+        const isExcluded = excluded.has(sec);
+        const bg = isForced ? "#0c1a0c" : isExcluded ? "#1e1208" : "#1e293b";
+        const border = isForced ? "#166534" : isExcluded ? "#7c3a0a" : "#334155";
+        const color = isForced ? "#4ade80" : isExcluded ? "#fb923c" : "#94a3b8";
+        return (
+          <button key={sec} onClick={()=>onToggle(sec)}
+            title={isForced?"Garantizado — click para excluir":isExcluded?"Excluido — click para volver a neutral":"Neutral — click para garantizar"}
+            style={{
+              display:"flex",alignItems:"center",gap:4,
+              background:bg, border:`1px solid ${border}`, borderRadius:6,
+              padding:"3px 8px", cursor:"pointer", fontSize:10, fontFamily:"monospace",
+              color, fontWeight: (isForced||isExcluded) ? 700 : 400,
+            }}>
+            <span>{SECTOR_ICONS[sec]}</span>
+            <span>{sec}</span>
+            {isForced && <span>✓</span>}
+            {isExcluded && <span>✕</span>}
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -1019,6 +1080,8 @@ export default function App() {
   const [snapshotMeta, setSnapshotMeta] = useState(null);
   const [assetUniverse,setAssetUniverse]= useState('topN'); // 'full' | 'top1' | 'topN'
   const [topNCount,     setTopNCount]     = useState(6);
+  const [forcedSectors, setForcedSectors] = useState(new Set());
+  const [excludedSectors, setExcludedSectors] = useState(new Set());
   const [spyRisk,      setSpyRisk]      = useState(null);
   const [cacheInfo,    setCacheInfo]    = useState(null);
   const [activeSec,    setActiveSec]    = useState(null);
@@ -1363,6 +1426,18 @@ export default function App() {
     } catch(err) { setError(err.message); setPhase("error"); }
   },[fundData,rfRate,cpY,lpY]);
 
+  // Ciclo neutral → garantizado → excluido → neutral, click a click.
+  const toggleSectorFilter = useCallback((sec) => {
+    if (forcedSectors.has(sec)) {
+      setForcedSectors(prev => { const n = new Set(prev); n.delete(sec); return n; });
+      setExcludedSectors(prev => { const n = new Set(prev); n.add(sec); return n; });
+    } else if (excludedSectors.has(sec)) {
+      setExcludedSectors(prev => { const n = new Set(prev); n.delete(sec); return n; });
+    } else {
+      setForcedSectors(prev => { const n = new Set(prev); n.add(sec); return n; });
+    }
+  }, [forcedSectors, excludedSectors]);
+
   // ── Phase 3: Correlation ─────────────────────────────────────────────────────
   const runCorr = useCallback(async()=>{
     setPhase("loading");
@@ -1455,7 +1530,7 @@ export default function App() {
       // Recién ACÁ se aplica el modo elegido (full/top1/topN) — "Top N" ya
       // puede ver la correlación real entre todos los candidatos válidos y
       // evitar amontonarse en activos muy correlacionados entre sí.
-      const {stocks:finalStocks, corr:finalCorr} = applySelectionMode(assetUniverse, topNCount, validStocks, corr);
+      const {stocks:finalStocks, corr:finalCorr} = applySelectionMode(assetUniverse, topNCount, validStocks, corr, [...forcedSectors], [...excludedSectors]);
 
       setCorrData({stocks:finalStocks, corrMatrix:finalCorr, period:corrY, sectorsMissing, histErrSample});
       setTab("corr");
@@ -1463,7 +1538,7 @@ export default function App() {
       await delay(400);
       setPhase("done3");
     } catch(err) { setError(err.message); setPhase("error"); }
-  },[fundData,cpY,assetUniverse,topNCount]);
+  },[fundData,cpY,assetUniverse,topNCount,forcedSectors,excludedSectors]);
 
   // ── Phase 4: Optimization ────────────────────────────────────────────────────
   const runOpt = useCallback(async()=>{
@@ -1551,7 +1626,7 @@ export default function App() {
       // Selección diversificada ANTES de Monte Carlo — el optimizador solo ve
       // el universo final (full/top1/topN), ya libre de correlación innecesaria
       // si el modo es "Top N".
-      const {stocks:validStocksSel, idxs} = applySelectionMode(assetUniverse, topNCount, validStocks, corr);
+      const {stocks:validStocksSel, idxs} = applySelectionMode(assetUniverse, topNCount, validStocks, corr, [...forcedSectors], [...excludedSectors]);
       const covSel = idxs.map(i=>idxs.map(j=>cov[i][j]));
       const annRetsSel = idxs.map(i=>annRets[i]);
 
@@ -1585,7 +1660,7 @@ export default function App() {
       await delay(400);
       setPhase("done4");
     } catch(err) { setError(err.message); setPhase("error"); }
-  },[fundData,rfRate,optY,minW,maxW,assetUniverse,topNCount]);
+  },[fundData,rfRate,optY,minW,maxW,assetUniverse,topNCount,forcedSectors,excludedSectors]);
 
   const toggleExclude = useCallback((sym) => {
     if (!optData) return;
@@ -1801,6 +1876,8 @@ export default function App() {
             <button onClick={runCorr} style={{background:"linear-gradient(135deg,#0d9488,#0ea5e9)",border:"none",borderRadius:8,padding:"8px 14px",color:"white",fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"monospace",boxShadow:"0 0 16px rgba(13,148,136,0.3)"}}>
               Analizar Correlación →
             </button>
+            <div style={{width:"100%"}}/>
+            <SectorFilter forced={forcedSectors} excluded={excludedSectors} onToggle={toggleSectorFilter}/>
           </>
         )}
 
@@ -1816,6 +1893,8 @@ export default function App() {
             <button onClick={runOpt} style={{background:"linear-gradient(135deg,#059669,#0ea5e9)",border:"none",borderRadius:8,padding:"8px 14px",color:"white",fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"monospace",boxShadow:"0 0 16px rgba(5,150,105,0.3)"}}>
               Optimizar Cartera →
             </button>
+            <div style={{width:"100%"}}/>
+            <SectorFilter forced={forcedSectors} excluded={excludedSectors} onToggle={toggleSectorFilter}/>
           </>
         )}
 

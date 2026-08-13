@@ -155,21 +155,53 @@ function toDailyRet(prices) {
       out.push({ date: prices[i].date, r: (prices[i].close - prices[i-1].close) / prices[i-1].close });
   return out;
 }
-// Universo de activos para F3/F4:
-//   'full' = todos los candidatos de F1 (hasta 55, 5 por sector)
-//   'top1' = solo el de mejor score por sector (11) — máxima diversificación sectorial
-//   'topN' = los N de mejor score en TODO el pool, sin importar sector — permite
-//            elegir exactamente cuántos activos entran a la optimización (ej. 5, 6, 8...)
-// fundData[sector] ya viene ordenado desc por score (F1 lo arma así).
-function selectUniverse(fundData, mode, topN) {
-  const all = Object.values(fundData).flat();
-  if (mode === 'top1') {
-    return Object.values(fundData).map(arr => arr && arr[0]).filter(Boolean);
+// Elige N activos priorizando score fundamental PERO penalizando la correlación
+// con lo que ya se fue eligiendo — evita terminar con "Top N" concentrado en
+// 1-2 sectores altamente correlacionados entre sí. Algoritmo goloso:
+//   1) Arranca con el de mejor score.
+//   2) Cada elección siguiente pondera: score * (1 - correlación promedio con
+//      los ya elegidos). Un activo con score alto pero muy correlacionado con
+//      lo elegido pierde metric; uno con score algo menor pero descorrelacionado
+//      puede ganarle.
+function selectDiversifiedIndices(stocks, corrMatrix, n) {
+  if (stocks.length <= n) return stocks.map((_,i)=>i);
+  const remaining = new Set(stocks.map((_,i)=>i));
+  let first = [...remaining].reduce((best,i)=> (stocks[i].score||0) > (stocks[best].score||0) ? i : best);
+  const selected = [first];
+  remaining.delete(first);
+  while (selected.length < n && remaining.size > 0) {
+    let bestIdx=null, bestMetric=-Infinity;
+    for (const i of remaining) {
+      const avgCorr = selected.reduce((s,j)=>s+Math.abs(corrMatrix[i][j]),0) / selected.length;
+      const metric = (stocks[i].score||0) * (1 - avgCorr);
+      if (metric > bestMetric) { bestMetric=metric; bestIdx=i; }
+    }
+    selected.push(bestIdx);
+    remaining.delete(bestIdx);
   }
-  if (mode === 'topN') {
-    return [...all].sort((a,b)=>(b.score||0)-(a.score||0)).slice(0, Math.max(3, topN||6));
-  }
-  return all;
+  return selected;
+}
+// El de mejor score de cada sector representado en `stocks`.
+function pickBestPerSectorIndices(stocks) {
+  const bestBySector = {};
+  stocks.forEach((s,i)=>{
+    if (!(s.sector in bestBySector) || (s.score||0) > (stocks[bestBySector[s.sector]].score||0)) {
+      bestBySector[s.sector] = i;
+    }
+  });
+  return Object.values(bestBySector);
+}
+// Aplica el modo de universo (full/top1/topN) SOBRE datos ya calculados
+// (validStocks + su matriz de correlación completa) — así "Top N" puede usar
+// la correlación real entre TODOS los candidatos, no solo el score de F1.
+function applySelectionMode(mode, topN, validStocks, corr) {
+  let idxs;
+  if (mode === 'top1') idxs = pickBestPerSectorIndices(validStocks);
+  else if (mode === 'topN') idxs = selectDiversifiedIndices(validStocks, corr, Math.max(3, topN||6));
+  else idxs = validStocks.map((_,i)=>i);
+  const stocks = idxs.map(i=>validStocks[i]);
+  const subCorr = idxs.map(i=>idxs.map(j=>corr[i][j]));
+  return { stocks, corr: subCorr, idxs };
 }
 function buildSpyMap(spyPrices) {
   const m = {}; toDailyRet(spyPrices).forEach(r => { m[r.date] = r.r; }); return m;
@@ -1336,8 +1368,12 @@ export default function App() {
     setPhase("loading");
     const corrY=Math.max(cpY,2);
     const from=`${new Date().getFullYear()-corrY}-01-01`;
-    const allStocks=selectUniverse(fundData, assetUniverse, topNCount);
-    const allSyms=allStocks.map(s=>s.symbol);
+    // Siempre se descarga histórico del pool COMPLETO (mismo que usa F2) —
+    // así "Top N" puede elegir viendo la correlación real entre todos los
+    // candidatos, no solo el score. No cuesta llamadas extra: F2 ya lo
+    // descargó y quedó en caché.
+    const fullPool=Object.values(fundData).flat();
+    const allSyms=fullPool.map(s=>s.symbol);
     try {
       let done=0; const total=allSyms.length+1;
       let hist={}, spyPrices; const histErrors={};
@@ -1393,7 +1429,7 @@ export default function App() {
       const allDates=Object.keys(spyMap).sort();
 
       const validStocks=[], retArrays=[];
-      for (const stk of allStocks) {
+      for (const stk of fullPool) {
         const p=hist[stk.symbol]||[];
         if (p.length<60) continue;
         const rm={}; toDailyRet(p).forEach(r=>{rm[r.date]=r.r;});
@@ -1406,7 +1442,7 @@ export default function App() {
       // Visibilidad: si algún sector quedó sin ningún activo con histórico
       // suficiente, avisar con la causa REAL (antes se perdía en silencio).
       const sectorsWithData = new Set(validStocks.map(s=>s.sector));
-      const sectorsMissing = [...new Set(allStocks.map(s=>s.sector))].filter(s=>!sectorsWithData.has(s));
+      const sectorsMissing = [...new Set(fullPool.map(s=>s.sector))].filter(s=>!sectorsWithData.has(s));
       const histErrSample = Object.values(histErrors)[0] || null;
       if (sectorsMissing.length > 0) {
         console.warn(`F3: sin histórico suficiente para: ${sectorsMissing.join(', ')}`, histErrors);
@@ -1416,7 +1452,12 @@ export default function App() {
       const trimmed=retArrays.map(r=>r.slice(r.length-minLen));
       const {corr}=buildCovAndCorr(trimmed);
 
-      setCorrData({stocks:validStocks, corrMatrix:corr, period:corrY, sectorsMissing, histErrSample});
+      // Recién ACÁ se aplica el modo elegido (full/top1/topN) — "Top N" ya
+      // puede ver la correlación real entre todos los candidatos válidos y
+      // evitar amontonarse en activos muy correlacionados entre sí.
+      const {stocks:finalStocks, corr:finalCorr} = applySelectionMode(assetUniverse, topNCount, validStocks, corr);
+
+      setCorrData({stocks:finalStocks, corrMatrix:finalCorr, period:corrY, sectorsMissing, histErrSample});
       setTab("corr");
       setLp({step:"Fase 3 completada.",pct:100,phase:3});
       await delay(400);
@@ -1433,8 +1474,10 @@ export default function App() {
     const rf=rfRate/100;
     const minWf=minW/100, maxWf=maxW/100;
     const from=`${new Date().getFullYear()-optY}-01-01`;
-    const allStocks=selectUniverse(fundData, assetUniverse, topNCount);
-    const allSyms=allStocks.map(s=>s.symbol);
+    // Mismo criterio que F3: siempre se trabaja sobre el pool completo para
+    // tener la correlación real disponible antes de aplicar "Top N".
+    const fullPool=Object.values(fundData).flat();
+    const allSyms=fullPool.map(s=>s.symbol);
     try {
       let done=0; const total=allSyms.length+1;
       let hist={}, spyPrices; const histErrors={};
@@ -1490,7 +1533,7 @@ export default function App() {
       const allDates=Object.keys(spyMap).sort();
 
       const validStocks=[], retArrays=[];
-      for (const stk of allStocks) {
+      for (const stk of fullPool) {
         const p=hist[stk.symbol]||[];
         if (p.length<60) continue;
         const rm={}; toDailyRet(p).forEach(r=>{rm[r.date]=r.r;});
@@ -1502,27 +1545,34 @@ export default function App() {
 
       const minLen=Math.min(...retArrays.map(r=>r.length));
       const trimmed=retArrays.map(r=>r.slice(r.length-minLen));
-      const {cov}=buildCovAndCorr(trimmed);
+      const {cov,corr}=buildCovAndCorr(trimmed);
       const annRets=trimmed.map(r=>(Math.pow(r.reduce((a,v)=>a*(1+v),1),252/r.length)-1));
 
+      // Selección diversificada ANTES de Monte Carlo — el optimizador solo ve
+      // el universo final (full/top1/topN), ya libre de correlación innecesaria
+      // si el modo es "Top N".
+      const {stocks:validStocksSel, idxs} = applySelectionMode(assetUniverse, topNCount, validStocks, corr);
+      const covSel = idxs.map(i=>idxs.map(j=>cov[i][j]));
+      const annRetsSel = idxs.map(i=>annRets[i]);
+
       setLp({step:`Monte Carlo: 4,000 portafolios (peso mín ${minW}% · máx ${maxW}%)...`,pct:64,phase:4});
-      const mcPorts=runMonteCarlo(annRets,cov,rf,4000,minWf,maxWf);
+      const mcPorts=runMonteCarlo(annRetsSel,covSel,rf,4000,minWf,maxWf);
 
       setLp({step:"Identificando portafolios óptimos...",pct:86,phase:4});
       const minVar=mcPorts.reduce((b,p)=>p.vol<b.vol?p:b, mcPorts[0]);
       const maxShp=mcPorts.reduce((b,p)=>p.sharpe>b.sharpe?p:b, mcPorts[0]);
-      const rpW=riskParityW(cov);
-      const rpStats=portStats(rpW,annRets,cov,rf);
-      const ewW=new Array(validStocks.length).fill(1/validStocks.length);
-      const ewStats=portStats(ewW,annRets,cov,rf);
+      const rpW=riskParityW(covSel);
+      const rpStats=portStats(rpW,annRetsSel,covSel,rf);
+      const ewW=new Array(validStocksSel.length).fill(1/validStocksSel.length);
+      const ewStats=portStats(ewW,annRetsSel,covSel,rf);
       const spyR=allDates.filter(d=>spyMap[d]!=null).map(d=>spyMap[d]).slice(-minLen);
       const spyAnn=(Math.pow(spyR.reduce((a,v)=>a*(1+v),1),252/spyR.length)-1)*100;
       const spyM=spyR.reduce((a,b)=>a+b,0)/spyR.length;
       const spyVol=Math.sqrt(spyR.reduce((a,r)=>a+Math.pow(r-spyM,2),0)/(spyR.length-1)*252)*100;
 
       setOptData({
-        stocks:validStocks, mcPorts,
-        cov, annRets,
+        stocks:validStocksSel, mcPorts,
+        cov:covSel, annRets:annRetsSel,
         minVar:{...minVar,label:"Mínima Varianza"},
         maxShp:{...maxShp,label:"Máximo Sharpe"},
         rp:    {...rpStats,weights:rpW,label:"Risk Parity"},

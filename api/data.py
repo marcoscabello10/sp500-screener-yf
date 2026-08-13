@@ -419,10 +419,18 @@ class handler(BaseHTTPRequestHandler):
             symbols = [s.strip() for s in sym_raw.split(',') if s.strip()]
             multi   = len(symbols) > 1
 
+            # Twelve Data espera notación con punto para tickers de doble clase
+            # (BRK.B, BF.B) — nuestro scraper los guarda con guión (formato Yahoo).
+            # Traducimos solo para esta llamada; el resto de la app sigue usando guión.
+            TD_DOT_TICKERS = {'BRK-B', 'BF-B'}
+            def _to_td_symbol(s):
+                return s.replace('-', '.') if s in TD_DOT_TICKERS else s
+            td_symbols = [_to_td_symbol(s) for s in symbols]
+
             # Una sola llamada para todos los símbolos del lote (hasta 5)
             url = 'https://api.twelvedata.com/time_series'
             req_params = {
-                'symbol':     ','.join(symbols),
+                'symbol':     ','.join(td_symbols),
                 'interval':   '1day',
                 'start_date': from_date,
                 'outputsize': 5000,
@@ -464,16 +472,19 @@ class handler(BaseHTTPRequestHandler):
                 return result  # ya viene DESC de la API
 
             if multi:
-                # Respuesta multi: {"AAPL": {"values": [...]}, "MSFT": {"values": [...]}}
+                # Respuesta multi: {"AAPL": {"values": [...]}, "BRK.B": {"values": [...]}}
+                # TD responde con la clave que le mandamos (td_symbols) — hay que
+                # buscar con esa, pero devolver con la clave original (symbols)
+                # para que el resto de la app siga usando el formato con guión.
                 # Un símbolo individual puede fallar aunque el resto funcione:
                 # {"AAPL": {"code": 400, "message": "...", "status": "error"}}
                 result = {}
-                for sym in symbols:
-                    entry = data.get(sym) or {}
+                for orig_sym, td_sym in zip(symbols, td_symbols):
+                    entry = data.get(td_sym) or {}
                     if isinstance(entry, dict) and entry.get('status') == 'error':
-                        result[sym] = {'_error': f"TD {entry.get('code')}: {entry.get('message')}"}
+                        result[orig_sym] = {'_error': f"TD {entry.get('code')}: {entry.get('message')}"}
                     else:
-                        result[sym] = parse_td(entry.get('values', []))
+                        result[orig_sym] = parse_td(entry.get('values', []))
                 return result
             else:
                 # Respuesta single: {"values": [...], "meta": {...}}

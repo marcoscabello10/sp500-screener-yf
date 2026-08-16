@@ -492,7 +492,7 @@ function SnapshotBadge({meta}) {
 }
 
 // ── Screens ───────────────────────────────────────────────────────────────────
-function StartScreen({onStart, onStartClient, cacheInfo, onLoadCache, clientTickers, setClientTickers, clientName, setClientName, cedearFilter, setCedearFilter}) {
+function StartScreen({onStart, onStartClient, cacheInfo, onLoadCache, clientTickers, setClientTickers, clientHoldings, setClientHoldings, clientName, setClientName, clientComitente, setClientComitente, cedearFilter, setCedearFilter}) {
   const [mode,    setMode]    = useState("sp500"); // "sp500" | "client"
   const [dragging,setDragging]= useState(false);
   const [parseErr,setParseErr]= useState(null);
@@ -502,20 +502,78 @@ function StartScreen({onStart, onStartClient, cacheInfo, onLoadCache, clientTick
     setParseErr(null);
     if (!file) return;
     try {
-      const buf  = await file.arrayBuffer();
-      const wb   = XLSX.read(buf);
-      const ws   = wb.Sheets[wb.SheetNames[0]];
-      const rows = XLSX.utils.sheet_to_json(ws, {header:1});
-      const set  = new Set();
-      for (const row of rows)
-        for (const cell of row)
-          if (typeof cell === "string") {
-            const t = cell.trim().toUpperCase();
-            if (/^[A-Z]{1,5}$/.test(t)) set.add(t);
+      const buf = await file.arrayBuffer();
+      const wb  = XLSX.read(buf);
+      const ws  = wb.Sheets[wb.SheetNames[0]];
+      const norm = h => String(h||"").trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"");
+
+      // Intento 1: formato con encabezados con nombre — Cliente, Comitente,
+      // Ticker, Cantidad, Precio de compra, % Posición (en cualquier orden)
+      const objRows = XLSX.utils.sheet_to_json(ws, {defval:null});
+      let holdings = [];
+      let detectedName = "", detectedComitente = "";
+
+      if (objRows.length && typeof objRows[0]==="object") {
+        const headers = Object.keys(objRows[0]);
+        const findCol = test => headers.find(h=>test(norm(h)));
+        const colTicker    = findCol(h=>h.includes("ticker")||h.includes("simbolo")||h.includes("activo")||h==="accion");
+        const colCantidad  = findCol(h=>h.includes("cantidad")||h.includes("nominales"));
+        const colPrecio    = findCol(h=>h.includes("precio"));
+        const colPct       = findCol(h=>h.includes("posicion")||h.includes("porcentaje")||h.includes("%"));
+        const colCliente   = findCol(h=>h.includes("cliente")&&!h.includes("comitente"));
+        const colComitente = findCol(h=>h.includes("comitente"));
+
+        if (colTicker) {
+          for (const row of objRows) {
+            const raw = row[colTicker];
+            if (!raw) continue;
+            const t = String(raw).trim().toUpperCase().replace(/\.BA$/,"");
+            if (!/^[A-Z]{1,5}$/.test(t)) continue;
+            let cantidad = colCantidad!=null ? parseFloat(String(row[colCantidad]).replace(",",".")) : null;
+            let precioCompra = colPrecio!=null ? parseFloat(String(row[colPrecio]).replace(",",".")) : null;
+            let pctExcel = colPct!=null ? row[colPct] : null;
+            if (typeof pctExcel==="string") pctExcel = parseFloat(pctExcel.replace("%","").replace(",","."));
+            if (typeof pctExcel==="number" && pctExcel<=1) pctExcel *= 100;
+            holdings.push({
+              ticker: t,
+              cantidad: isFinite(cantidad)?cantidad:null,
+              precioCompra: isFinite(precioCompra)?precioCompra:null,
+              pctExcel: isFinite(pctExcel)?pctExcel:null,
+            });
+            if (!detectedName && colCliente && row[colCliente]) detectedName = String(row[colCliente]).trim();
+            if (!detectedComitente && colComitente && row[colComitente]) detectedComitente = String(row[colComitente]).trim();
           }
-      const tickers = [...set].slice(0, 100);
-      if (!tickers.length) { setParseErr("No se detectaron tickers. Asegurate de que el archivo tenga símbolos bursátiles (ej: AAPL, MSFT)."); return; }
-      setClientTickers(tickers);
+        }
+      }
+
+      // Fallback: formato viejo — lista de tickers sueltos, sin encabezados
+      // reconocibles (sin cantidad/precio, se analiza como lista simple)
+      if (!holdings.length) {
+        const rawRows = XLSX.utils.sheet_to_json(ws, {header:1});
+        const set = new Set();
+        for (const row of rawRows)
+          for (const cell of row)
+            if (typeof cell === "string") {
+              const t = cell.trim().toUpperCase();
+              if (/^[A-Z]{1,5}$/.test(t)) set.add(t);
+            }
+        holdings = [...set].map(t=>({ticker:t, cantidad:null, precioCompra:null, pctExcel:null}));
+      }
+
+      // Dedupe por ticker — si aparece 2 veces, suma cantidades
+      const dedup = {};
+      for (const h of holdings) {
+        if (dedup[h.ticker]) {
+          if (h.cantidad!=null) dedup[h.ticker].cantidad = (dedup[h.ticker].cantidad||0) + h.cantidad;
+        } else dedup[h.ticker] = {...h};
+      }
+      const finalHoldings = Object.values(dedup).slice(0,100);
+
+      if (!finalHoldings.length) { setParseErr("No se detectaron tickers. Asegurate de que el archivo tenga símbolos bursátiles (ej: AAPL, MSFT)."); return; }
+      setClientHoldings(finalHoldings);
+      setClientTickers(finalHoldings.map(h=>h.ticker));
+      if (detectedName && !clientName) setClientName(detectedName);
+      if (detectedComitente) setClientComitente(detectedComitente);
     } catch { setParseErr("Error al leer el archivo. Usá formato .xlsx o .csv"); }
   }
 
@@ -648,17 +706,48 @@ function StartScreen({onStart, onStartClient, cacheInfo, onLoadCache, clientTick
           {/* Error */}
           {parseErr && <div style={{fontSize:10,color:"#f87171",fontFamily:"monospace",padding:"8px 12px",background:"#1a0a0a",borderRadius:8}}>{parseErr}</div>}
 
-          {/* Ticker preview */}
-          {clientTickers.length > 0 && (
+          {/* Comitente detectado */}
+          {clientComitente && (
+            <div style={{fontSize:10,color:"#94a3b8",fontFamily:"monospace",padding:"6px 12px",background:"#0a1020",borderRadius:8,border:"1px solid #1e293b"}}>
+              N° Comitente detectado: <span style={{color:"#38bdf8",fontWeight:700}}>{clientComitente}</span>
+            </div>
+          )}
+
+          {/* Holdings preview */}
+          {clientHoldings.length > 0 && (
             <div style={{background:"#0a1020",border:"1px solid #1e293b",borderRadius:10,padding:"12px 14px"}}>
               <div style={{fontSize:10,color:"#475569",fontFamily:"monospace",marginBottom:8,textTransform:"uppercase",letterSpacing:1}}>
-                Tickers detectados
+                Posiciones detectadas
               </div>
-              <div style={{display:"flex",flexWrap:"wrap",gap:5}}>
-                {clientTickers.map(t=>(
-                  <span key={t} style={{background:"#0f172a",border:"1px solid #1e293b",borderRadius:5,padding:"3px 8px",fontSize:11,color:"#38bdf8",fontFamily:"monospace"}}>{t}</span>
-                ))}
-              </div>
+              {clientHoldings.some(h=>h.cantidad!=null) ? (
+                <div style={{overflowX:"auto"}}>
+                  <table style={{width:"100%",borderCollapse:"collapse",fontSize:10,fontFamily:"monospace"}}>
+                    <thead><tr>
+                      <th style={{textAlign:"left",color:"#475569",padding:"3px 6px"}}>Ticker</th>
+                      <th style={{textAlign:"right",color:"#475569",padding:"3px 6px"}}>Cantidad</th>
+                      <th style={{textAlign:"right",color:"#475569",padding:"3px 6px"}}>Precio compra</th>
+                      <th style={{textAlign:"right",color:"#475569",padding:"3px 6px"}}>% cargado</th>
+                    </tr></thead>
+                    <tbody>
+                      {clientHoldings.map(h=>(
+                        <tr key={h.ticker} style={{borderTop:"1px solid #1e293b"}}>
+                          <td style={{padding:"3px 6px",color:"#38bdf8"}}>{h.ticker}</td>
+                          <td style={{padding:"3px 6px",textAlign:"right",color:"#e2e8f0"}}>{h.cantidad ?? "—"}</td>
+                          <td style={{padding:"3px 6px",textAlign:"right",color:"#e2e8f0"}}>{h.precioCompra!=null?`$${h.precioCompra}`:"—"}</td>
+                          <td style={{padding:"3px 6px",textAlign:"right",color:"#e2e8f0"}}>{h.pctExcel!=null?`${h.pctExcel.toFixed(1)}%`:"—"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div style={{display:"flex",flexWrap:"wrap",gap:5}}>
+                  {clientHoldings.map(h=>(
+                    <span key={h.ticker} style={{background:"#0f172a",border:"1px solid #1e293b",borderRadius:5,padding:"3px 8px",fontSize:11,color:"#38bdf8",fontFamily:"monospace"}}>{h.ticker}</span>
+                  ))}
+                  <div style={{width:"100%",fontSize:9,color:"#475569",marginTop:4}}>Solo se detectaron tickers, sin cantidad/precio — se va a analizar como lista simple.</div>
+                </div>
+              )}
             </div>
           )}
 
@@ -979,9 +1068,10 @@ function exportToExcel(fundData, riskData, optData, blData, corrData, clientName
   XLSX.writeFile(wb, `analisis_cartera_${(clientName||"sp500").replace(/\s+/g,"_")}_${date}.xlsx`);
 }
 
-function exportToHTML(fundData, riskData, optData, blData, corrData, clientName, spy, rfRate, cpY, lpY) {
+function exportToHTML(fundData, riskData, optData, blData, corrData, clientName, spy, rfRate, cpY, lpY, clientComitente) {
   const date  = new Date().toLocaleDateString("es-AR",{year:"numeric",month:"long",day:"numeric"});
   const name  = clientName||"S&P 500";
+  const comitenteHtml = clientComitente ? ` <span style="font-size:14px;color:#64748b;font-weight:400">· Comitente ${clientComitente}</span>` : "";
   const fmtN  = (v,d=1,suf="") => v==null||!isNaN(v)===false?"—":`${Number(v).toFixed(d)}${suf}`;
   const fmtV  = (v,suf="%",d=1) => v==null||!isFinite(v)?"—":`${Number(v)>=0&&suf==="%"?"+":""}${Number(v).toFixed(d)}${suf}`;
 
@@ -1029,7 +1119,7 @@ function exportToHTML(fundData, riskData, optData, blData, corrData, clientName,
 </style></head><body>
 <div class="cover">
   <div class="sub">Reporte de Análisis de Cartera</div>
-  <h1>${name}</h1>
+  <h1>${name}${comitenteHtml}</h1>
   <div class="meta">Generado el ${date} · Tasa libre de riesgo: ${rfRate}% · Períodos: CP ${cpY}Y / LP ${lpY}Y · Datos: Financial Modeling Prep</div>
 </div>
 <div class="body">
@@ -1096,6 +1186,8 @@ export default function App() {
   const [portMode,     setPortMode]     = useState("sp500");   // "sp500" | "client"
   const [cedearFilter, setCedearFilter] = useState("all");     // "all" | "cedear"
   const [clientTickers,setClientTickers]= useState([]);
+  const [clientHoldings,setClientHoldings]= useState([]); // [{ticker,cantidad,precioCompra,pctExcel}]
+  const [clientComitente,setClientComitente]= useState("");
   const [clientName,   setClientName]   = useState("");
   const [blViews,      setBlViews]      = useState([]);
   const [blData,       setBlData]       = useState(null);
@@ -1284,6 +1376,51 @@ export default function App() {
 
       // 5. Group by sector + score
       setLp({step:"Calculando scores...",pct:88,phase:1});
+
+      // Cruce con el snapshot del bot local para saber qué tickers tienen
+      // CEDEAR real en BYMA (campo hasCedear) — Cartera propia siempre
+      // trabaja sobre base de CEDEARs.
+      let cedearMap = {};
+      try {
+        const snapRes = await fetch(`/data/sp500_fundamentals.json?t=${Date.now()}`);
+        if (snapRes.ok) {
+          const snap = await snapRes.json();
+          (snap.stocks||[]).forEach(s=>{ cedearMap[s.symbol] = s.hasCedear; });
+        }
+      } catch { /* si falla, simplemente no se muestra la validación de CEDEAR */ }
+
+      // Valuación real de la cartera: cantidad × precio actual, costo base,
+      // ganancia y peso real (% del valor total actual, no el % cargado en
+      // el Excel) — así se puede comparar cuánto pesa cada activo HOY vs.
+      // lo que decía el Excel al momento de cargarlo.
+      const holdingsMap = {};
+      clientHoldings.forEach(h=>{ holdingsMap[h.ticker] = h; });
+      let totalValorCartera = 0;
+      const valuations = {};
+      for (const sym of tickers) {
+        const h = holdingsMap[sym];
+        const price = quotes[sym]?.price;
+        if (h && h.cantidad!=null && price>0) {
+          const valorActual = h.cantidad * price;
+          const costoBase = h.precioCompra!=null ? h.cantidad * h.precioCompra : null;
+          valuations[sym] = {
+            cantidad: h.cantidad,
+            precioCompra: h.precioCompra,
+            pctExcel: h.pctExcel,
+            valorActual,
+            costoBase,
+            gananciaUSD: costoBase!=null ? valorActual - costoBase : null,
+            gananciaPct: h.precioCompra ? (price/h.precioCompra - 1)*100 : null,
+          };
+          totalValorCartera += valorActual;
+        }
+      }
+      if (totalValorCartera > 0) {
+        for (const sym of Object.keys(valuations)) {
+          valuations[sym].pctActual = valuations[sym].valorActual / totalValorCartera * 100;
+        }
+      }
+
       const bySector = {};
       for (const sym of tickers) {
         if (!quotes[sym]) continue;
@@ -1314,6 +1451,8 @@ export default function App() {
           roa:      r.returnOnAssetsTTM!=null?r.returnOnAssetsTTM*100:null,
           revGrowth:r.revenueGrowthTTM!=null?r.revenueGrowthTTM*100:null,
           priceToSales: r.priceToSalesTTM>0&&r.priceToSalesTTM<100?r.priceToSalesTTM:null,
+          hasCedear: cedearMap[sym],
+          ...(valuations[sym]||{}),
         }));
         const scored = enriched.map(stk=>{
           let score=0, tw=0, nUsed=0;
@@ -1335,7 +1474,7 @@ export default function App() {
       await delay(400);
       setPhase("done1");
     } catch(err) { setError(err.message); setPhase("error"); }
-  }, [clientTickers, clientName]);
+  }, [clientTickers, clientHoldings, clientName]);
 
   // ── Phase 2: Risk metrics ────────────────────────────────────────────────────
   const runP2 = useCallback(async()=>{
@@ -1762,7 +1901,7 @@ export default function App() {
     setBlData({ ...result, ...stats, weights:result.weights, muShift, label:"Black-Litterman" });
     setTab("bl");
   }, [optData, blViews, blTau, blDelta, rfRate]);
-  if (phase==="idle") return <StartScreen onStart={runP1} onStartClient={runClientP1} cacheInfo={cacheInfo} onLoadCache={loadFromCache} clientTickers={clientTickers} setClientTickers={setClientTickers} clientName={clientName} setClientName={setClientName} cedearFilter={cedearFilter} setCedearFilter={setCedearFilter}/>;
+  if (phase==="idle") return <StartScreen onStart={runP1} onStartClient={runClientP1} cacheInfo={cacheInfo} onLoadCache={loadFromCache} clientTickers={clientTickers} setClientTickers={setClientTickers} clientHoldings={clientHoldings} setClientHoldings={setClientHoldings} clientName={clientName} setClientName={setClientName} clientComitente={clientComitente} setClientComitente={setClientComitente} cedearFilter={cedearFilter} setCedearFilter={setCedearFilter}/>;
   if (phase==="loading") return <LoadingScreen progress={lp}/>;
   if (phase==="error") return (
     <div style={{minHeight:"100vh",background:"#020817",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:14,fontFamily:"monospace",padding:32}}>
@@ -2315,6 +2454,73 @@ export default function App() {
             </div>
           )}
 
+          {/* ── Panel de valuación de cartera real (modo cliente) ── */}
+          {portMode==="client"&&(()=>{
+            const allStocks = Object.values(fundData).flat();
+            const withVal = allStocks.filter(s=>s.valorActual!=null);
+            if (!withVal.length) return null;
+            const totalValor = withVal.reduce((a,s)=>a+s.valorActual,0);
+            const totalCosto = withVal.reduce((a,s)=>a+(s.costoBase||0),0);
+            const totalGanancia = totalCosto>0 ? totalValor-totalCosto : null;
+            const noCedear = allStocks.filter(s=>s.hasCedear===false);
+            return (
+              <div style={{margin:"0 14px 14px",background:"#06101e",border:"1px solid #1e293b",borderRadius:12,padding:"14px 16px"}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12,flexWrap:"wrap",gap:8}}>
+                  <div style={{fontSize:10,color:"#475569",fontFamily:"monospace",textTransform:"uppercase",letterSpacing:2}}>
+                    💼 Mi Cartera — Valuación{clientComitente?` · Comitente ${clientComitente}`:""}
+                  </div>
+                  <div style={{display:"flex",gap:14}}>
+                    <div style={{textAlign:"right"}}>
+                      <div style={{fontSize:9,color:"#475569",fontFamily:"monospace"}}>Valor actual</div>
+                      <div style={{fontSize:15,fontWeight:700,color:"#f1f5f9",fontFamily:"monospace"}}>${totalValor.toLocaleString(undefined,{maximumFractionDigits:0})}</div>
+                    </div>
+                    {totalGanancia!=null&&(
+                      <div style={{textAlign:"right"}}>
+                        <div style={{fontSize:9,color:"#475569",fontFamily:"monospace"}}>Ganancia/Pérdida</div>
+                        <div style={{fontSize:15,fontWeight:700,color:totalGanancia>=0?"#34d399":"#f87171",fontFamily:"monospace"}}>
+                          {totalGanancia>=0?"+":""}${totalGanancia.toLocaleString(undefined,{maximumFractionDigits:0})} ({totalCosto>0?((totalGanancia/totalCosto)*100).toFixed(1):"—"}%)
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+                {noCedear.length>0&&(
+                  <div style={{fontSize:10,color:"#f97316",fontFamily:"monospace",background:"#1e1208",border:"1px solid #7c3a0a",borderRadius:6,padding:"6px 10px",marginBottom:10}}>
+                    ⚠️ Sin CEDEAR verificado en BYMA: {noCedear.map(s=>s.symbol).join(", ")}
+                  </div>
+                )}
+                <div style={{overflowX:"auto"}}>
+                  <table style={{width:"100%",borderCollapse:"collapse",fontSize:11,fontFamily:"monospace"}}>
+                    <thead><tr>
+                      <th style={{...TH,textAlign:"left"}}>Ticker</th>
+                      <th style={TH}>Cantidad</th>
+                      <th style={TH}>Precio compra</th>
+                      <th style={TH}>Precio actual</th>
+                      <th style={TH}>Valor actual</th>
+                      <th style={TH}>Gan/Pérd %</th>
+                      <th style={TH}>% Peso real</th>
+                      <th style={TH}>% Cargado</th>
+                    </tr></thead>
+                    <tbody>
+                      {withVal.sort((a,b)=>(b.valorActual||0)-(a.valorActual||0)).map(s=>(
+                        <tr key={s.symbol} style={{borderBottom:"1px solid #0a1628"}}>
+                          <td style={{...TD,textAlign:"left",fontWeight:700,color:"#f1f5f9"}}>{s.symbol}</td>
+                          <td style={TD}>{s.cantidad}</td>
+                          <td style={TD}>{s.precioCompra!=null?`$${s.precioCompra.toFixed(2)}`:"—"}</td>
+                          <td style={TD}>${s.price?.toFixed(2)}</td>
+                          <td style={TD}>${s.valorActual.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+                          <td style={{...TD,color:s.gananciaPct==null?"#334155":s.gananciaPct>=0?"#34d399":"#f87171"}}>{s.gananciaPct!=null?`${s.gananciaPct>=0?"+":""}${s.gananciaPct.toFixed(1)}%`:"—"}</td>
+                          <td style={TD}>{s.pctActual!=null?`${s.pctActual.toFixed(1)}%`:"—"}</td>
+                          <td style={{...TD,color:"#475569"}}>{s.pctExcel!=null?`${s.pctExcel.toFixed(1)}%`:"—"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            );
+          })()}
+
           {/* ── Audit summary panel (client mode only) ── */}
           {isRisk&&portMode==="client"&&(()=>{
             const allStocks = Object.values(riskData).flat();
@@ -2543,7 +2749,7 @@ export default function App() {
               <span style={{fontSize:14}}>📊</span> Exportar Excel
             </button>
             <button
-              onClick={()=>exportToHTML(fundData,riskData,optData,blData,corrData,clientName,spy,rfRate,cpY,lpY)}
+              onClick={()=>exportToHTML(fundData,riskData,optData,blData,corrData,clientName,spy,rfRate,cpY,lpY,clientComitente)}
               style={{background:"#0c1a2e",border:"1px solid #1e3a5f",borderRadius:8,padding:"7px 16px",color:"#60a5fa",fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"monospace",display:"flex",alignItems:"center",gap:6}}>
               <span style={{fontSize:14}}>📄</span> Exportar PDF
             </button>

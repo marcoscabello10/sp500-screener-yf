@@ -92,18 +92,18 @@ function lsDel(key) {
 }
 
 // Fundamentals cache (Fase 1 — SP500)
-function cacheLoad() {
-  const d = lsGet(CACHE_KEY);
+function cacheLoad(mode="all") {
+  const d = lsGet(`${CACHE_KEY}_${mode}`);
   if (!d) return null;
   const ageDays = (Date.now() - d.timestamp) / 86400000;
   if (ageDays > CACHE_DAYS) return null;
   return { ...d, ageDays: ageDays.toFixed(1), daysLeft: (CACHE_DAYS - ageDays).toFixed(1) };
 }
-function cacheSave(fundData, spy) {
-  lsSet(CACHE_KEY, { fundData, spy, timestamp: Date.now() });
+function cacheSave(fundData, spy, mode="all") {
+  lsSet(`${CACHE_KEY}_${mode}`, { fundData, spy, timestamp: Date.now() });
 }
-function cacheClear() {
-  lsDel(CACHE_KEY);
+function cacheClear(mode="all") {
+  lsDel(`${CACHE_KEY}_${mode}`);
 }
 
 // Historical prices cache — compartido por Fases 2, 3 y 4 (7 días)
@@ -623,7 +623,7 @@ function StartScreen({onStart, onStartClient, cacheInfo, onLoadCache, clientTick
             <div style={{display:"flex",gap:8}}>
               {[
                 {id:"all",    icon:"🌐", label:"S&P 500 completo",       sub:`~503 empresas`},
-                {id:"cedear", icon:"🇦🇷", label:"Solo con CEDEAR en BYMA", sub:`~${CEDEAR_TICKERS.size} empresas`},
+                {id:"cedear", icon:"🇦🇷", label:"Solo con CEDEAR en BYMA", sub:`verificado por el bot local`},
               ].map(opt=>(
                 <div key={opt.id} onClick={()=>setCedearFilter(opt.id)} style={{flex:1,background:cedearFilter===opt.id?"#0c1a2e":"#06101e",border:`2px solid ${cedearFilter===opt.id?"#38bdf8":"#1e293b"}`,borderRadius:10,padding:"12px 14px",cursor:"pointer",transition:"all 0.15s"}}>
                   <div style={{fontSize:18,marginBottom:4}}>{opt.icon}</div>
@@ -1197,12 +1197,13 @@ export default function App() {
 
   // ── Load cache on mount ──────────────────────────────────────────────────────
   useEffect(() => {
-    const cached = cacheLoad();
+    const cached = cacheLoad(cedearFilter);
     if (cached) setCacheInfo(cached);
-  }, []);
+    else setCacheInfo(null);
+  }, [cedearFilter]);
 
   const loadFromCache = useCallback(() => {
-    const cached = cacheLoad();
+    const cached = cacheLoad(cedearFilter);
     if (!cached) return;
     setFundData(cached.fundData);
     setSpy(cached.spy);
@@ -1210,10 +1211,14 @@ export default function App() {
     setActiveSec(Object.keys(cached.fundData)[0]);
     setPhase("done1");
     setTab("fund");
-  }, []);
+  }, [cedearFilter]);
 
   const forceRefresh = useCallback(() => {
-    cacheClear();
+    // Limpia los 2 modos por seguridad — evita que quede caché cruzado
+    // entre "Completo" y "Solo CEDEAR" (el bug que causaba ver EOG y otros
+    // sin CEDEAR en modo CEDEAR).
+    cacheClear("all");
+    cacheClear("cedear");
     histCacheClear();
     setCacheInfo(null);
     setPhase("idle");
@@ -1261,7 +1266,7 @@ export default function App() {
       const cands = {};
       for (const sector of Object.keys(bySector)) {
         cands[sector] = bySector[sector]
-          .filter(s => cedearFilter === "all" || CEDEAR_TICKERS.has(s.symbol))
+          .filter(s => cedearFilter === "all" || (s.hasCedear !== undefined ? s.hasCedear : CEDEAR_TICKERS.has(s.symbol)))
           .filter(s => s.marketCap > 1e8 || (!s.marketCap && s.price > 0))
           .sort((a,b) => (b.marketCap||0) - (a.marketCap||0))
           .slice(0, 12);
@@ -1293,14 +1298,14 @@ export default function App() {
 
       setFundData(results);
       setActiveSec(Object.keys(results)[0]);
-      cacheSave(results, spyObj);
-      const newInfo = cacheLoad();
+      cacheSave(results, spyObj, cedearFilter);
+      const newInfo = cacheLoad(cedearFilter);
       setCacheInfo(newInfo);
       setLp({step:"Fase 1 completada y guardada en caché.",pct:100,phase:1});
       await delay(400);
       setPhase("done1");
     } catch(err) { setError(err.message); setPhase("error"); }
-  }, []);
+  }, [cedearFilter]);
 
   // ── Phase 1 (client mode): analyze custom ticker list ────────────────────────
   const runClientP1 = useCallback(async () => {
@@ -1581,11 +1586,13 @@ export default function App() {
   const runCorr = useCallback(async()=>{
     setPhase("loading");
     const corrY=Math.max(cpY,2);
-    const from=`${new Date().getFullYear()-corrY}-01-01`;
-    // Siempre se descarga histórico del pool COMPLETO (mismo que usa F2) —
-    // así "Top N" puede elegir viendo la correlación real entre todos los
-    // candidatos, no solo el score. No cuesta llamadas extra: F2 ya lo
-    // descargó y quedó en caché.
+    // Fetch/caché con ventana ANCHA compartida (misma fórmula que F2) — así,
+    // sin importar en qué orden se corran F2/F3/F4, el primero que descargue
+    // deja un caché que los otros dos siempre pueden reusar. El recorte al
+    // período específico de F3 (corrY) se hace después, sobre los datos ya
+    // en memoria — no afecta qué tan lejos se pidió el histórico.
+    const fetchYears=Math.max(cpY,lpY,corrY,6);
+    const from=`${new Date().getFullYear()-fetchYears}-01-01`;
     const fullPool=Object.values(fundData).flat();
     const allSyms=fullPool.map(s=>s.symbol);
     try {
@@ -1640,7 +1647,10 @@ export default function App() {
 
       setLp({step:"Calculando matriz de correlación...",pct:78,phase:3});
       const spyMap=buildSpyMap(spyPrices);
-      const allDates=Object.keys(spyMap).sort();
+      // El fetch bajó `fetchYears` (ancho, compartido) — acá se recorta al
+      // período que el usuario realmente configuró para F3 (corrY).
+      const corrCutoff=`${new Date().getFullYear()-corrY}-01-01`;
+      const allDates=Object.keys(spyMap).sort().filter(d=>d>=corrCutoff);
 
       const validStocks=[], retArrays=[];
       for (const stk of fullPool) {
@@ -1677,7 +1687,7 @@ export default function App() {
       await delay(400);
       setPhase("done3");
     } catch(err) { setError(err.message); setPhase("error"); }
-  },[fundData,cpY,assetUniverse,topNCount,forcedSectors,excludedSectors]);
+  },[fundData,cpY,lpY,assetUniverse,topNCount,forcedSectors,excludedSectors]);
 
   // ── Phase 4: Optimization ────────────────────────────────────────────────────
   const runOpt = useCallback(async()=>{
@@ -1687,7 +1697,11 @@ export default function App() {
     setPhase("loading");
     const rf=rfRate/100;
     const minWf=minW/100, maxWf=maxW/100;
-    const from=`${new Date().getFullYear()-optY}-01-01`;
+    // Misma ventana ancha compartida que F2/F3 — garantiza reusar el caché
+    // sin importar en qué orden se corran las fases. El recorte al período
+    // configurado (optY) se hace después, sobre los datos ya en memoria.
+    const fetchYears=Math.max(cpY,lpY,optY,6);
+    const from=`${new Date().getFullYear()-fetchYears}-01-01`;
     // Mismo criterio que F3: siempre se trabaja sobre el pool completo para
     // tener la correlación real disponible antes de aplicar "Top N".
     const fullPool=Object.values(fundData).flat();
@@ -1744,7 +1758,10 @@ export default function App() {
 
       setLp({step:"Construyendo matriz de covarianza...",pct:57,phase:4});
       const spyMap=buildSpyMap(spyPrices);
-      const allDates=Object.keys(spyMap).sort();
+      // El fetch bajó `fetchYears` (ancho, compartido) — acá se recorta al
+      // período que el usuario configuró para F4 (optY).
+      const optCutoff=`${new Date().getFullYear()-optY}-01-01`;
+      const allDates=Object.keys(spyMap).sort().filter(d=>d>=optCutoff);
 
       const validStocks=[], retArrays=[];
       for (const stk of fullPool) {
@@ -1799,7 +1816,7 @@ export default function App() {
       await delay(400);
       setPhase("done4");
     } catch(err) { setError(err.message); setPhase("error"); }
-  },[fundData,rfRate,optY,minW,maxW,assetUniverse,topNCount,forcedSectors,excludedSectors]);
+  },[fundData,rfRate,optY,minW,maxW,cpY,lpY,assetUniverse,topNCount,forcedSectors,excludedSectors]);
 
   const toggleExclude = useCallback((sym) => {
     if (!optData) return;

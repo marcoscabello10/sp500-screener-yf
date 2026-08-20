@@ -228,6 +228,19 @@ def fetch_sp500_list():
     return constituents
 
 
+def check_cedear(sym):
+    """Verifica si existe CEDEAR de este ticker en BYMA. Yahoo Finance usa
+    la convención TICKER.BA para instrumentos de la Bolsa de Buenos Aires —
+    si {sym}.BA tiene precio válido, el CEDEAR existe y cotiza. Usa fast_info
+    (más liviano que .info) porque solo necesitamos saber si tiene precio."""
+    try:
+        fi = yf.Ticker(f'{sym}.BA').fast_info
+        price = getattr(fi, 'last_price', None)
+        return bool(price and price > 0)
+    except Exception:
+        return False
+
+
 def fetch_one(sym, sector=None):
     """Trae quote + los 9 ratios fundamentales en 1 sola llamada .info.
     A diferencia de Vercel, acá NO hace falta pasar session= con headers
@@ -242,6 +255,7 @@ def fetch_one(sym, sector=None):
         margin= info.get('profitMargins')
         roa   = info.get('returnOnAssets')
         rev_g = info.get('revenueGrowth')
+        has_cedear = check_cedear(sym)
         return {
             'symbol':       sym,
             'name':         info.get('shortName') or sym,
@@ -258,6 +272,7 @@ def fetch_one(sym, sector=None):
             'roa':          roa * 100 if roa is not None else None,
             'revGrowth':    rev_g * 100 if rev_g is not None else None,
             'priceToSales': info.get('priceToSalesTrailing12Months'),
+            'hasCedear':    has_cedear,
         }
     except Exception as e:
         print(f'  ⚠️  {sym}: {type(e).__name__}: {e}')

@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useState, useCallback, useEffect, useRef, Fragment } from "react";
 import { ScatterChart, Scatter, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ZAxis } from "recharts";
 import * as XLSX from "xlsx";
 import * as math from "mathjs";
@@ -1327,72 +1327,102 @@ export default function App() {
           return;
         }
       }
-      setLp({step:"Verificando conexión con Yahoo Finance...",pct:2,phase:1});
 
-      // 1. Quotes — lotes de 5 para evitar timeout en Vercel
-      const quotes = {};
-      let qDone = 0;
-      for (const batch of chunk(tickers, 5)) {
-        setLp({step:`Cotizaciones: ${qDone}/${tickers.length}...`,pct:4+(qDone/tickers.length)*18,phase:1});
-        try {
-          const r = await fetch(`${BASE}?action=quote&symbols=${batch.join(",")}`);
-          const d = await r.json();
-          if (Array.isArray(d)) d.forEach(q=>{ quotes[q.symbol]=q; });
-        } catch {}
-        qDone += batch.length;
-        await delay(150);
-      }
-
-      // 2. Profiles for sector info (batch of 20)
-      setLp({step:"Obteniendo sectores y perfiles...",pct:24,phase:1});
-      const profiles = {};
-      for (const batch of chunk(tickers, 20)) {
-        try {
-          const r = await fetch(`${BASE}?action=profile&symbols=${batch.join(",")}`);
-          const d = await r.json();
-          if (Array.isArray(d)) d.forEach(p=>{ profiles[p.symbol]=p; });
-        } catch {}
-        await delay(200);
-      }
-
-      // 3. SPY benchmark
-      setLp({step:"Benchmark SPY...",pct:34,phase:1});
-      const spyRes = await fetch(`${BASE}?action=quote&symbols=SPY`);
-      const spyD   = await spyRes.json();
-      setSpy(Array.isArray(spyD)?spyD[0]:spyD);
-      await delay(200);
-
-      // 4. Ratios TTM — pocas requests grandes (mismo patrón que F1 principal)
-      const ratios = {};
-      const rBatchesC = chunk(tickers, 35);
-      let rDoneC = 0;
-      for (const symsBatch of rBatchesC) {
-        setLp({step:`Ratios fundamentales lote ${rDoneC+1}/${rBatchesC.length}...`,pct:36+(rDoneC/rBatchesC.length)*50,phase:1});
-        try {
-          const r = await fetch(`${BASE}?action=ratios&symbol=${symsBatch.join(",")}`);
-          if (r.ok) {
-            const d = await r.json();
-            if (Array.isArray(d)) d.forEach(x=>{ if (x&&x.symbol) ratios[x.symbol]=x; });
-          }
-        } catch(e) { /* batch falló — continuar con el siguiente */ }
-        rDoneC++;
-        await delay(500);
-      }
-
-      // 5. Group by sector + score
-      setLp({step:"Calculando scores...",pct:88,phase:1});
-
-      // Cruce con el snapshot del bot local para saber qué tickers tienen
-      // CEDEAR real en BYMA (campo hasCedear) — Cartera propia siempre
-      // trabaja sobre base de CEDEARs.
+      setLp({step:"Cargando snapshot del bot local...",pct:2,phase:1});
+      // Paso 1: cruzar con el snapshot del bot local (S&P 500 + SPY). Para
+      // la gran mayoría de una cartera de CEDEARs, esto trae precio+ratios
+      // instantáneo y confiable, SIN pegarle en vivo a Yahoo desde Vercel
+      // (que puede estar bloqueado/lento en cualquier momento — la causa
+      // de que antes todo saliera en $0.00).
+      let snapshotMap = {};
       let cedearMap = {};
       try {
         const snapRes = await fetch(`/data/sp500_fundamentals.json?t=${Date.now()}`);
         if (snapRes.ok) {
           const snap = await snapRes.json();
-          (snap.stocks||[]).forEach(s=>{ cedearMap[s.symbol] = s.hasCedear; });
+          (snap.stocks||[]).forEach(s=>{ snapshotMap[s.symbol]=s; cedearMap[s.symbol]=s.hasCedear; });
         }
-      } catch { /* si falla, simplemente no se muestra la validación de CEDEAR */ }
+      } catch { /* si falla, se sigue con fetch en vivo para todos */ }
+
+      const inSnapshot = tickers.filter(t => snapshotMap[t]);
+      const liveNeeded  = tickers.filter(t => !snapshotMap[t]);
+
+      const quotes = {}, profiles = {}, ratios = {};
+
+      // Tickers del S&P 500: datos directo del snapshot — rápido y confiable
+      inSnapshot.forEach(sym => {
+        const s = snapshotMap[sym];
+        quotes[sym]   = { symbol:sym, price:s.price, marketCap:s.marketCap, pe:s.pe, changesPercentage:s.changePercent, name:s.name };
+        profiles[sym] = { symbol:sym, sector:s.sector, companyName:s.name };
+        ratios[sym]   = {
+          peRatioTTM: s.pe,
+          priceToBookRatioTTM: s.pb,
+          returnOnEquityTTM: s.roe!=null?s.roe/100:null,
+          debtEquityRatioTTM: s.de,
+          enterpriseValueMultipleTTM: s.evEbitda,
+          netProfitMarginTTM: s.netMargin!=null?s.netMargin/100:null,
+          returnOnAssetsTTM: s.roa!=null?s.roa/100:null,
+          revenueGrowthTTM: s.revGrowth!=null?s.revGrowth/100:null,
+          priceToSalesTTM: s.priceToSales,
+        };
+      });
+
+      // Tickers fuera del S&P 500 (ej. small/mid caps con CEDEAR pero sin
+      // pertenecer al índice): fetch en vivo, como antes — puede fallar si
+      // Yahoo está bloqueando Vercel en ese momento.
+      if (liveNeeded.length) {
+        setLp({step:`Cotizaciones en vivo (${liveNeeded.length} fuera del S&P 500)...`,pct:6,phase:1});
+        let qDone = 0;
+        for (const batch of chunk(liveNeeded, 5)) {
+          try {
+            const r = await fetch(`${BASE}?action=quote&symbols=${batch.join(",")}`);
+            const d = await r.json();
+            if (Array.isArray(d)) d.forEach(q=>{ quotes[q.symbol]=q; });
+          } catch {}
+          qDone += batch.length;
+          setLp({step:`Cotizaciones en vivo: ${qDone}/${liveNeeded.length}...`,pct:6+(qDone/liveNeeded.length)*14,phase:1});
+          await delay(150);
+        }
+        setLp({step:"Perfiles fuera del S&P 500...",pct:22,phase:1});
+        for (const batch of chunk(liveNeeded, 20)) {
+          try {
+            const r = await fetch(`${BASE}?action=profile&symbols=${batch.join(",")}`);
+            const d = await r.json();
+            if (Array.isArray(d)) d.forEach(p=>{ profiles[p.symbol]=p; });
+          } catch {}
+          await delay(200);
+        }
+        setLp({step:"Ratios fuera del S&P 500...",pct:28,phase:1});
+        for (const symsBatch of chunk(liveNeeded, 35)) {
+          try {
+            const r = await fetch(`${BASE}?action=ratios&symbol=${symsBatch.join(",")}`);
+            if (r.ok) {
+              const d = await r.json();
+              if (Array.isArray(d)) d.forEach(x=>{ if (x&&x.symbol) ratios[x.symbol]=x; });
+            }
+          } catch(e) { /* batch falló — continuar con el siguiente */ }
+          await delay(500);
+        }
+      }
+
+      // SPY: el bot local siempre lo incluye — usarlo de ahí directo
+      setLp({step:"Benchmark SPY...",pct:34,phase:1});
+      let spyD = null;
+      if (snapshotMap["SPY"]) {
+        const s = snapshotMap["SPY"];
+        spyD = { symbol:"SPY", price:s.price, changesPercentage:s.changePercent, name:s.name };
+      } else {
+        try {
+          const spyRes = await fetch(`${BASE}?action=quote&symbols=SPY`);
+          const d = await spyRes.json();
+          spyD = Array.isArray(d)?d[0]:d;
+        } catch {}
+      }
+      setSpy(spyD);
+      await delay(100);
+
+      // 5. Group by sector + score
+      setLp({step:"Calculando scores...",pct:88,phase:1});
 
       // Valuación real de la cartera: cantidad × precio actual, costo base,
       // ganancia y peso real (% del valor total actual, no el % cargado en
@@ -1469,6 +1499,48 @@ export default function App() {
         });
         // Client mode: show ALL tickers sorted by score (no top-5 cap)
         results[sector] = scored.sort((a,b)=>b.score-a.score);
+      }
+
+      // Sugerencias de reemplazo: para cada activo de la cartera con score
+      // bajo (<45, mismo umbral rojo que usa el ScoreBar), buscamos la
+      // mejor alternativa DENTRO del S&P 500 completo (no solo la cartera)
+      // — 1 del mismo sector y 1 de otro sector, ambas con CEDEAR
+      // disponible y que el cliente todavía no tenga. Reutiliza el mismo
+      // cálculo de score que F1 (percentil por sector), corrido sobre el
+      // snapshot completo — sin fetches nuevos, ya está todo en memoria.
+      const heldSet = new Set(tickers);
+      const bySectorSnap = {};
+      Object.values(snapshotMap).forEach(s=>{
+        if (!s.sector || s.symbol==="SPY") return;
+        (bySectorSnap[s.sector] ||= []).push(s);
+      });
+      const marketScore = {}; // symbol -> score 0-100 (percentil dentro de su sector)
+      for (const [sector, pool] of Object.entries(bySectorSnap)) {
+        pool.forEach(stk=>{
+          let score=0, tw=0;
+          for (const m of FUND_METRICS) {
+            const n = norm(pool.map(s=>s[m.key]), stk[m.key], m.hb);
+            if (n!=null){score+=n*m.w;tw+=m.w;}
+          }
+          marketScore[stk.symbol] = tw>0 ? (score/tw)*100 : 0;
+        });
+      }
+      const suggestReplacement = (heldSym, heldSector) => {
+        const candidates = Object.values(snapshotMap)
+          .filter(s => s.symbol!=="SPY" && !heldSet.has(s.symbol) && s.hasCedear!==false && marketScore[s.symbol]!=null)
+          .sort((a,b)=>marketScore[b.symbol]-marketScore[a.symbol]);
+        const sameSector  = candidates.find(s=>s.sector===heldSector);
+        const otherSector = candidates.find(s=>s.sector!==heldSector);
+        return {
+          sameSector:  sameSector  ? {symbol:sameSector.symbol,  score:marketScore[sameSector.symbol]}  : null,
+          otherSector: otherSector ? {symbol:otherSector.symbol, score:marketScore[otherSector.symbol]} : null,
+        };
+      };
+      for (const [sector, items] of Object.entries(results)) {
+        results[sector] = items.map(stk => stk.score < 45
+          ? {...stk, replacement: suggestReplacement(stk.symbol, sector)}
+          : stk
+        );
       }
 
       if (clientName) clientCacheSave(clientName, results, Array.isArray(spyD)?spyD[0]:spyD);
@@ -2517,19 +2589,35 @@ export default function App() {
                       <th style={TH}>Gan/Pérd %</th>
                       <th style={TH}>% Peso real</th>
                       <th style={TH}>% Cargado</th>
+                      <th style={TH}>Score</th>
                     </tr></thead>
                     <tbody>
                       {withVal.sort((a,b)=>(b.valorActual||0)-(a.valorActual||0)).map(s=>(
-                        <tr key={s.symbol} style={{borderBottom:"1px solid #0a1628"}}>
-                          <td style={{...TD,textAlign:"left",fontWeight:700,color:"#f1f5f9"}}>{s.symbol}</td>
-                          <td style={TD}>{s.cantidad}</td>
-                          <td style={TD}>{s.precioCompra!=null?`$${s.precioCompra.toFixed(2)}`:"—"}</td>
-                          <td style={TD}>${s.price?.toFixed(2)}</td>
-                          <td style={TD}>${s.valorActual.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
-                          <td style={{...TD,color:s.gananciaPct==null?"#334155":s.gananciaPct>=0?"#34d399":"#f87171"}}>{s.gananciaPct!=null?`${s.gananciaPct>=0?"+":""}${s.gananciaPct.toFixed(1)}%`:"—"}</td>
-                          <td style={TD}>{s.pctActual!=null?`${s.pctActual.toFixed(1)}%`:"—"}</td>
-                          <td style={{...TD,color:"#475569"}}>{s.pctExcel!=null?`${s.pctExcel.toFixed(1)}%`:"—"}</td>
-                        </tr>
+                        <Fragment key={s.symbol}>
+                          <tr style={{borderBottom:s.replacement?"none":"1px solid #0a1628"}}>
+                            <td style={{...TD,textAlign:"left",fontWeight:700,color:"#f1f5f9"}}>{s.symbol}</td>
+                            <td style={TD}>{s.cantidad}</td>
+                            <td style={TD}>{s.precioCompra!=null?`$${s.precioCompra.toFixed(2)}`:"—"}</td>
+                            <td style={TD}>${s.price?.toFixed(2)}</td>
+                            <td style={TD}>${s.valorActual.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+                            <td style={{...TD,color:s.gananciaPct==null?"#334155":s.gananciaPct>=0?"#34d399":"#f87171"}}>{s.gananciaPct!=null?`${s.gananciaPct>=0?"+":""}${s.gananciaPct.toFixed(1)}%`:"—"}</td>
+                            <td style={TD}>{s.pctActual!=null?`${s.pctActual.toFixed(1)}%`:"—"}</td>
+                            <td style={{...TD,color:"#475569"}}>{s.pctExcel!=null?`${s.pctExcel.toFixed(1)}%`:"—"}</td>
+                            <td style={{...TD,color:s.score<45?"#f87171":s.score<70?"#fbbf24":"#34d399",fontWeight:700}}>{s.score?.toFixed(0)}</td>
+                          </tr>
+                          {s.replacement && (s.replacement.sameSector || s.replacement.otherSector) && (
+                            <tr style={{borderBottom:"1px solid #0a1628"}}>
+                              <td colSpan={9} style={{padding:"4px 10px 8px",background:"#1e1208"}}>
+                                <span style={{fontSize:10,color:"#fb923c",fontFamily:"monospace"}}>
+                                  🔄 {s.symbol} tiene score bajo ({s.score?.toFixed(0)}/100) — alternativas con mejores múltiplos:{" "}
+                                  {s.replacement.sameSector && <span style={{color:"#fbbf24"}}>{s.replacement.sameSector.symbol} (mismo sector, {s.replacement.sameSector.score.toFixed(0)}/100)</span>}
+                                  {s.replacement.sameSector && s.replacement.otherSector && " · "}
+                                  {s.replacement.otherSector && <span style={{color:"#a78bfa"}}>{s.replacement.otherSector.symbol} (otro sector, {s.replacement.otherSector.score.toFixed(0)}/100)</span>}
+                                </span>
+                              </td>
+                            </tr>
+                          )}
+                        </Fragment>
                       ))}
                     </tbody>
                   </table>

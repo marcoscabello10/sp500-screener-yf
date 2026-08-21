@@ -1,0 +1,9 @@
+# Dependencias de los BOTS LOCALES (corren en la PC, no en Vercel).
+#
+# OJO: este archivo NO es el que instala Vercel. Vercel usa el requirements.txt
+# de la raiz del repo, que esta pineado a yfinance==0.2.54 a proposito porque
+# api/data.py depende de esa version. No los unifiques.
+#
+# Version verificada en la PC de Marcos al 21/08/2026: yfinance 1.4.1
+yfinance>=1.4.1
+pandas>=2.0.0

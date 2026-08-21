@@ -1,3 +1,12 @@
+# Dependencias que instala VERCEL para api/data.py.
+#
+# ⚠️ NO SUBIR EL PIN DE yfinance. api/data.py usa yf.Ticker(sym, session=...)
+# y toca internos privados (yfinance.data.YfData, ._crumb, ._session). El pin
+# a 0.2.54 es lo que hoy funciona en produccion — verificado 21/08/2026.
+#
+# Los bots locales corren con yfinance 1.4.1 y tienen su propio archivo:
+# local_bot/requirements.txt. NO unificar los dos: son entornos distintos con
+# necesidades distintas.
 yfinance==0.2.54
 pandas>=2.0.0
 numpy>=1.26.0

@@ -1,0 +1,19 @@
+# Tickers para los que se genera informe avanzado.
+# Uno por linea. Todo lo que este despues de # se ignora.
+#
+# Se corre asi:      cd local_bot && python fetch_informe.py
+# O sin este archivo: python fetch_informe.py AAPL MSFT RGTI
+#
+# El bot ACUMULA: los que ya bajaste siguen guardados aunque no esten aca.
+# Para empezar de cero:  python fetch_informe.py --reset
+#
+# --- los que pasaron el screening (F1) ---
+AAPL
+MSFT
+CAT
+LRCX
+AMD
+#
+# --- cartera propia (F5) — pueden estar fuera del S&P 500 ---
+RGTI    # fuera del S&P 500: los fundamentales los trae este bot
+HIMS    # idem

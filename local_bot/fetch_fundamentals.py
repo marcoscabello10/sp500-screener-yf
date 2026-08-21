@@ -31,12 +31,15 @@ precios/ratios) — no hace falta más seguido, los fundamentales
 Requisitos: Python 3.9+, yfinance (`pip install yfinance`)
 """
 import json
+import logging
 import re
 import sys
 import time
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
+
+_yf_logger = logging.getLogger('yfinance')
 
 try:
     import yfinance as yf
@@ -202,6 +205,89 @@ SECTOR_MAP.update({
 })
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# INFORME AVANZADO — captura de consenso de analistas
+# ─────────────────────────────────────────────────────────────────────────────
+# Esto pertenece al proyecto "informe avanzado", que es SEPARADO del screener.
+# Vive acá por una sola razón: estos campos ya vienen dentro de la MISMA
+# llamada .info que el screener hace igual, asi que capturarlos cuesta
+# 0 llamadas extra y 0 tiempo extra.
+#
+# GARANTIAS DE NO-INTERFERENCIA con el screener:
+#   1. Se escribe a un archivo APARTE (informe_consenso.json). El snapshot del
+#      screener (sp500_fundamentals.json) no cambia ni un byte de estructura.
+#   2. La captura esta envuelta en try/except que se traga TODO: si Yahoo
+#      cambia un campo, el screener sigue andando igual.
+#   3. La escritura del archivo del informe ocurre DESPUES de guardar el
+#      snapshot del screener, tambien en try/except.
+# ─────────────────────────────────────────────────────────────────────────────
+
+CONSENSO_FIELDS = (
+    'recommendationKey',        # 'strong_buy' / 'buy' / 'hold' / 'sell'
+    'recommendationMean',       # 1.0 = strong buy ... 5.0 = strong sell
+    'numberOfAnalystOpinions',  # cuantos analistas cubren el papel
+    'targetMeanPrice',
+    'targetMedianPrice',
+    'targetHighPrice',
+    'targetLowPrice',
+    'currentPrice',
+    'trailingEps',
+    'forwardEps',
+    'earningsGrowth',
+    'revenueGrowth',
+)
+
+_consenso_acc = {}
+
+
+def _capturar_consenso(sym, info):
+    """Guarda los campos de consenso en el acumulador del informe.
+
+    Blindado a proposito: cualquier excepcion se traga en silencio. Este
+    codigo NO puede hacer fallar la corrida del screener bajo ninguna
+    circunstancia."""
+    try:
+        fila = {}
+        for k in CONSENSO_FIELDS:
+            try:
+                fila[k] = info.get(k)
+            except Exception:
+                fila[k] = None
+        # upside implicito del precio objetivo medio, si hay ambos datos
+        try:
+            px, tgt = fila.get('currentPrice'), fila.get('targetMeanPrice')
+            fila['upsidePct'] = round((tgt / px - 1) * 100, 2) if px and tgt else None
+        except Exception:
+            fila['upsidePct'] = None
+        _consenso_acc[sym] = fila
+    except Exception:
+        pass  # nunca propagar: el screener tiene prioridad
+
+
+def _guardar_consenso(data_dir, generated_at):
+    """Escribe informe_consenso.json. Se llama DESPUES de guardar el snapshot
+    del screener, asi que si falla, el screener ya quedo a salvo."""
+    try:
+        path = data_dir / 'informe_consenso.json'
+        payload = {
+            'generated_at': generated_at,
+            'source': 'fetch_fundamentals.py (.info — 0 llamadas extra)',
+            'count': len(_consenso_acc),
+            'consenso': _consenso_acc,
+        }
+        path.write_text(json.dumps(payload, ensure_ascii=False), encoding='utf-8')
+        con_target = sum(1 for v in _consenso_acc.values() if v.get('targetMeanPrice'))
+        print(f'\n[informe] consenso de {len(_consenso_acc)} simbolos '
+              f'({con_target} con precio objetivo) guardado en')
+        print(f'          {path}')
+        return True
+    except Exception as e:
+        print(f'\n[informe] AVISO: no se pudo escribir informe_consenso.json '
+              f'({type(e).__name__}: {e})')
+        print('          El snapshot del screener YA quedo guardado y no se ve afectado.')
+        return False
+
+
 def fetch_sp500_list():
     """Mismo scraping que action=sp500 en api/data.py — mantener sincronizado
     si alguna vez se actualiza la lógica ahí."""
@@ -228,17 +314,121 @@ def fetch_sp500_list():
     return constituents
 
 
-def check_cedear(sym):
+def _check_cedear_live(sym):
     """Verifica si existe CEDEAR de este ticker en BYMA. Yahoo Finance usa
     la convención TICKER.BA para instrumentos de la Bolsa de Buenos Aires —
     si {sym}.BA tiene precio válido, el CEDEAR existe y cotiza. Usa fast_info
-    (más liviano que .info) porque solo necesitamos saber si tiene precio."""
+    (más liviano que .info) porque solo necesitamos saber si tiene precio.
+
+    Los mensajes "$XXX.BA: possibly delisted" que imprime yfinance acá NO son
+    un error: SON la respuesta "este papel no tiene CEDEAR". Yahoo no tiene un
+    endpoint de "¿existe este símbolo?", así que la única forma de preguntarlo
+    es pedirlo y ver si contesta. Por eso silenciamos el logger de yfinance
+    SOLO durante esta llamada, y lo restauramos enseguida."""
+    nivel = _yf_logger.level
+    _yf_logger.setLevel(logging.CRITICAL)
     try:
         fi = yf.Ticker(f'{sym}.BA').fast_info
         price = getattr(fi, 'last_price', None)
         return bool(price and price > 0)
     except Exception:
         return False
+    finally:
+        _yf_logger.setLevel(nivel)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CACHÉ DE CEDEAR — la parte cara de la corrida
+# ─────────────────────────────────────────────────────────────────────────────
+# Medido el 21/08/2026: la corrida completa tardaba 28,4 min. La causa es que
+# por cada símbolo SIN CEDEAR (unos 350 de 504), yfinance intenta traer
+# historial dos veces (period=1y y period=5d) y encima reintenta.
+#
+# La lista de CEDEARs de BYMA cambia unas pocas veces al año, no todos los
+# días. Cachear el resultado 30 días baja la corrida a ~8 min y NO viola la
+# regla de oro #11 ("preferir verificación en vivo sobre listas estáticas"):
+# se sigue verificando en vivo contra Yahoo, solo que no se repite a diario.
+#
+# El caché es local del bot. NO va a git — agregá a .gitignore:
+#     local_bot/.cedear_cache.json
+# ─────────────────────────────────────────────────────────────────────────────
+
+CEDEAR_CACHE_DIAS = 30
+_cedear_cache = {}
+_cedear_stats = {'cache': 0, 'live': 0}
+
+
+def _cedear_cache_path():
+    return Path(__file__).resolve().parent / '.cedear_cache.json'
+
+
+def cargar_cedear_cache():
+    """Lee el caché. Si no existe o está corrupto, arranca vacío (peor caso:
+    la corrida tarda lo mismo que antes, nunca falla)."""
+    global _cedear_cache
+    try:
+        p = _cedear_cache_path()
+        if not p.exists():
+            _cedear_cache = {}
+            return
+        d = json.loads(p.read_text(encoding='utf-8'))
+        _cedear_cache = d.get('entries', {}) if isinstance(d, dict) else {}
+        vigentes = sum(1 for s in _cedear_cache if _cedear_vigente(s))
+        print(f'   Caché de CEDEAR: {vigentes}/{len(_cedear_cache)} entradas vigentes '
+              f'(vencen a los {CEDEAR_CACHE_DIAS} días)')
+    except Exception as e:
+        print(f'   Caché de CEDEAR ilegible ({type(e).__name__}), lo ignoro y verifico todo')
+        _cedear_cache = {}
+
+
+def _cedear_vigente(sym):
+    """¿La entrada de este símbolo sigue dentro de los 30 días?"""
+    try:
+        e = _cedear_cache.get(sym)
+        if not e or 'hasCedear' not in e:
+            return False
+        vista = datetime.fromisoformat(e['checked_at'])
+        if vista.tzinfo is None:
+            vista = vista.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - vista).days < CEDEAR_CACHE_DIAS
+    except Exception:
+        return False
+
+
+def check_cedear(sym):
+    """Mismo contrato que antes (devuelve bool), ahora con caché delante.
+    fetch_one no cambia: sigue llamando check_cedear(sym) igual que siempre."""
+    try:
+        if _cedear_vigente(sym):
+            _cedear_stats['cache'] += 1
+            return bool(_cedear_cache[sym]['hasCedear'])
+    except Exception:
+        pass  # ante cualquier duda, verificamos en vivo
+    res = _check_cedear_live(sym)
+    _cedear_stats['live'] += 1
+    try:
+        _cedear_cache[sym] = {
+            'hasCedear': res,
+            'checked_at': datetime.now(timezone.utc).isoformat(),
+        }
+    except Exception:
+        pass  # que no se guarde en caché no es motivo para romper nada
+    return res
+
+
+def guardar_cedear_cache():
+    """Guarda el caché. Si falla, avisa y sigue — no afecta al snapshot."""
+    try:
+        p = _cedear_cache_path()
+        p.write_text(json.dumps(
+            {'version': 1, 'dias': CEDEAR_CACHE_DIAS, 'entries': _cedear_cache},
+            ensure_ascii=False), encoding='utf-8')
+        print(f'   CEDEAR: {_cedear_stats["cache"]} desde caché · '
+              f'{_cedear_stats["live"]} verificados en vivo · '
+              f'{len(_cedear_cache)} guardados')
+    except Exception as e:
+        print(f'   AVISO: no se pudo guardar el caché de CEDEAR '
+              f'({type(e).__name__}: {e}) — la próxima corrida verifica todo de nuevo')
 
 
 def fetch_one(sym, sector=None):
@@ -247,6 +437,7 @@ def fetch_one(sym, sector=None):
     de browser — tu IP residencial no está bloqueada por Yahoo."""
     try:
         info = yf.Ticker(sym).info
+        _capturar_consenso(sym, info)  # informe avanzado — 0 llamadas extra, no puede fallar
         price = info.get('currentPrice') or info.get('regularMarketPrice') or 0
         prev  = info.get('previousClose') or info.get('regularMarketPreviousClose') or price
         pct   = round((price - prev) / prev * 100, 4) if prev else 0
@@ -282,7 +473,9 @@ def fetch_one(sym, sector=None):
 def main():
     print('📡 Trayendo lista S&P 500 desde Wikipedia...')
     constituents = fetch_sp500_list()
-    print(f'   {len(constituents)} empresas encontradas.\n')
+    print(f'   {len(constituents)} empresas encontradas.')
+    cargar_cedear_cache()
+    print()
 
     if len(constituents) < 400:
         print('⚠️  Advertencia: se esperaban ~503 empresas, se encontraron '
@@ -319,13 +512,21 @@ def main():
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(out, ensure_ascii=False), encoding='utf-8')
 
+    guardar_cedear_cache()
+
     print(f'\n✅ Listo: {len(results)}/{total} empresas guardadas en')
     print(f'   {out_path}')
     if failed:
         print(f'   ({len(failed)} fallaron: {", ".join(failed[:20])}'
               f'{"..." if len(failed) > 20 else ""})')
+
+    # Informe avanzado (proyecto aparte) — archivo propio, ya guardamos el del screener
+    ok_informe = _guardar_consenso(out_path.parent, out['generated_at'])
+
     print('\nAhora corré:')
     print('   git add public/data/sp500_fundamentals.json')
+    if ok_informe:
+        print('   git add public/data/informe_consenso.json')
     print('   git commit -m "chore: actualizar snapshot de fundamentales"')
     print('   git push')
 

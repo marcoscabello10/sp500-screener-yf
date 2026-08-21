@@ -1,0 +1,15 @@
+# Dependencias y build
+node_modules/
+dist/
+
+# Caché local del bot de fundamentales: se regenera solo, no va al repo
+local_bot/.cedear_cache.json
+
+# Salidas de las sondas (son mediciones puntuales, no datos de produccion)
+local_bot/probe_analistas_out.json
+local_bot/probe_edgar_out.json
+
+# Claves — NUNCA subir esto
+.env
+.env.local
+.env*.local

@@ -518,9 +518,9 @@ function StartScreen({onStart, onStartClient, cacheInfo, onLoadCache, clientTick
         const findCol = test => headers.find(h=>test(norm(h)));
         const colTicker    = findCol(h=>h.includes("ticker")||h.includes("simbolo")||h.includes("activo")||h==="accion");
         const colCantidad  = findCol(h=>h.includes("cantidad")||h.includes("nominales"));
-        const colPrecio    = findCol(h=>h.includes("precio"));
-        const colPct       = findCol(h=>h.includes("posicion")||h.includes("porcentaje")||h.includes("%"));
-        const colCliente   = findCol(h=>h.includes("cliente")&&!h.includes("comitente"));
+        const colPrecio    = findCol(h=>h.includes("precio")||h.includes("costo")||/(^|\s)px(\s|$)/.test(h));
+        const colPct       = findCol(h=>h.includes("posicion")||h.includes("porcentaje")||h.includes("tenencia")||h.includes("%"));
+        const colCliente   = findCol(h=>(h.includes("cliente")||h.includes("nombre"))&&!h.includes("comitente"));
         const colComitente = findCol(h=>h.includes("comitente"));
 
         if (colTicker) {

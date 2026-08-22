@@ -56,7 +56,20 @@ TIMEOUT = 30
 URL_TICKERS = 'https://www.sec.gov/files/company_tickers.json'
 URL_CONCEPT = 'https://data.sec.gov/api/xbrl/companyconcept/CIK{cik}/us-gaap/{tag}.json'
 
-# Cascada: se prueban en orden y gana el primero que traiga suficientes anios.
+# Cascada de conceptos. Las empresas NO usan todas el mismo tag para lo mismo,
+# y ADEMAS algunas cambian de tag con los anios.
+#
+# ⚠️ BUG CORREGIDO (encontrado el 21/08/2026 en la primera corrida):
+# la version anterior devolvia el PRIMER concepto con >=2 anios. Para CAT eso
+# daba NetIncomeLoss con 4 anios... que eran 2007, 2008, 2009 y 2010, porque
+# CAT cambio de tag despues de 2010. Un informe de 2026 habria mostrado el
+# net income de 2010 sin avisar — peor que no tener el dato.
+#
+# Ahora se prueban TODOS los candidatos y gana el que mas anios anuales traiga.
+# Corte anticipado si alguno supera CORTE_ANTICIPADO, para no gastar requests
+# de mas cuando ya tenemos historia de sobra.
+CORTE_ANTICIPADO = 12
+
 CONCEPTOS = {
     'revenue': [
         'RevenueFromContractWithCustomerExcludingAssessedTax',
@@ -71,7 +84,31 @@ CONCEPTOS = {
     ],
     'net_income': [
         'NetIncomeLoss',
+        'NetIncomeLossAvailableToCommonStockholdersBasic',
         'ProfitLoss',
+    ],
+    # margen bruto y operativo historicos
+    'gross_profit': [
+        'GrossProfit',
+    ],
+    # Fallback: varias industriales (CAT es el caso testigo) NO reportan
+    # GrossProfit como concepto propio en XBRL. Se deriva restando el costo de
+    # ventas al revenue. Solo se pide si GrossProfit vino vacio.
+    'costo_ventas': [
+        'CostOfRevenue',
+        'CostOfGoodsAndServicesSold',
+        'CostOfGoodsSold',
+        'CostOfServices',
+    ],
+    'operating_income': [
+        'OperatingIncomeLoss',
+    ],
+    # acciones en circulacion: revela si el EPS crece por el negocio o por
+    # recompras (y del otro lado, si te estan diluyendo)
+    'acciones_diluidas': [
+        'WeightedAverageNumberOfDilutedSharesOutstanding',
+        'WeightedAverageNumberOfShareOutstandingBasicAndDiluted',
+        'WeightedAverageNumberOfSharesOutstandingBasic',
     ],
 }
 
@@ -138,8 +175,13 @@ def anuales(datos_unit):
 
 
 def traer_concepto(cik, grupo, errores):
-    """Prueba la cascada y devuelve el primero que traiga >= 2 anios."""
+    """Prueba TODOS los candidatos de la cascada y devuelve el que mas anios
+    anuales traiga (no el primero — ver el comentario del bug de CAT arriba).
+
+    Corta antes si alguno ya supera CORTE_ANTICIPADO anios, porque a esa altura
+    tener mas historia no cambia el analisis y cada intento es un request."""
     intentos = []
+    mejor = None
     for tag in CONCEPTOS[grupo]:
         try:
             d = get_json(URL_CONCEPT.format(cik=cik, tag=tag))
@@ -153,19 +195,24 @@ def traer_concepto(cik, grupo, errores):
             continue
         time.sleep(PAUSA)
         units = d.get('units') or {}
-        # el EPS viene en 'USD/shares', los demas en 'USD'
-        clave = next((k for k in ('USD', 'USD/shares') if k in units), None)
+        # el EPS viene en 'USD/shares', las acciones en 'shares', el resto en 'USD'
+        clave = next((k for k in ('USD', 'USD/shares', 'shares') if k in units), None)
         if not clave:
             intentos.append({'tag': tag, 'error': f'unidades inesperadas: {list(units)}'})
             continue
         serie = anuales(units[clave])
         intentos.append({'tag': tag, 'anios': len(serie), 'unidad': clave})
-        if len(serie) >= 2:
-            return {'tag_ganador': tag, 'unidad': clave,
-                    'serie': {k: v['val'] for k, v in serie.items()},
-                    'detalle': serie, 'intentos': intentos}
-    errores.append(f'{grupo}: ningun concepto trajo >=2 anios')
-    return {'tag_ganador': None, 'serie': {}, 'intentos': intentos}
+        if len(serie) >= 2 and (mejor is None or len(serie) > len(mejor['detalle'])):
+            mejor = {'tag_ganador': tag, 'unidad': clave,
+                     'serie': {k: v['val'] for k, v in serie.items()},
+                     'detalle': serie}
+        if mejor and len(mejor['detalle']) >= CORTE_ANTICIPADO:
+            break
+    if mejor is None:
+        errores.append(f'{grupo}: ningun concepto trajo >=2 anios')
+        return {'tag_ganador': None, 'serie': {}, 'intentos': intentos}
+    mejor['intentos'] = intentos
+    return mejor
 
 
 def cagr(serie, anios):
@@ -234,9 +281,31 @@ def main():
             print(' SIN CIK (no reporta a la SEC)')
             res.append(r)
             continue
-        for grupo in ('revenue', 'eps_diluido', 'net_income'):
+        # costo_ventas solo se pide si GrossProfit no vino — es un fallback,
+        # no un dato que necesitemos siempre
+        for grupo in CONCEPTOS:
+            if grupo == 'costo_ventas':
+                continue
             r[grupo] = traer_concepto(cik, grupo, r['errores'])
         rev = r['revenue']['serie']
+
+        if not r['gross_profit']['serie'] and rev:
+            silencioso = []
+            r['costo_ventas'] = traer_concepto(cik, 'costo_ventas', silencioso)
+            derivado = {}
+            for fecha, costo in r['costo_ventas']['serie'].items():
+                ventas = rev.get(fecha)
+                if ventas:
+                    derivado[fecha] = ventas - costo
+            if derivado:
+                r['gross_profit'] = {
+                    'tag_ganador': f'derivado: revenue - {r["costo_ventas"]["tag_ganador"]}',
+                    'unidad': 'USD', 'serie': derivado, 'intentos': [],
+                }
+                # ya no es un error: lo resolvimos por otro camino
+                r['errores'] = [e for e in r['errores'] if not e.startswith('gross_profit')]
+
+        acc = r['acciones_diluidas']['serie']
         r['cagr'] = {
             'revenue_3a':  cagr(rev, 3),
             'revenue_5a':  cagr(rev, 5),
@@ -244,9 +313,44 @@ def main():
             'eps_3a':      cagr(r['eps_diluido']['serie'], 3),
             'eps_5a':      cagr(r['eps_diluido']['serie'], 5),
             'eps_10a':     cagr(r['eps_diluido']['serie'], 10),
+            # negativo = recompras (menos acciones); positivo = dilucion
+            'acciones_3a': cagr(acc, 3),
+            'acciones_5a': cagr(acc, 5),
         }
-        print(f' CIK {cik} · {len(rev)} anios de revenue · {len(r["eps_diluido"]["serie"])} de EPS')
+
+        # margenes historicos: cuanto de cada dolar de venta queda
+        # OJO: la variable de las ventas se llama 'ventas', NO 'base'.
+        # 'base' es la carpeta del script y pisarla rompia el guardado del JSON
+        # al final (bug real, 21/08/2026).
+        r['margenes_historicos'] = {}
+        for nombre, serie in (('bruto', r['gross_profit']['serie']),
+                              ('operativo', r['operating_income']['serie']),
+                              ('neto', r['net_income']['serie'])):
+            m = {}
+            for fecha, v in serie.items():
+                ventas = rev.get(fecha)
+                if ventas:
+                    m[fecha] = round(v / ventas * 100, 2)
+            r['margenes_historicos'][nombre] = m
+
+        print(f' CIK {cik} · rev {len(rev)}a · eps {len(r["eps_diluido"]["serie"])}a '
+              f'· acciones {len(acc)}a')
         res.append(r)
+
+    # ── GUARDAR PRIMERO, IMPRIMIR DESPUES ────────────────────────────────────
+    # Leccion del 21/08/2026: un bug en el bloque de resumen tiro abajo la
+    # corrida DESPUES de haber bajado todos los datos, y se perdio todo el
+    # trabajo. Los datos costaron tiempo y requests: se guardan apenas estan,
+    # y el resumen es solo cosmetica que va despues.
+    out = {
+        'generated_at': datetime.now(timezone.utc).isoformat(),
+        'user_agent': USER_AGENT,
+        'tickers': syms,
+        'resultados': res,
+    }
+    op = base / 'probe_edgar_out.json'
+    op.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding='utf-8')
+    print(f'\n[OK] Datos guardados en {op}')
 
     # ── resumen ──────────────────────────────────────────────────────────────
     print('\n' + '=' * 82)
@@ -279,20 +383,53 @@ def main():
     print('\n  "yf 3a" es el CAGR de revenue a 3 anios que dio yfinance.')
     print('  Deberia parecerse a "rev 3a". Si difiere mucho, revisar el mapeo.')
 
+    print('\n' + '=' * 82)
+    print('RECOMPRAS vs DILUCION — ¿el EPS crece por el negocio o por el denominador?')
+    print('=' * 82)
+    print(f'{"TICK":<7}{"acc 5a":>9}{"rev 5a":>9}{"eps 5a":>9}   lectura')
+    print('-' * 82)
+    for r in res:
+        if not r.get('cik'):
+            continue
+        c = r['cagr']
+        a, rv, ep = c['acciones_5a'], c['revenue_5a'], c['eps_5a']
+        if a is None:
+            lectura = 'sin datos de acciones'
+        elif a < -1:
+            lectura = f'RECOMPRAS: {abs(a):.1f}%/anio menos acciones'
+            if rv is not None and ep is not None and ep > rv + 2:
+                lectura += ' -> parte del EPS viene de aca, no del negocio'
+        elif a > 3:
+            lectura = f'DILUCION: {a:.1f}%/anio mas acciones -> te licuan'
+        else:
+            lectura = 'acciones estables'
+        f = lambda v: '-' if v is None else f'{v:.1f}'
+        print(f'{r["symbol"]:<7}{f(a):>9}{f(rv):>9}{f(ep):>9}   {lectura}')
+
+    print('\n' + '=' * 82)
+    print('MARGENES HISTORICOS (% sobre ventas) — primero vs ultimo anio')
+    print('=' * 82)
+    print(f'{"TICK":<7}{"bruto":>18}{"operativo":>18}{"neto":>18}')
+    print('-' * 82)
+    for r in res:
+        if not r.get('cik'):
+            continue
+        celdas = []
+        for n in ('bruto', 'operativo', 'neto'):
+            m = r['margenes_historicos'].get(n) or {}
+            if len(m) >= 2:
+                ks = sorted(m)
+                celdas.append(f'{m[ks[0]]:.1f} -> {m[ks[-1]]:.1f}')
+            else:
+                celdas.append('-')
+        print(f'{r["symbol"]:<7}{celdas[0]:>18}{celdas[1]:>18}{celdas[2]:>18}')
+
     errs = [(r['symbol'], e) for r in res for e in r.get('errores', [])]
     if errs:
         print(f'\n--- AVISOS ({len(errs)}) ---')
         for s, e in errs[:30]:
             print(f'  {s}: {e}')
 
-    out = {
-        'generated_at': datetime.now(timezone.utc).isoformat(),
-        'user_agent': USER_AGENT,
-        'tickers': syms,
-        'resultados': res,
-    }
-    op = base / 'probe_edgar_out.json'
-    op.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding='utf-8')
     print(f'\n[OK] {time.time()-t0:.0f}s · detalle en:\n     {op}')
 
 

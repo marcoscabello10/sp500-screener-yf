@@ -146,7 +146,14 @@ andaría — pero "probablemente" no es razón para tocar producción.
 | Correr los dos bots con datos reales | ✅ 504/504 y 7/7, sin fallos |
 | Cachear `check_cedear` (28 min → ~8 min) | ✅ hecho y probado (6 escenarios) |
 | Un repo / un Vercel / dos páginas Vite | ✅ decidido |
-| Sonda de SEC EDGAR (`probe_edgar.py`) | 🔄 escrita, falta correrla |
+| Sonda de SEC EDGAR (`probe_edgar.py`) | ✅ corrida — mapeo validado, dif 0,00 vs yfinance |
+| Fix de la cascada (bug del net income de CAT) | ✅ hecho y probado |
+| Control de gasto del LLM (endpoint partido en 2) | ✅ diseñado |
+| Ampliación a 59 campos (dividendos, FCF, forward, riesgo) | ✅ hecho y probado |
+| Tratamiento por sector (percentil + reglas) | ✅ decidido, falta implementar |
+| 4 señales derivadas | ✅ datos listos, faltan las reglas |
+| Re-correr los dos bots (59 campos) | ✅ validado sobre 504 reales |
+| **Re-correr `probe_edgar.py`** (crasheaba, ya corregido) | 🔄 **siguiente paso de Marcos** |
 | Endpoint del informe en Vercel (EDGAR + reglas + LLM) | ⬜ pendiente |
 | Reglas de tesis / riesgos / pros | ⬜ pendiente |
 | Plantilla visual del informe | ⬜ pendiente |
@@ -346,6 +353,234 @@ informe. `count: 504`, `failed_count: 0`.
 
 `fetch_informe.py`: RGTI y HIMS trajeron fundamentales completos con sector
 normalizado, y ambos **tienen CEDEAR**.
+
+---
+
+## ✅ Sonda de SEC EDGAR — corrida 21/08/2026
+
+**Los 7 tickers tienen CIK, incluidos RGTI y HIMS.** Cero avisos.
+
+### Validación cruzada: EDGAR vs. yfinance (CAGR revenue 3a)
+**Diferencia 0,00 en los cinco comparables** (AAPL, MSFT, CAT, LRCX, AMD). El
+mapeo XBRL es correcto.
+
+### Años de revenue disponibles (contra los 4 de yfinance)
+
+| Ticker | Años | Desde | Concepto ganador |
+|---|---|---|---|
+| CAT | **19** | 2007 | `Revenues` (los 2 primeros dieron 404) |
+| MSFT | 11 | 2016 | `RevenueFromContractWithCustomerExcludingAssessedTax` |
+| LRCX / AMD | 10 | 2016-17 | idem |
+| AAPL | 9 | 2017 | idem |
+| HIMS | 7 | 2019 | idem |
+| RGTI | 5 | 2021 | `RevenueFromContractWithCustomerIncludingAssessedTax` |
+
+### El beneficio, medido
+- **AAPL: 1,8% a 3 años vs. 8,7% a 5 años.** La ventana corta arrancaba en el
+  pico de 2022 y escondía la tendencia.
+- **LRCX EPS: +20,2% a 3 años vs. -26,5% a 5 años.**
+
+La cascada de conceptos **era necesaria**: CAT devolvió 404 en los dos
+primeros tags.
+
+### 🐛 Bug encontrado en la sonda (a corregir antes de producción)
+`net_income` de CAT trajo **solo 4 años, y son 2007-2010**. La cascada devolvía
+el **primer** concepto con ≥2 años en vez del **mejor**, y CAT cambió de tag
+después de 2010. En producción habría metido un net income de 2010 en un
+informe de 2026 **sin avisar** — peor que no tener el dato.
+
+**Fix:** probar todos los candidatos y quedarse con el que más años anuales
+traiga (corte anticipado si alguno supera ~10 años, para no gastar requests).
+Agregar `NetIncomeLossAvailableToCommonStockholdersBasic` a la cascada.
+
+### 📌 Hallazgo para las reglas de la tesis
+**RGTI tiene revenue cayendo 18,5% anual** (13,1 → 7,1 M USD desde 2022), pero
+yfinance reporta **+185% de crecimiento** porque mide el último trimestre
+contra el mismo del año anterior. **Las dos cifras son correctas y dicen cosas
+opuestas.** Con +62,8% de upside de analistas y pérdidas, es el caso testigo
+de por qué la tesis necesita mostrar las dos ventanas y no elegir una.
+
+---
+
+## 💸 Control de gasto del LLM — GARANTÍA DE DISEÑO
+
+Marcos preguntó explícitamente que no se gaste "por gastar". La garantía no es
+una promesa, **es la arquitectura**: el endpoint se parte en dos.
+
+| Acción | Qué hace | Llama al LLM | Costo |
+|---|---|---|---|
+| `api/informe.py?action=datos` | EDGAR + reglas + CAGR + tablas + señales de riesgo | **NO** | **US$0 siempre** |
+| `api/informe.py?action=tesis` | solo redacta prosa con hechos ya elegidos por las reglas | SÍ | ~US$0,006 |
+
+**El informe se abre y se ve COMPLETO sin gastar un centavo.** Todos los
+números, el consenso, los CAGR a 3/5/10 años y las señales de riesgo en
+formato de lista salen de `action=datos`. Lo único que falta es la redacción
+en prosa.
+
+Reglas duras de implementación:
+
+1. La tesis se genera **solo con clic explícito** en un botón. Nunca al cargar
+   la página.
+2. Una vez generada, **queda cacheada**. Reabrir el informe **no** vuelve a
+   llamar al modelo. Solo un "regenerar" explícito lo hace.
+3. **Nunca en bucle, nunca en lote, nunca para los 503.**
+4. Si falta la API key, `action=datos` **sigue funcionando igual** — la tesis
+   simplemente no se ofrece.
+
+**Respaldo fuera del código:** la API de Anthropic va con **créditos
+prepagos**. Cargar un monto chico (ej. US$5) y **dejar la recarga automática
+desactivada** es un techo real: al agotarse, las llamadas fallan y no hay
+factura sorpresa. A ~US$0,006 por informe, US$5 ≈ 800 informes.
+
+---
+
+## 📊 Revisión y ampliación de métricas — 21/08/2026
+
+Antes de construir el endpoint se hizo una revisión de qué faltaba. Resultado:
+**59 campos por acción** (antes eran 13), todos con **0 llamadas extra**
+porque salen de la misma `.info` que el bot ya hacía.
+
+### Bloques agregados
+| Bloque | Campos |
+|---|---|
+| **Dividendos** | `dividendRate`, `payoutRatio`, `fiveYearAvgDividendYield`, `trailingAnnualDividend*`, `lastDividendValue` |
+| **Caja, deuda y FCF** | `freeCashflow`, `operatingCashflow`, `totalCash`, `totalDebt`, `currentRatio`, `quickRatio`, `ebitda` |
+| **Valuación forward y márgenes** | `forwardPE`, `trailingPegRatio`, `pegRatio`, `enterpriseValue`, `bookValue`, `grossMargins`, `operatingMargins`, `ebitdaMargins` |
+| **Riesgo de mercado** | `beta`, `fiftyTwoWeek*`, `shortRatio`, `shortPercentOfFloat`, `sharesOutstanding`, `floatShares`, `averageVolume` |
+
+### Derivados calculados
+`upsidePct`, `targetDispersionPct`, `dividendYieldPct`, `fcfYieldPct`,
+`netDebt`, `netDebtToEbitda`, `desdeMaximo52wPct`, `grossMarginPct`,
+`operatingMarginPct`, `ebitdaMarginPct`, `payoutRatioPct`.
+
+⚠️ **`dividendYieldPct` se calcula SIEMPRE desde `dividendRate / precio`**, no
+se lee de `dividendYield`: yfinance cambió la escala de ese campo entre
+versiones (fracción vs. porcentaje). El crudo se guarda solo como referencia.
+
+### ✅ Validado sobre los 504 reales (21/08/2026)
+
+| Campo | Cobertura |
+|---|---|
+| `forwardPE`, `grossMarginPct`, `operatingMarginPct`, `desdeMaximo52wPct` | 100% |
+| `payoutRatioPct`, `totalDebt`, `shortPercentOfFloat`, `targetDispersionPct` | 99% |
+| `beta` | 98% · `currentRatio` 96% · `freeCashflow` 93% · `netDebtToEbitda` 93% |
+| `fcfYieldPct` 90% · `trailingPegRatio` 87% · `dividendYieldPct` **80%** (el resto no paga dividendo) |
+
+- **Dividend yield: mediana 1,78%**, máximo 6,79% (VICI, un REIT). Ningún valor
+  absurdo. El campo crudo de yfinance daba 6,77 contra el 6,79 calculado — o
+  sea que en 1.4.1 ya viene en porcentaje y coinciden. **Igual se conserva el
+  cálculo propio**, que es a prueba de cambios de versión.
+- **El forward P/E confirmó su necesidad: AMD pasa de 120,1x trailing a 30,6x
+  forward, con PEG 1,00.** Sin ese dato el informe la trataría como carísima
+  cuando está en precio razonable para su crecimiento. LRCX: 54,7 → 27,2.
+
+### Por qué hacían falta (evidencia de los datos reales)
+- **AMD figura a P/E 119x trailing.** Sin `forwardPE` ni PEG, el informe
+  diría "carísima" de una empresa cuyas ganancias están explotando.
+- **No había NADA de dividendos**, siendo que la cartera apunta a CEDEARs y
+  hay papeles de renta como MO.
+- **No había flujo de caja.** D/E es contable; el FCF dice si la empresa
+  genera plata de verdad.
+- Solo había margen neto, no bruto ni operativo — el bruto es la mejor señal
+  de poder de fijación de precios.
+
+---
+
+## 🧭 Tratamiento por sector — decidido: percentil + reglas
+
+**Percentil contra la mediana de SU sector** (reusando el algoritmo de F1)
+**Y ADEMÁS** reglas que definen qué múltiplos aplican en cada sector.
+
+### La evidencia que lo obliga (medida sobre los 504)
+
+| Sector | P/E mediano | P/B | EV/EBITDA | D/E |
+|---|---|---|---|---|
+| Financials | 15,3 | 2,2 | 11,9 **(solo 37 de 67)** | 0,5 |
+| Utilities | 20,8 | 2,1 | 13,3 | **1,6** |
+| Technology | 34,9 | 7,1 | 22,1 | **0,6** |
+| Real Estate | **33,4** | 2,4 | 18,8 | 0,9 |
+| Energy | 18,1 | 2,6 | 8,7 | 0,5 |
+
+- **EV/EBITDA falta en 30 de 67 financieras** — un banco no tiene EBITDA con
+  sentido, la deuda es su materia prima. No mostrar el campo, no mostrarlo vacío.
+- **`netDebt` tampoco sirve en Financials** (medido 21/08/2026): GS aparece con
+  **-259.000 millones** de "caja neta", BRK-B -236.900, C -214.100, JPM
+  -183.100. No nadan en efectivo: para un banco los depósitos y los activos de
+  trading entran como caja. **Ocultar `netDebt` y `netDebtToEbitda` en
+  Financials**, igual que EV/EBITDA.
+- **D/E mediano: Utilities 1,6 vs Technology 0,6.** Un umbral absoluto marcaría
+  a todas las eléctricas como endeudadas cuando es su estructura normal.
+- **Real Estate con P/E 33,4** está inflado porque la depreciación aplasta la
+  ganancia contable de los REITs. El múltiplo correcto es FFO.
+- **Energy y Financials con los P/E más bajos** — terreno clásico de trampa de
+  valor: barato en el pico del ciclo.
+
+### Muestra por sector (para calibrar los percentiles)
+Industrials 84 · Technology 75 · Financials 67 · Healthcare 59 ·
+Consumer Discretionary 47 · Consumer Staples 34 · Real Estate 30 ·
+Communication Services 30 · Utilities 29 · Materials 25 · Energy 23.
+⚠️ Con n<25 (Materials, Energy) el percentil es ruidoso — avisarlo.
+
+### Huecos que las reglas deben tolerar (de 504)
+`de` falta en 54 · `evEbitda` en 32 · `roe` en 35 · `pe` en 29 ·
+`priceToSales` en 18 · `roa` en 7.
+
+---
+
+## 🚨 Señales derivadas — las cuatro activadas
+
+1. **Dispersión del precio objetivo.** Mediana del S&P 500: **40%**. PYPL
+   **186%**, MRNA 162%, QCOM 155%. Un upside de 20% con dispersión de 180% es
+   incertidumbre, no convicción. **AES da 0,0%** — todos los analistas con el
+   objetivo idéntico huele a dato viejo, no a unanimidad.
+2. **Reconstruir la recomendación faltante.** `recommendationKey = "none"` NO
+   significa "sin cobertura": de los 32, **29 tienen analistas y precio
+   objetivo** (BALL con 14, STZ con 23). Lo que falta es solo el promedio
+   agregado, y se calcula desde la distribución strong buy / buy / hold / sell
+   que `informe_detalle.json` ya trae.
+3. **Trampa de valor.** P/E bajo contra su sector + revenue cayendo +
+   revisiones de EPS a la baja = barato por algo. Prioritario en Energy y
+   Financials.
+4. **Choque de ventanas de crecimiento.** Avisar cuando el CAGR anual y el
+   crecimiento trimestral se contradicen. Caso testigo RGTI: **-18,5% anual
+   contra +185% trimestral**, ambas correctas.
+
+### ✅ Fix de la cascada de EDGAR (el bug de CAT)
+Ahora se prueban **todos** los candidatos y gana el que **más años** traiga, con
+corte anticipado a los 12 años para no gastar requests. Verificado: con
+`NetIncomeLoss` de 4 años (2007-2010) y `ProfitLoss` de 19, elige `ProfitLoss`.
+
+### 🐛 Bug de variable pisada (21/08/2026) — y cómo se evita de nuevo
+`probe_edgar.py` crasheó **después** de bajar todos los datos, al guardar el
+JSON: `base` era la carpeta del script y el bucle de márgenes la reasignaba a
+un número (`base = rev.get(fecha)`). `base / 'probe_edgar_out.json'` explotó y
+**se perdió todo el trabajo ya hecho**.
+
+Tres correcciones, no una:
+1. La variable del bucle pasó a llamarse `ventas`.
+2. **El JSON se guarda ANTES de imprimir el resumen.** Los datos cuestan tiempo
+   y requests; el resumen es cosmética y no puede tirar abajo la corrida.
+3. Se agregó una prueba que corre **`main()` completo** con la SEC simulada —
+   el bug se escapó porque solo se habían probado las funciones sueltas.
+
+Además quedó un detector estático que busca el patrón exacto (variable
+asignada antes de un bucle, pisada adentro, usada después) y que se
+auto-verifica contra el código con el bug original. Los tres bots pasan limpio.
+
+### 🐛 CAT no reporta `GrossProfit` en XBRL
+Varias industriales no desglosan el margen bruto como concepto propio.
+**Fallback implementado:** si `GrossProfit` viene vacío, se pide
+`CostOfRevenue` y se deriva `revenue - costo`. Solo se pide cuando hace falta —
+AAPL, que sí tiene `GrossProfit`, no gasta ese request.
+
+### ✅ Nuevos conceptos de EDGAR
+- `GrossProfit` y `OperatingIncomeLoss` → **márgenes históricos** (% sobre
+  ventas, año por año).
+- `WeightedAverageNumberOfDilutedSharesOutstanding` → **recompras vs.
+  dilución**. Es la pregunta clave: ¿el EPS crece por el negocio o por achicar
+  el denominador? AAPL creció revenue 8,7% anual a 5 años pero EPS **17,9%** —
+  esa brecha son recompras. Y para RGTI, la dilución es *el* riesgo y hoy sería
+  invisible.
 
 ---
 

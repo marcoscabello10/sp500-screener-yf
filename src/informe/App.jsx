@@ -39,6 +39,7 @@ function cacheGuardar(ticker, datos) {
 
 export default function App() {
   const [universo, setUniverso] = useState([])
+  const [completos, setCompletos] = useState(new Set())
   const [datos, setDatos] = useState(null)
   const [cargando, setCargando] = useState(false)
   const [error, setError] = useState(null)
@@ -60,6 +61,8 @@ export default function App() {
         for (const [sym, a] of Object.entries(d.activos || {})) {
           if (!yaEstan.has(sym)) acc.push({ symbol: sym, name: a.name })
         }
+        // los que tienen informe COMPLETO (consenso a futuro + sentimiento)
+        setCompletos(new Set(Object.keys(d.activos || {})))
       } catch { /* idem */ }
       setUniverso(acc)
     })()
@@ -120,7 +123,8 @@ export default function App() {
             <BarraAcciones datos={datos} onRefrescar={() => pedir(datos.ticker, true)} />
             <Informe d={datos} onVolver={() => { setDatos(null); setError(null) }} />
           </>
-        : <Selector universo={universo} onElegir={pedir} cargando={cargando} />}
+        : <Selector universo={universo} completos={completos}
+                    onElegir={pedir} cargando={cargando} />}
     </>
   )
 }

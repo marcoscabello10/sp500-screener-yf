@@ -1017,6 +1017,38 @@ apuntando a `action=diag`.
 
 ---
 
+## ✅ Deploy funcionando + selector que escala (24/08/2026)
+
+`action=diag` devolvió **`"ok": true`**: los tres archivos se leen, la SEC
+responde (10.403 tickers en el mapa) y `informe_detalle.json` tiene **153
+activos**. `/informe` carga bien.
+
+### ⚠️ Observación del diagnóstico: `includeFiles` no llegó al bundle
+`rutas_probadas` dio **`null` en las tres**, o sea que los datos se están
+leyendo por el **fallback HTTP**, no del disco. Funciona porque ahora se
+prioriza `VERCEL_PROJECT_PRODUCTION_URL` (`sp500-screener-yf.vercel.app`) en
+vez de `VERCEL_URL` (el deployment `...-8awppy562-...` que **sí** está
+protegido) — **ese fue el fix real del 500**.
+
+Queda como optimización pendiente: cada arranque en frío baja 1,2 MB. No
+bloquea nada.
+
+### Selector rediseñado para muchos activos
+Antes todo eran chips: un Excel de F1 con 40 activos daba una pared de 40
+botones sin orden ni filtro.
+
+Ahora el listado **cambia de forma según el tamaño** (`UMBRAL_TABLA = 12`):
+- **≤12 activos** → chips, como antes. Sirve para la cartera de F5.
+- **>12** → **tabla con scroll, filtro y encabezados ordenables** por ticker,
+  nombre, sector y score. Encabezado fijo, fila entera clickeable, contador de
+  "N de M" al filtrar.
+
+Además: **punto celeste** en los activos con informe **completo**, con leyenda
+al pie diciendo cuántos son y cómo completar el resto. El set sale de las
+claves de `informe_detalle.json`, que la página ya descarga para el buscador.
+
+---
+
 ## 📦 PENDIENTE DE PUSH — lista acumulada
 
 Todo esto está escrito en la carpeta y **todavía no subido**. Verificar con

@@ -117,9 +117,13 @@ async function leerHTML(file) {
   return { activos: [], hoja: null, candidatosSueltos: [...new Set(crudos)].slice(0, 60) }
 }
 
+function nombreDe(universo, ticker) {
+  return universo.find(a => a.symbol === ticker)?.name || null
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 
-export default function Selector({ universo, onElegir, cargando }) {
+export default function Selector({ universo, completos, onElegir, cargando }) {
   const [subidos, setSubidos] = useState(null)
   const [errorArchivo, setErrorArchivo] = useState(null)
   const [q, setQ] = useState('')
@@ -195,15 +199,10 @@ export default function Selector({ universo, onElegir, cargando }) {
       )}
 
       {subidos && (
-        <Grupo titulo={`${subidos.activos.length} activos en ${subidos.archivo}`}
-               subtitulo={subidos.hoja ? `hoja "${subidos.hoja}"` : null}>
-          {subidos.activos.map(a => (
-            <Chip key={a.ticker} onClick={() => onElegir(a.ticker)} disabled={cargando}
-                  principal={a.ticker}
-                  secundario={a.score != null && !Number.isNaN(a.score)
-                    ? `score ${a.score.toFixed(0)}` : (a.sector || '')} />
-          ))}
-        </Grupo>
+        <Grupo titulo={subidos.archivo}
+               subtitulo={subidos.hoja ? `hoja "${subidos.hoja}"` : null}
+               activos={subidos.activos} onElegir={onElegir} cargando={cargando}
+               completos={completos} />
       )}
 
       {/* ── Buscador ── */}
@@ -221,7 +220,8 @@ export default function Selector({ universo, onElegir, cargando }) {
           <div style={{ marginTop: 10, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
             {resultados.map(a => (
               <Chip key={a.symbol} onClick={() => onElegir(a.symbol)} disabled={cargando}
-                    principal={a.symbol} secundario={a.name} />
+                    principal={a.symbol} secundario={a.name}
+                    completo={completos?.has(a.symbol)} />
             ))}
           </div>
         )}
@@ -236,23 +236,27 @@ export default function Selector({ universo, onElegir, cargando }) {
 
       {/* ── Cartera propia ── */}
       {carteras.map(c => (
-        <Grupo key={c.nombre} titulo={`Cartera propia — ${c.nombre}`}>
-          {c.tickers.map(t => (
-            <Chip key={t} onClick={() => onElegir(t)} disabled={cargando} principal={t} />
-          ))}
-        </Grupo>
+        <Grupo key={c.nombre} titulo={`Cartera propia — ${c.nombre}`}
+               activos={c.tickers.map(t => ({ ticker: t, nombre: nombreDe(universo, t) }))}
+               onElegir={onElegir} cargando={cargando} completos={completos} />
       ))}
 
       {/* ── Historial ── */}
       {historial.length > 0 && (
-        <Grupo titulo="Vistos recientemente">
-          {historial.map(t => (
-            <Chip key={t} onClick={() => onElegir(t)} disabled={cargando} principal={t} />
-          ))}
-        </Grupo>
+        <Grupo titulo="Vistos recientemente"
+               activos={historial.map(t => ({ ticker: t, nombre: nombreDe(universo, t) }))}
+               onElegir={onElegir} cargando={cargando} completos={completos} />
       )}
 
-      <p style={{ marginTop: 40, fontSize: 12.5, color: C.tenue, lineHeight: 1.6 }}>
+      {completos?.size > 0 && (
+        <p style={{ marginTop: 26, fontSize: 12.5, color: C.tenue }}>
+          <Punto /> marca los {completos.size} activos con informe <b>completo</b>
+          {' '}(incluye consenso a futuro y sentimiento). El resto sale en modo
+          reducido: para completarlos, corré <code>python fetch_informe.py --cedears</code>.
+        </p>
+      )}
+
+      <p style={{ marginTop: 18, fontSize: 12.5, color: C.tenue, lineHeight: 1.6 }}>
         Los datos de mercado salen del snapshot que genera el bot local; el histórico
         se consulta en vivo contra la SEC. Este análisis no constituye recomendación
         de inversión.
@@ -266,18 +270,147 @@ function Titulo({ children }) {
                       color: C.subtitulo, marginBottom: 10 }}>{children}</h2>
 }
 
-function Grupo({ titulo, subtitulo, children }) {
+// Umbral a partir del cual los chips dejan de servir y conviene una tabla.
+const UMBRAL_TABLA = 12
+
+export function Grupo({ titulo, subtitulo, activos, onElegir, cargando, completos }) {
+  const [filtro, setFiltro] = useState('')
+  const [orden, setOrden] = useState(null)   // null = orden original del archivo
+
+  const hayScore = activos.some(a => a.score != null && !Number.isNaN(a.score))
+  const esGrande = activos.length > UMBRAL_TABLA
+
+  const visibles = useMemo(() => {
+    const f = filtro.trim().toUpperCase()
+    let out = f
+      ? activos.filter(a => a.ticker.startsWith(f) ||
+          String(a.nombre || '').toUpperCase().includes(f) ||
+          String(a.sector || '').toUpperCase().includes(f))
+      : [...activos]
+    if (orden) {
+      const dir = orden.desc ? -1 : 1
+      out.sort((a, b) => {
+        const x = a[orden.campo], y = b[orden.campo]
+        if (x == null) return 1
+        if (y == null) return -1
+        return (typeof x === 'number' ? x - y : String(x).localeCompare(String(y))) * dir
+      })
+    }
+    return out
+  }, [activos, filtro, orden])
+
+  function ordenar(campo) {
+    setOrden(o => o?.campo === campo ? { campo, desc: !o.desc } : { campo, desc: campo === 'score' })
+  }
+
   return (
     <div style={{ marginTop: 30 }}>
-      <Titulo>{titulo}</Titulo>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' }}>
+        <Titulo>{titulo}</Titulo>
+        {esGrande && (
+          <span style={{ fontSize: 12.5, color: C.tenue, marginBottom: 10 }}>
+            {visibles.length === activos.length
+              ? `${activos.length} activos`
+              : `${visibles.length} de ${activos.length}`}
+          </span>
+        )}
+      </div>
       {subtitulo && <div style={{ color: C.tenue, fontSize: 13, marginTop: -6,
                                   marginBottom: 8 }}>{subtitulo}</div>}
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>{children}</div>
+
+      {!esGrande ? (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+          {visibles.map(a => (
+            <Chip key={a.ticker} onClick={() => onElegir(a.ticker)} disabled={cargando}
+                  principal={a.ticker} completo={completos?.has(a.ticker)}
+                  secundario={a.score != null && !Number.isNaN(a.score)
+                    ? `score ${Number(a.score).toFixed(0)}` : (a.sector || a.nombre || '')} />
+          ))}
+        </div>
+      ) : (
+        <>
+          <input
+            value={filtro} onChange={e => setFiltro(e.target.value)}
+            placeholder="Filtrar por ticker, nombre o sector…"
+            style={{ width: '100%', padding: '8px 12px', borderRadius: 7,
+                     border: `1px solid ${C.borde}`, outline: 'none', marginBottom: 8,
+                     color: C.cuerpo }} />
+          <div style={{ maxHeight: 420, overflowY: 'auto',
+                        border: `1px solid ${C.borde}`, borderRadius: 8 }}>
+            <table>
+              <thead style={{ position: 'sticky', top: 0, background: '#fff', zIndex: 1 }}>
+                <tr>
+                  <Th onClick={() => ordenar('ticker')} activo={orden?.campo === 'ticker'}
+                      desc={orden?.desc}>Ticker</Th>
+                  <Th onClick={() => ordenar('nombre')} activo={orden?.campo === 'nombre'}
+                      desc={orden?.desc}>Nombre</Th>
+                  <Th onClick={() => ordenar('sector')} activo={orden?.campo === 'sector'}
+                      desc={orden?.desc}>Sector</Th>
+                  {hayScore && (
+                    <Th n onClick={() => ordenar('score')} activo={orden?.campo === 'score'}
+                        desc={orden?.desc}>Score</Th>
+                  )}
+                  <th style={{ width: 34 }} />
+                </tr>
+              </thead>
+              <tbody>
+                {visibles.map(a => (
+                  <tr key={a.ticker} onClick={() => !cargando && onElegir(a.ticker)}
+                      style={{ cursor: cargando ? 'default' : 'pointer' }}
+                      onMouseEnter={e => e.currentTarget.style.background = C.panel}
+                      onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
+                    <td style={{ fontFamily: F.num, fontWeight: 600, color: C.titulo,
+                                 whiteSpace: 'nowrap' }}>
+                      {a.ticker}
+                      {completos?.has(a.ticker) && <Punto />}
+                    </td>
+                    <td style={{ maxWidth: 250, overflow: 'hidden',
+                                 textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {a.nombre || '—'}
+                    </td>
+                    <td style={{ color: C.tenue, fontSize: 13.5 }}>{a.sector || '—'}</td>
+                    {hayScore && (
+                      <td className="n">
+                        {a.score != null && !Number.isNaN(a.score)
+                          ? Number(a.score).toFixed(0) : '—'}
+                      </td>
+                    )}
+                    <td style={{ color: C.acento, textAlign: 'right' }}>›</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {visibles.length === 0 && (
+              <div style={{ padding: 18, textAlign: 'center', color: C.tenue,
+                            fontSize: 14 }}>
+                Ningún activo coincide con “{filtro}”.
+              </div>
+            )}
+          </div>
+        </>
+      )}
     </div>
   )
 }
 
-function Chip({ principal, secundario, onClick, disabled }) {
+function Th({ children, onClick, activo, desc, n }) {
+  return (
+    <th className={n ? 'n' : undefined} onClick={onClick}
+        style={{ cursor: 'pointer', userSelect: 'none',
+                 color: activo ? C.acento : C.subtitulo }}>
+      {children}{activo ? (desc ? ' ↓' : ' ↑') : ''}
+    </th>
+  )
+}
+
+// Marca los que tienen informe completo (consenso a futuro y sentimiento).
+function Punto() {
+  return <span title="Informe completo disponible"
+    style={{ display: 'inline-block', width: 6, height: 6, borderRadius: '50%',
+             background: C.acento, marginLeft: 6, verticalAlign: 'middle' }} />
+}
+
+function Chip({ principal, secundario, onClick, disabled, completo }) {
   return (
     <button onClick={onClick} disabled={disabled}
       style={{
@@ -286,7 +419,7 @@ function Chip({ principal, secundario, onClick, disabled }) {
         display: 'flex', flexDirection: 'column', gap: 1, minWidth: 78,
       }}>
       <span style={{ fontFamily: F.num, fontWeight: 600, color: C.titulo, fontSize: 14 }}>
-        {principal}
+        {principal}{completo && <Punto />}
       </span>
       {secundario && (
         <span style={{ fontSize: 11.5, color: C.tenue, maxWidth: 170,

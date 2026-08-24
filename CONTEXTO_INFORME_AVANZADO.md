@@ -1049,10 +1049,67 @@ claves de `informe_detalle.json`, que la página ya descarga para el buscador.
 
 ---
 
+## 📄 INFORME DE CARTERA — el entregable final (24/08/2026)
+
+Es el documento que se le manda al cliente. Se genera desde la misma página:
+se seleccionan varios activos con casilla y sale **Generar informe de cartera**.
+
+### Decisiones
+| Punto | Decisión |
+|---|---|
+| Profundidad | **Ficha corta + anexo opcional.** No eran excluyentes: el anexo *contiene* la ficha. Interruptor por documento. |
+| Cantidades y precio de compra | **NO se usan.** Los activos se tratan por igual, así sirve igual para una cartera existente que para una propuesta. |
+| Sugerencias de reemplazo | **Sí**, sección propia al final. |
+| Portada | Cliente, comitente, fecha, preparado por y **logo** (opcional). |
+
+### Estructura del documento
+1. **Portada** — logo, título, cliente, comitente, fecha, preparado por
+2. **Resumen** — una fila por activo: veredicto, puntaje, recorrido, riesgos
+3. **Composición por sector** — barra + aviso si un sector supera el 50%
+4. **Puntos de atención** — los riesgos de severidad alta de toda la cartera
+5. **Ficha por activo** — media página: veredicto, 6 métricas, CAGR, 3 notas
+6. **Oportunidades a considerar** — reemplazos para los de puntaje bajo
+7. **Anexo opcional** — el informe completo de cada activo, con gráficos
+8. **Pie** — fuentes, fechas de corte, alcance y descargo
+
+### ⚠️ Se arma en el NAVEGADOR, no en el servidor
+Hacerlo server-side serían ~50 pedidos a la SEC en una invocación, y con 20
+activos se pasa del límite de 60 s. En el navegador: se piden de a uno con
+barra de progreso, y **el caché hace instantáneos los ya vistos**.
+
+### ⚠️ El scoring de reemplazos es una REIMPLEMENTACIÓN
+`src/informe/sugerencias.js` reimplementa el criterio de F1 (percentil por
+sector de las 6 métricas) porque los proyectos no comparten módulos. **Los
+puntajes pueden diferir en algunos puntos de los que muestra F5.** Si algún día
+divergen de verdad, ese archivo es el que hay que revisar.
+
+Los reemplazos **no repiten papel** entre distintas recomendaciones ni sugieren
+algo que ya está en la cartera. Verificado.
+
+### Probado
+- Render en servidor con **9 activos reales**, con anexo y sin anexo
+  (39 KB y 229 KB de HTML).
+- Casos límite: **un solo activo sin metadatos** y **todos los activos con
+  error**. Ninguno rompe.
+- Sugerencias sobre datos reales: CAT (36/100) → SNA (75) y MO (94);
+  AMD (35/100) → FSLR (82) y NEM.
+- Build real: bundle del informe **63 kB**.
+
+### Pendiente
+El **logo lo carga Marcos desde el formulario** (queda en `localStorage`, no se
+sube a ningún lado). Si nunca carga uno, la portada simplemente no lo muestra.
+
+---
+
 ## 📦 PENDIENTE DE PUSH — lista acumulada
 
 Todo esto está escrito en la carpeta y **todavía no subido**. Verificar con
 `git status` antes de asumir.
+
+> Lo anterior a esta línea ya fue pusheado el 24/08/2026. Lo que sigue es la
+> tanda del informe de cartera: `src/informe/Cartera.jsx`,
+> `src/informe/sugerencias.js`, y los cambios en `App.jsx`, `Selector.jsx` e
+> `Informe.jsx`.
 
 **Nuevos**
 ```

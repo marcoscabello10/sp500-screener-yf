@@ -47,11 +47,13 @@ export default function Informe({ d, onVolver }) {
   return (
     <div style={{ maxWidth: 940, margin: '0 auto', padding: '26px 22px 70px' }}>
 
-      <button onClick={onVolver} className="no-imprimir"
-        style={{ background: 'none', border: 'none', color: C.acento, padding: 0,
-                 marginBottom: 18, fontSize: 14 }}>
-        ← Elegir otro activo
-      </button>
+      {onVolver && (
+        <button onClick={onVolver} className="no-imprimir"
+          style={{ background: 'none', border: 'none', color: C.acento, padding: 0,
+                   marginBottom: 18, fontSize: 14 }}>
+          ← Elegir otro activo
+        </button>
+      )}
 
       <Encabezado d={d} />
       <Veredicto d={d} />

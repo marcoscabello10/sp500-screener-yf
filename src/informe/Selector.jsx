@@ -123,7 +123,21 @@ function nombreDe(universo, ticker) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-export default function Selector({ universo, completos, onElegir, cargando }) {
+export default function Selector({ universo, completos, onElegir, onCartera, cargando }) {
+  const [seleccion, setSeleccion] = useState(() => new Set())
+
+  const alternar = t => setSeleccion(s => {
+    const n = new Set(s)
+    n.has(t) ? n.delete(t) : n.add(t)
+    return n
+  })
+  const seleccionarTodos = ts => setSeleccion(s => {
+    const n = new Set(s)
+    const faltan = ts.filter(t => !n.has(t))
+    if (faltan.length) faltan.forEach(t => n.add(t))
+    else ts.forEach(t => n.delete(t))
+    return n
+  })
   const [subidos, setSubidos] = useState(null)
   const [errorArchivo, setErrorArchivo] = useState(null)
   const [q, setQ] = useState('')
@@ -202,7 +216,8 @@ export default function Selector({ universo, completos, onElegir, cargando }) {
         <Grupo titulo={subidos.archivo}
                subtitulo={subidos.hoja ? `hoja "${subidos.hoja}"` : null}
                activos={subidos.activos} onElegir={onElegir} cargando={cargando}
-               completos={completos} />
+               completos={completos} seleccion={seleccion} alternar={alternar}
+               seleccionarTodos={seleccionarTodos} />
       )}
 
       {/* ── Buscador ── */}
@@ -238,14 +253,39 @@ export default function Selector({ universo, completos, onElegir, cargando }) {
       {carteras.map(c => (
         <Grupo key={c.nombre} titulo={`Cartera propia — ${c.nombre}`}
                activos={c.tickers.map(t => ({ ticker: t, nombre: nombreDe(universo, t) }))}
-               onElegir={onElegir} cargando={cargando} completos={completos} />
+               onElegir={onElegir} cargando={cargando} completos={completos}
+               seleccion={seleccion} alternar={alternar}
+               seleccionarTodos={seleccionarTodos} />
       ))}
 
       {/* ── Historial ── */}
       {historial.length > 0 && (
         <Grupo titulo="Vistos recientemente"
                activos={historial.map(t => ({ ticker: t, nombre: nombreDe(universo, t) }))}
-               onElegir={onElegir} cargando={cargando} completos={completos} />
+               onElegir={onElegir} cargando={cargando} completos={completos}
+               seleccion={seleccion} alternar={alternar}
+               seleccionarTodos={seleccionarTodos} />
+      )}
+
+      {seleccion.size > 0 && (
+        <div style={{
+          position: 'fixed', left: 0, right: 0, bottom: 0, zIndex: 20,
+          background: '#fff', borderTop: `1px solid ${C.bordeFuerte}`,
+          boxShadow: '0 -2px 14px rgba(11,46,79,.08)', padding: '12px 22px',
+          display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 14, color: C.titulo }}>
+            <b style={{ fontFamily: F.num }}>{seleccion.size}</b> activos seleccionados
+          </span>
+          <button onClick={() => setSeleccion(new Set())}
+            style={{ background: 'none', border: 'none', color: C.tenue,
+                     fontSize: 13.5 }}>Limpiar</button>
+          <button onClick={() => onCartera([...seleccion])} disabled={cargando}
+            style={{ marginLeft: 'auto', background: C.acento, color: '#fff',
+                     border: 'none', borderRadius: 7, padding: '9px 18px',
+                     fontSize: 14, fontWeight: 600, opacity: cargando ? .5 : 1 }}>
+            Generar informe de cartera →
+          </button>
+        </div>
       )}
 
       {completos?.size > 0 && (
@@ -273,7 +313,8 @@ function Titulo({ children }) {
 // Umbral a partir del cual los chips dejan de servir y conviene una tabla.
 const UMBRAL_TABLA = 12
 
-export function Grupo({ titulo, subtitulo, activos, onElegir, cargando, completos }) {
+export function Grupo({ titulo, subtitulo, activos, onElegir, cargando, completos,
+                       seleccion, alternar, seleccionarTodos }) {
   const [filtro, setFiltro] = useState('')
   const [orden, setOrden] = useState(null)   // null = orden original del archivo
 
@@ -322,6 +363,8 @@ export function Grupo({ titulo, subtitulo, activos, onElegir, cargando, completo
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
           {visibles.map(a => (
             <Chip key={a.ticker} onClick={() => onElegir(a.ticker)} disabled={cargando}
+                  seleccionado={seleccion?.has(a.ticker)}
+                  onAlternar={alternar ? () => alternar(a.ticker) : null}
                   principal={a.ticker} completo={completos?.has(a.ticker)}
                   secundario={a.score != null && !Number.isNaN(a.score)
                     ? `score ${Number(a.score).toFixed(0)}` : (a.sector || a.nombre || '')} />
@@ -340,6 +383,15 @@ export function Grupo({ titulo, subtitulo, activos, onElegir, cargando, completo
             <table>
               <thead style={{ position: 'sticky', top: 0, background: '#fff', zIndex: 1 }}>
                 <tr>
+                  {alternar && (
+                    <th style={{ width: 30 }}>
+                      <input type="checkbox"
+                        checked={visibles.length > 0 &&
+                                 visibles.every(a => seleccion?.has(a.ticker))}
+                        onChange={() => seleccionarTodos(visibles.map(a => a.ticker))}
+                        title="Seleccionar todos los visibles" />
+                    </th>
+                  )}
                   <Th onClick={() => ordenar('ticker')} activo={orden?.campo === 'ticker'}
                       desc={orden?.desc}>Ticker</Th>
                   <Th onClick={() => ordenar('nombre')} activo={orden?.campo === 'nombre'}
@@ -356,9 +408,15 @@ export function Grupo({ titulo, subtitulo, activos, onElegir, cargando, completo
               <tbody>
                 {visibles.map(a => (
                   <tr key={a.ticker} onClick={() => !cargando && onElegir(a.ticker)}
-                      style={{ cursor: cargando ? 'default' : 'pointer' }}
-                      onMouseEnter={e => e.currentTarget.style.background = C.panel}
-                      onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
+                      style={{ cursor: cargando ? 'default' : 'pointer',
+                               background: seleccion?.has(a.ticker) ? C.acentoFondo
+                                                                   : 'transparent' }}>
+                    {alternar && (
+                      <td onClick={e => { e.stopPropagation(); alternar(a.ticker) }}>
+                        <input type="checkbox" checked={seleccion?.has(a.ticker) || false}
+                               onChange={() => {}} />
+                      </td>
+                    )}
                     <td style={{ fontFamily: F.num, fontWeight: 600, color: C.titulo,
                                  whiteSpace: 'nowrap' }}>
                       {a.ticker}
@@ -410,14 +468,21 @@ function Punto() {
              background: C.acento, marginLeft: 6, verticalAlign: 'middle' }} />
 }
 
-function Chip({ principal, secundario, onClick, disabled, completo }) {
+function Chip({ principal, secundario, onClick, disabled, completo,
+                seleccionado, onAlternar }) {
   return (
-    <button onClick={onClick} disabled={disabled}
-      style={{
-        background: '#fff', border: `1px solid ${C.bordeFuerte}`, borderRadius: 8,
-        padding: '7px 12px', textAlign: 'left', opacity: disabled ? .5 : 1,
-        display: 'flex', flexDirection: 'column', gap: 1, minWidth: 78,
-      }}>
+    <div style={{
+      background: seleccionado ? C.acentoFondo : '#fff',
+      border: `1px solid ${seleccionado ? C.acento : C.bordeFuerte}`,
+      borderRadius: 8, padding: '7px 12px', opacity: disabled ? .5 : 1,
+      display: 'flex', alignItems: 'center', gap: 8, minWidth: 78 }}>
+      {onAlternar && (
+        <input type="checkbox" checked={!!seleccionado} onChange={onAlternar}
+               style={{ cursor: 'pointer' }} />
+      )}
+      <button onClick={onClick} disabled={disabled}
+        style={{ background: 'none', border: 'none', padding: 0, textAlign: 'left',
+                 display: 'flex', flexDirection: 'column', gap: 1 }}>
       <span style={{ fontFamily: F.num, fontWeight: 600, color: C.titulo, fontSize: 14 }}>
         {principal}{completo && <Punto />}
       </span>
@@ -426,6 +491,7 @@ function Chip({ principal, secundario, onClick, disabled, completo }) {
                        overflow: 'hidden', textOverflow: 'ellipsis',
                        whiteSpace: 'nowrap' }}>{secundario}</span>
       )}
-    </button>
+      </button>
+    </div>
   )
 }

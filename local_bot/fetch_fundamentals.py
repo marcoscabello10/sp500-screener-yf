@@ -223,25 +223,102 @@ SECTOR_MAP.update({
 # ─────────────────────────────────────────────────────────────────────────────
 
 CONSENSO_FIELDS = (
-    'recommendationKey',        # 'strong_buy' / 'buy' / 'hold' / 'sell'
+    # ── consenso de analistas ──
+    'recommendationKey',        # 'strong_buy' / 'buy' / 'hold' / 'sell' / 'none'
     'recommendationMean',       # 1.0 = strong buy ... 5.0 = strong sell
     'numberOfAnalystOpinions',  # cuantos analistas cubren el papel
-    'targetMeanPrice',
-    'targetMedianPrice',
-    'targetHighPrice',
-    'targetLowPrice',
-    'currentPrice',
-    'trailingEps',
-    'forwardEps',
-    'earningsGrowth',
-    'revenueGrowth',
+    'targetMeanPrice', 'targetMedianPrice', 'targetHighPrice', 'targetLowPrice',
+    'currentPrice', 'trailingEps', 'forwardEps', 'earningsGrowth', 'revenueGrowth',
+    # ── dividendos ──
+    'dividendRate', 'dividendYield', 'payoutRatio', 'fiveYearAvgDividendYield',
+    'trailingAnnualDividendRate', 'trailingAnnualDividendYield', 'lastDividendValue',
+    # ── caja, deuda y flujo libre ──
+    'freeCashflow', 'operatingCashflow', 'totalCash', 'totalCashPerShare',
+    'totalDebt', 'currentRatio', 'quickRatio', 'ebitda', 'totalRevenue',
+    # ── valuacion forward y margenes ──
+    'forwardPE', 'trailingPegRatio', 'pegRatio', 'enterpriseValue', 'bookValue',
+    'grossMargins', 'operatingMargins', 'ebitdaMargins',
+    # ── riesgo de mercado ──
+    'beta', 'fiftyTwoWeekHigh', 'fiftyTwoWeekLow', 'fiftyTwoWeekChange',
+    '52WeekChange', 'SandP52WeekChange', 'shortRatio', 'shortPercentOfFloat',
+    'sharesShort', 'sharesOutstanding', 'floatShares', 'averageVolume',
 )
 
 _consenso_acc = {}
 
 
+def _derivados(fila, info):
+    """Metricas calculadas. Cada una en su propio try: si una falla, las otras
+    se guardan igual."""
+    px = fila.get('currentPrice') or info.get('regularMarketPrice')
+
+    # upside implicito del precio objetivo medio
+    try:
+        tgt = fila.get('targetMeanPrice')
+        fila['upsidePct'] = round((tgt / px - 1) * 100, 2) if px and tgt else None
+    except Exception:
+        fila['upsidePct'] = None
+
+    # dispersion del precio objetivo: (max - min) / promedio.
+    # Mediana observada en el S&P 500: ~40%. Por encima de eso no hay consenso,
+    # hay desacuerdo. Un 0,0% exacto suele delatar dato viejo, no unanimidad.
+    try:
+        hi, lo, me = (fila.get('targetHighPrice'), fila.get('targetLowPrice'),
+                      fila.get('targetMeanPrice'))
+        fila['targetDispersionPct'] = round((hi - lo) / me * 100, 1) if (hi and lo and me) else None
+    except Exception:
+        fila['targetDispersionPct'] = None
+
+    # dividend yield en % — SIEMPRE calculado desde dividendRate/precio.
+    # yfinance cambio la escala de 'dividendYield' entre versiones (fraccion vs
+    # porcentaje), asi que no confiamos en ese campo: guardamos el crudo como
+    # referencia pero el que usa el informe es este.
+    try:
+        rate = fila.get('dividendRate') or fila.get('trailingAnnualDividendRate')
+        fila['dividendYieldPct'] = round(rate / px * 100, 2) if (rate and px) else None
+    except Exception:
+        fila['dividendYieldPct'] = None
+
+    # FCF yield: cuanto flujo libre genera por cada peso de capitalizacion.
+    # Mas honesto que el P/E porque no se puede maquillar con contabilidad.
+    try:
+        fcf, mc = fila.get('freeCashflow'), info.get('marketCap')
+        fila['fcfYieldPct'] = round(fcf / mc * 100, 2) if (fcf and mc) else None
+    except Exception:
+        fila['fcfYieldPct'] = None
+
+    # deuda neta = deuda total - caja. Una empresa con mas caja que deuda
+    # (negativo) esta en otra categoria de riesgo.
+    try:
+        td, tc = fila.get('totalDebt'), fila.get('totalCash')
+        fila['netDebt'] = (td - tc) if (td is not None and tc is not None) else None
+        eb = fila.get('ebitda')
+        fila['netDebtToEbitda'] = (round(fila['netDebt'] / eb, 2)
+                                   if (fila.get('netDebt') is not None and eb and eb > 0) else None)
+    except Exception:
+        fila['netDebt'] = fila['netDebtToEbitda'] = None
+
+    # que tan lejos esta del maximo de 52 semanas
+    try:
+        hi = fila.get('fiftyTwoWeekHigh')
+        fila['desdeMaximo52wPct'] = round((px / hi - 1) * 100, 1) if (px and hi) else None
+    except Exception:
+        fila['desdeMaximo52wPct'] = None
+
+    # margenes a % (yfinance los da como fraccion)
+    for k, destino in (('grossMargins', 'grossMarginPct'),
+                       ('operatingMargins', 'operatingMarginPct'),
+                       ('ebitdaMargins', 'ebitdaMarginPct'),
+                       ('payoutRatio', 'payoutRatioPct')):
+        try:
+            v = fila.get(k)
+            fila[destino] = round(v * 100, 2) if v is not None else None
+        except Exception:
+            fila[destino] = None
+
+
 def _capturar_consenso(sym, info):
-    """Guarda los campos de consenso en el acumulador del informe.
+    """Guarda los campos del informe en el acumulador.
 
     Blindado a proposito: cualquier excepcion se traga en silencio. Este
     codigo NO puede hacer fallar la corrida del screener bajo ninguna
@@ -253,12 +330,10 @@ def _capturar_consenso(sym, info):
                 fila[k] = info.get(k)
             except Exception:
                 fila[k] = None
-        # upside implicito del precio objetivo medio, si hay ambos datos
         try:
-            px, tgt = fila.get('currentPrice'), fila.get('targetMeanPrice')
-            fila['upsidePct'] = round((tgt / px - 1) * 100, 2) if px and tgt else None
+            _derivados(fila, info)
         except Exception:
-            fila['upsidePct'] = None
+            pass
         _consenso_acc[sym] = fila
     except Exception:
         pass  # nunca propagar: el screener tiene prioridad

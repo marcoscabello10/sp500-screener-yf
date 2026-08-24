@@ -31,7 +31,18 @@ Uso
     # opcion A: tickers por linea de comandos
     python fetch_informe.py AAPL MSFT RGTI HIMS
 
-    # opcion B: sin argumentos, lee local_bot/tickers_informe.txt
+    # opcion B (LA HABITUAL): todos los del S&P 500 que tienen CEDEAR.
+    # Son ~151 de 504 y tardan ~7 minutos. Al cubrirlos, casi cualquier
+    # informe que abras ya sale COMPLETO sin ningun paso manual.
+    python fetch_informe.py --cedears
+
+    # los CEDEAR + los de afuera del indice que tengas en cartera
+    python fetch_informe.py --cedears RGTI HIMS
+
+    # sin volver a bajar lo que ya esta fresco (ideal para correrlo seguido)
+    python fetch_informe.py --cedears --dias 7
+
+    # opcion C: sin argumentos, lee local_bot/tickers_informe.txt
     python fetch_informe.py
 
     # empezar de cero en vez de acumular sobre lo ya bajado
@@ -83,11 +94,60 @@ SECTOR_YF_MAP = {
     'Basic Materials': 'Materials',
 }
 
+# Mismo set que captura fetch_fundamentals.py, para que un ticker de afuera del
+# S&P 500 tenga exactamente la misma forma que uno de adentro.
 CONSENSO_FIELDS = (
     'recommendationKey', 'recommendationMean', 'numberOfAnalystOpinions',
     'targetMeanPrice', 'targetMedianPrice', 'targetHighPrice', 'targetLowPrice',
     'currentPrice', 'trailingEps', 'forwardEps', 'earningsGrowth', 'revenueGrowth',
+    'dividendRate', 'dividendYield', 'payoutRatio', 'fiveYearAvgDividendYield',
+    'trailingAnnualDividendRate', 'trailingAnnualDividendYield', 'lastDividendValue',
+    'freeCashflow', 'operatingCashflow', 'totalCash', 'totalCashPerShare',
+    'totalDebt', 'currentRatio', 'quickRatio', 'ebitda', 'totalRevenue',
+    'forwardPE', 'trailingPegRatio', 'pegRatio', 'enterpriseValue', 'bookValue',
+    'grossMargins', 'operatingMargins', 'ebitdaMargins',
+    'beta', 'fiftyTwoWeekHigh', 'fiftyTwoWeekLow', 'fiftyTwoWeekChange',
+    '52WeekChange', 'SandP52WeekChange', 'shortRatio', 'shortPercentOfFloat',
+    'sharesShort', 'sharesOutstanding', 'floatShares', 'averageVolume',
 )
+
+
+def derivados(fila, info):
+    """Metricas calculadas. Identicas a las de fetch_fundamentals.py — si se
+    cambia una, cambiar la otra."""
+    px = fila.get('currentPrice') or info.get('regularMarketPrice')
+
+    def poner(clave, fn):
+        try:
+            fila[clave] = fn()
+        except Exception:
+            fila[clave] = None
+
+    poner('upsidePct', lambda: round((fila['targetMeanPrice'] / px - 1) * 100, 2)
+          if (px and fila.get('targetMeanPrice')) else None)
+    poner('targetDispersionPct', lambda: round(
+        (fila['targetHighPrice'] - fila['targetLowPrice']) / fila['targetMeanPrice'] * 100, 1)
+        if (fila.get('targetHighPrice') and fila.get('targetLowPrice')
+            and fila.get('targetMeanPrice')) else None)
+    # dividend yield SIEMPRE calculado: yfinance cambio la escala de
+    # 'dividendYield' entre versiones (fraccion vs porcentaje)
+    poner('dividendYieldPct', lambda: round(
+        (fila.get('dividendRate') or fila.get('trailingAnnualDividendRate')) / px * 100, 2)
+        if ((fila.get('dividendRate') or fila.get('trailingAnnualDividendRate')) and px) else None)
+    poner('fcfYieldPct', lambda: round(fila['freeCashflow'] / info['marketCap'] * 100, 2)
+          if (fila.get('freeCashflow') and info.get('marketCap')) else None)
+    poner('netDebt', lambda: (fila['totalDebt'] - fila['totalCash'])
+          if (fila.get('totalDebt') is not None and fila.get('totalCash') is not None) else None)
+    poner('netDebtToEbitda', lambda: round(fila['netDebt'] / fila['ebitda'], 2)
+          if (fila.get('netDebt') is not None and fila.get('ebitda')
+              and fila['ebitda'] > 0) else None)
+    poner('desdeMaximo52wPct', lambda: round((px / fila['fiftyTwoWeekHigh'] - 1) * 100, 1)
+          if (px and fila.get('fiftyTwoWeekHigh')) else None)
+    for k, destino in (('grossMargins', 'grossMarginPct'),
+                       ('operatingMargins', 'operatingMarginPct'),
+                       ('ebitdaMargins', 'ebitdaMarginPct'),
+                       ('payoutRatio', 'payoutRatioPct')):
+        poner(destino, lambda k=k: round(fila[k] * 100, 2) if fila.get(k) is not None else None)
 
 MAX_UPGRADES = 15  # cuantas revisiones de analistas guardamos por activo
 
@@ -152,6 +212,38 @@ def check_cedear(sym):
         return bool(price and price > 0)
     except Exception:
         return False
+
+
+def leer_cedears(data_dir):
+    """Todos los tickers del S&P 500 que tienen CEDEAR, leidos del snapshot del
+    screener (SOLO LECTURA).
+
+    Por que este universo: son ~151 de 504 y es justo lo operable desde
+    Argentina, asi que cubrir esos hace que casi cualquier informe que abras ya
+    tenga el consenso a futuro y el sentimiento, sin ningun paso manual."""
+    try:
+        p = data_dir / 'sp500_fundamentals.json'
+        if not p.exists():
+            print('  [aviso] no encuentro sp500_fundamentals.json; '
+                  'corre antes fetch_fundamentals.py')
+            return []
+        d = json.loads(p.read_text(encoding='utf-8'))
+        return [s['symbol'] for s in d.get('stocks', [])
+                if s.get('hasCedear') and s.get('symbol')]
+    except Exception as e:
+        print(f'  [aviso] no pude leer los CEDEAR ({type(e).__name__})')
+        return []
+
+
+def edad_dias(activo):
+    """Hace cuantos dias se bajo este activo. None si no se sabe."""
+    try:
+        t = datetime.fromisoformat(activo['fetched_at'])
+        if t.tzinfo is None:
+            t = t.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - t).total_seconds() / 86400
+    except Exception:
+        return None
 
 
 def leer_lista_tickers(base_dir):
@@ -226,10 +318,12 @@ def traer_activo(sym, sp500_map):
     else:
         r['hasCedear'] = check_cedear(sym)
 
-    # --- consenso de analistas ----------------------------------------------
+    # --- consenso de analistas + dividendos + caja + margenes + riesgo -------
     consenso = {k: info.get(k) for k in CONSENSO_FIELDS}
-    px, tgt = consenso.get('currentPrice'), consenso.get('targetMeanPrice')
-    consenso['upsidePct'] = round((tgt / px - 1) * 100, 2) if px and tgt else None
+    try:
+        derivados(consenso, info)
+    except Exception as e:
+        errores.append(f'derivados: {type(e).__name__}: {e}')
     r['consenso'] = jsonable(consenso)
 
     # --- consenso forward (OJO: no es guidance de la empresa) ---------------
@@ -267,17 +361,34 @@ def traer_activo(sym, sp500_map):
 
 
 def main():
-    args = [a for a in sys.argv[1:] if not a.startswith('--')]
-    flags = {a for a in sys.argv[1:] if a.startswith('--')}
+    crudos = sys.argv[1:]
+    flags = {a for a in crudos if a.startswith('--')}
     reset = '--reset' in flags
+    cedears = '--cedears' in flags
+    # --dias N: saltear los activos bajados hace menos de N dias
+    dias_min = 0.0
+    if '--dias' in crudos:
+        try:
+            dias_min = float(crudos[crudos.index('--dias') + 1])
+        except Exception:
+            print('[X] --dias necesita un numero. Ej: --dias 7')
+            sys.exit(1)
+    args = [a for i, a in enumerate(crudos)
+            if not a.startswith('--')
+            and not (i > 0 and crudos[i - 1] == '--dias')]
 
     base_dir = Path(__file__).resolve().parent
     data_dir = base_dir.parent / 'public' / 'data'
     out_path = data_dir / 'informe_detalle.json'
 
-    symbols = [s.upper() for s in args] or leer_lista_tickers(base_dir)
+    symbols = [s.upper() for s in args]
+    if cedears:
+        symbols += leer_cedears(data_dir)
+    if not symbols:
+        symbols = leer_lista_tickers(base_dir)
     if not symbols:
         print('[X] No me diste tickers.\n')
+        print('    python fetch_informe.py --cedears     <- lo habitual')
         print('    python fetch_informe.py AAPL MSFT RGTI')
         print('    o crea local_bot/tickers_informe.txt con uno por linea.')
         sys.exit(1)
@@ -306,6 +417,20 @@ def main():
             print(f'[aviso] no pude leer el archivo anterior ({type(e).__name__}), '
                   f'empiezo de cero\n')
             activos = {}
+
+    # --dias N: no volver a bajar lo que ya esta fresco. Util con --cedears,
+    # que son ~151 tickers y no hace falta refrescarlos todos cada vez.
+    if dias_min > 0:
+        antes = len(symbols)
+        symbols = [s for s in symbols
+                   if not (activos.get(s) and (edad_dias(activos[s]) or 999) < dias_min)]
+        salteados = antes - len(symbols)
+        if salteados:
+            print(f'Salteo {salteados} ya bajados hace menos de {dias_min:g} dias '
+                  f'(--dias). Quedan {len(symbols)}.\n')
+        if not symbols:
+            print('Todo fresco, no hay nada que bajar.')
+            return
 
     t0 = time.time()
     fuera_sp500, con_errores = [], []

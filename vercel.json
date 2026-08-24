@@ -5,6 +5,9 @@
   "functions": {
     "api/data.py": {
       "maxDuration": 30
+    },
+    "api/informe.py": {
+      "maxDuration": 60
     }
   }
 }

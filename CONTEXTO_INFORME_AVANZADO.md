@@ -153,7 +153,61 @@ andaría — pero "probablemente" no es razón para tocar producción.
 | Tratamiento por sector (percentil + reglas) | ✅ decidido, falta implementar |
 | 4 señales derivadas | ✅ datos listos, faltan las reglas |
 | Re-correr los dos bots (59 campos) | ✅ validado sobre 504 reales |
-| **Re-correr `probe_edgar.py`** (crasheaba, ya corregido) | 🔄 **siguiente paso de Marcos** |
+| Re-correr `probe_edgar.py` (crash de la variable pisada) | ✅ corrió, 0 avisos, CAT resuelto |
+| Corrección de splits accionarios | ✅ **validada sobre datos reales** |
+| **🎉 CAPA DE DATOS COMPLETA** | ✅ nada más que recolectar |
+| Endpoint `api/informe.py` (`action=datos`) | ✅ escrito y probado contra datos reales |
+| Reglas por sector + 4 señales + veredicto | ✅ dentro del endpoint |
+| Re-correr `probe_edgar.py` (regla de tag corregida) | ✅ AAPL 9 años hasta 2025, 0 avisos |
+| Entrada: Excel/HTML + buscador + cartera F5 | ✅ decidido |
+| Cobertura: `--cedears` (~151) automático | ✅ hecho y probado |
+| **Correr `fetch_informe.py --cedears RGTI HIMS`** | 🔄 **siguiente paso de Marcos** |
+| Página `/informe` + `informe.html` + `vite.config.js` | ✅ construida y con build real verificado |
+| Gráficos (evolución + percentiles) e impresión a PDF | ✅ hechos |
+| **Pushear y probar en Vercel** | 🔄 **siguiente paso de Marcos** |
+| `action=tesis` + API key | ⬜ al final |
+| Botón "Ver informe" en F1/F5 (toca `App.jsx`) | ⬜ después de validar el informe |
+
+---
+
+## 🖥️ La página `/informe` — construida 24/08/2026
+
+**Estructura de archivos** (bundles separados, cero imports cruzados):
+| Archivo | Qué es |
+|---|---|
+| `informe.html` | entrada de la página, monta en `#root-informe` |
+| `src/informe/main.jsx` | punto de entrada de React |
+| `src/informe/App.jsx` | orquesta: universo, caché, ruteo por `?ticker=` |
+| `src/informe/Selector.jsx` | subida de Excel/HTML + buscador + cartera F5 + historial |
+| `src/informe/Informe.jsx` | el informe con gráficos y tablas |
+| `src/informe/estilos.js` | paleta, tipografías, formateo y CSS de impresión |
+
+**Build real verificado** (regla de oro #10):
+```
+dist/informe.html   0.43 kB      dist/assets/informe-*.js   40.70 kB (14.4 gzip)
+dist/index.html     0.50 kB      dist/assets/main-*.js     282.24 kB
+```
+- `informe.html` carga **solo su bundle**; el de `App.jsx` no aparece —
+  verificado buscando símbolos del screener dentro del bundle del informe: **0**.
+- **`xlsx` (429 kB) se carga de forma diferida**, solo si subís un archivo.
+  `index.html` sí lo precarga, como siempre.
+- El screener sigue con su propio bundle y su propio HTML sin cambios.
+
+**Prueba de render con datos reales**: se renderizó el informe en servidor
+para AAPL, RGTI, JPM, VICI y HIMS (completos y reducidos) **más un objeto
+mínimo con todos los campos vacíos**. Los seis renderizan sin excepciones.
+
+**Detalles de implementación**
+- **Tipografías de sistema, sin Google Fonts**: `"Segoe UI"` es humanista y
+  está en todo Windows. Sin pedido a terceros la página carga más rápido y se
+  imprime sin esperar descargas.
+- **Caché de informes** en `informe_cache_v1`, **1 día**, máximo 15 tickers.
+  El histórico de la SEC cambia por trimestre, así que un día es holgado.
+  Botón "Actualizar datos" para forzar.
+- **`?ticker=AAPL` abre el informe directo** — así va a funcionar el botón que
+  agreguemos en F1/F5 sin tocar nada más.
+- **Impresión**: `@media print` saca la barra de acciones y el botón de volver,
+  fuerza los colores de fondo, y evita cortes en medio de una sección.
 | Endpoint del informe en Vercel (EDGAR + reglas + LLM) | ⬜ pendiente |
 | Reglas de tesis / riesgos / pros | ⬜ pendiente |
 | Plantilla visual del informe | ⬜ pendiente |
@@ -288,18 +342,114 @@ python fetch_informe.py          # cuando cambia la lista de activos
 
 ---
 
+## 🖥️ Selección de activo — resuelto (22/08/2026)
+
+**El problema que planteó Marcos:** la lista de F1 cambia según Top N y sectores
+omitidos, así que "los que pasaron el screening" no es una lista estable.
+
+**Verificado en `src/App.jsx`, y es peor que eso: el resultado de F1 NO se
+persiste.** Lo único guardado en `localStorage` es:
+- `sp500_screener_fund_v2_all` / `_cedear` → el **caché de fundamentales** de los
+  504 (no el resultado filtrado)
+- `sp500_hist_prices_v1` → precios históricos
+- `sp500_client_${safe}_v1` → **la cartera de F5**, que sí es estable
+
+El Top N filtrado vive solo en estado de React y se recalcula con los parámetros
+del momento.
+
+**Solución: no intentar congelar la lista.**
+1. **Buscador sobre los 504** del snapshot + los de afuera que estén en
+   `informe_detalle.json`. No depende de ninguna corrida.
+2. **Cartera de F5 fija arriba**, leída de `sp500_client_*_v1` (sí persiste).
+3. **Historial propio del informe** en su propia clave — el conjunto de trabajo
+   se arma solo con el uso.
+4. **Botón en F1/F5 más adelante**: al hacer clic desde la corrida que estás
+   mirando, no hay nada que congelar. Eso toca `App.jsx`, así que se hace
+   **después** de que el informe esté probado.
+
+### ✅ Decidido el 23/08/2026 — flujo completo
+
+**Entrada a la página** (tres caminos, conviven):
+1. **Subir el Excel o el HTML** que exporta F1/F5. El export ya trae una hoja
+   **"Fundamentales"** con encabezados
+   `Sector · Ticker · Nombre · P/E · P/B · ROE % · D/E · EV/EBITDA · Margen % · Score`.
+   Y F5 **ya tiene un lector de xlsx** con detección flexible de columna
+   (`ticker` / `simbolo` / `activo` / `accion`) — se reutiliza ese patrón
+   (regla de oro #14). Captura la corrida exacta con su Top N y sus filtros,
+   funciona en cualquier máquina y sobrevive a limpiar el navegador.
+2. **Buscador** sobre los 504 + los de afuera que estén en el detalle.
+3. **Cartera de F5** leída de `sp500_client_*_v1`.
+
+**Cobertura de datos: `--cedears` automático.**
+`fetch_informe.py --cedears` trae los **~151 del S&P 500 con CEDEAR** —
+justo el universo operable desde Argentina. Son ~7 min sobre los ~8 que ya
+tarda el bot de fundamentales. Con eso **casi cualquier informe que abras sale
+completo sin ningún paso manual**, y `tickers_informe.txt` queda solo para las
+excepciones de afuera del índice.
+
+Flags nuevos, probados:
+```bash
+python fetch_informe.py --cedears              # los ~151, lo habitual
+python fetch_informe.py --cedears RGTI HIMS    # + los de afuera del indice
+python fetch_informe.py --cedears --dias 7     # saltea lo bajado hace <7 dias
+```
+
+**Rutina recomendada** (una vez por semana, ~15 min en total):
+```bash
+cd C:\Users\otero\Desktop\sp500-screener-yf\local_bot
+python fetch_fundamentals.py                   # ~8 min (con cache de CEDEAR)
+python fetch_informe.py --cedears RGTI HIMS    # ~7 min
+cd ..
+git add public/data/*.json
+git commit -m "chore: actualizar datos"
+git push
+```
+
+### ⚠️ El gate real es `informe_detalle.json`, no el screening
+Hoy tiene **7 tickers**. Para los otros 497 hay fundamentales, consenso básico e
+histórico de EDGAR, pero **no** consenso forward ni sentimiento.
+
+El informe debe mostrarse en dos niveles y **decirlo explícitamente**:
+- **Completo** — ticker presente en `informe_detalle.json`
+- **Reducido** — el resto, con el aviso "agregá este ticker a
+  `tickers_informe.txt` y corré `fetch_informe.py`"
+
+---
+
 ## 🎨 Decisiones de formato
 
-- **Estética: documento claro, serif de research financiero.** Títulos y
-  cuerpo en serif (tipo Source Serif / Lora), fondo blanco roto, acento azul
-  petróleo sobrio, **números en monospace** para que las columnas alineen.
-  Pensado para leer largo, imprimir y compartir en PDF.
-- **Rompe a propósito** con el dark slate + monospace del screener: un informe
-  se lee distinto que un panel de control.
+⚠️ **Marcos revisó esta decisión el 22/08/2026: pasó de serif a SANS SERIF
+humanista.** Lo que sigue es lo vigente.
+
+- **Tipografía: sans serif humanista** para títulos y cuerpo. **Números en
+  monospace** para que las columnas alineen.
+- **Color:**
+  - acento principal **azul celeste / cyan tecnológico**
+  - subtítulos **azul marino profundo**
+  - cuerpo del texto **grafito**
+  - fondo claro
+- Sigue siendo un **documento claro**, no el dark slate del screener.
 - Referencia de lo que **NO** se usa (estética del screener): fondo `#0f172a` /
   `#1e293b`, bordes `#334155`, texto `#94a3b8`, acentos `#38bdf8` (sky),
   `#34d399` (verde), `#fbbf24` (ámbar), `#f87171` (rojo), todo monospace.
-- Valores hex exactos del informe: **a definir al construir la plantilla**.
+
+### Veredicto: las tres cosas
+Decidido: **datos + semáforos simples + veredicto global**. O sea cada bloque
+con su señal verde/amarilla/roja, y además una etiqueta global arriba derivada
+de las reglas.
+
+⚠️ Con veredicto global hay que cuidar el caso RGTI: **+62,8% de upside con
+revenue cayendo y pérdidas**. Una sola etiqueta no puede tapar eso — el
+veredicto tiene que mostrar **por qué** da lo que da, no solo el rótulo.
+
+### Audiencia: uso propio **y clientes**
+Implica incluir desde el arranque:
+- **Fecha y hora de los datos** (el snapshot puede tener días)
+- **Origen de cada cifra** (Yahoo Finance vía bot local / SEC EDGAR)
+- **Mini descargo** de que no es recomendación de inversión
+
+⚠️ Recordatorio: los términos de Vercel exigen **plan Pro (US$20/mes)** si el
+proyecto sirve a clientes que pagan.
 
 ---
 
@@ -377,11 +527,39 @@ mapeo XBRL es correcto.
 
 ### El beneficio, medido
 - **AAPL: 1,8% a 3 años vs. 8,7% a 5 años.** La ventana corta arrancaba en el
-  pico de 2022 y escondía la tendencia.
-- **LRCX EPS: +20,2% a 3 años vs. -26,5% a 5 años.**
+  pico de 2022 y escondía la tendencia. (Revenue — sin problema de splits.)
+- ⚠️ El ejemplo del EPS de LRCX que figuraba acá (**-26,5% a 5 años**) resultó
+  ser un **artefacto de split**, no un hallazgo. Ver la sección de splits más
+  abajo. El valor correcto es **+16,4%**.
 
 La cascada de conceptos **era necesaria**: CAT devolvió 404 en los dos
 primeros tags.
+
+### Segunda corrida (22/08/2026) — con el fix de la cascada
+| Ticker | rev | eps | ni | gp | oi | acc | net_income tag |
+|---|---|---|---|---|---|---|---|
+| CAT | 19 | 19 | **17** | 11 | 19 | 19 | `NetIncomeLossAvailableToCommonStockholdersBasic` |
+| AAPL / MSFT | 11 | 19 | 19 | 19 | 19 | 19 | `NetIncomeLoss` |
+| LRCX / AMD | 10 | 18 | 18/16 | 18 | 18 | 18 | `NetIncomeLoss` |
+| HIMS | 7 | 7 | 7 | 7 | 7 | 7 | `NetIncomeLoss` |
+| RGTI | 5 | 5 | 5 | 5 | 5 | 5 | `NetIncomeLoss` |
+
+**Cero avisos.** El bug de CAT quedó resuelto: **17 años (2009-2025)** en vez
+de 4 terminando en 2010. Y el margen bruto se derivó de `CostOfGoodsSold`
+porque CAT no reporta `GrossProfit`.
+
+### Márgenes históricos (primero → último año)
+| | bruto | operativo | neto |
+|---|---|---|---|
+| MSFT | 64,0 → 67,9 | 28,6 → **46,8** | 22,5 → **40,3** |
+| AAPL | 34,0 → 38,5 | 18,4 → 26,8 | 14,6 → 21,1 |
+| AMD | 23,2 → **49,5** | -8,6 → 10,7 | -11,5 → 12,5 |
+| CAT | 27,4 → 31,7 | 10,9 → 16,5 | 2,8 → 13,1 |
+| LRCX | 45,0 → 50,5 | 23,7 → 35,3 | 21,2 → 31,3 |
+| HIMS | 54,0 → **73,8** | -90,1 → **+4,5** | -87,3 → **+5,5** |
+| RGTI | 80,2 → **29,1** | -416 → **-1194** | -467 → **-3050** |
+
+HIMS cruzó a rentabilidad; **RGTI se deteriora en las tres líneas**.
 
 ### 🐛 Bug encontrado en la sonda (a corregir antes de producción)
 `net_income` de CAT trajo **solo 4 años, y son 2007-2010**. La cascada devolvía
@@ -573,6 +751,120 @@ Varias industriales no desglosan el margen bruto como concepto propio.
 `CostOfRevenue` y se deriva `revenue - costo`. Solo se pide cuando hace falta —
 AAPL, que sí tiene `GrossProfit`, no gasta ese request.
 
+### 🚨 SPLITS: el error más grave encontrado hasta ahora (22/08/2026)
+
+**Dos números que se dieron por buenos eran artefactos de splits accionarios.**
+Quedan corregidos y anulados:
+
+| Dato reportado antes | Realidad |
+|---|---|
+| ❌ "LRCX: EPS **-26,5%** a 5 años" | ✅ **+16,4%**. Fue el split 10:1 |
+| ❌ "LRCX: acciones **+54,1%** (dilución)" | ✅ **-2,8%** — son **recompras** |
+| ❌ "AAPL: EPS **-2,1%** a 10 años" | ✅ **+12,5%**. Fue el split 4:1 |
+
+**Por qué pasa:** EDGAR devuelve los valores **tal como se presentaron**. Un
+10-K reformula los años previos por el split, pero los años que solo aparecen
+en filings viejos quedan en la base vieja. Al pegar ambos tramos, la serie
+tiene un escalón. **La fecha del escalón NO es la del split**, sino la del
+límite entre filings — por eso no sirve aplicar el calendario real de splits.
+
+**Cómo se distingue un split de una emisión real:** en un split el net income
+**no cambia** (la misma torta en más porciones) y el factor es **redondo**
+(2, 3, 4, 5, 7, 10, 15, 20). Hacen falta **las dos evidencias juntas** —
+con una sola no alcanza:
+- HIMS saltó **x5,28** (cerca de 5) pero fue el **SPAC** de 2021, no un split.
+- RGTI saltó **x1,68** con pérdidas parecidas, y es **emisión real**.
+- AAPL 2012 saltó **x7,07** (su split 7:1) pero ese año el net income creció
+  61%, así que la prueba de "torta estable" falla → queda sin resolver.
+
+**Política adoptada — no inventar números:**
+- `split` (factor redondo **Y** net income estable) → **se corrige** la serie.
+- `discontinuidad` (cualquier otro salto ≥1,5x o ≤0,67x) → **no se corrige**,
+  y `cagr_seguro()` devuelve **`None`** para toda ventana que la cruce.
+
+Vale más un "no se puede calcular" que un número inventado.
+
+**Verificación por identidad contable.** Como `EPS = NI / acciones`, tiene que
+cumplirse que *crecimiento del EPS ≈ crecimiento del NI − variación de
+acciones*. Cierra en los cinco casos calculables:
+
+| | eps 5a | NI 5a | acc 5a | NI−acc |
+|---|---|---|---|---|
+| AAPL | 17,9 | 14,3 | -3,1 | 17,4 ✅ |
+| MSFT | 17,4 | 16,9 | -0,4 | 17,3 ✅ |
+| CAT | 28,1 | 24,3 | -3,0 | 27,2 ✅ |
+| LRCX | 16,4 | 13,2 | -2,8 | 16,0 ✅ |
+| AMD | 5,2 | 11,7 | **+6,3** | 5,5 ✅ |
+
+**AMD es el caso más instructivo:** gana **11,7%** de net income pero solo
+**5,2%** de EPS. La diferencia se la come la dilución del 6,3% anual por pagar
+Xilinx con acciones. Sin este análisis, el informe habría dicho "crece 5%" sin
+explicar por qué crece la mitad de lo que gana.
+
+⚠️ **`net_income_3a` y `net_income_5a` se agregaron como control**: el net
+income es inmune a splits, así que sirve de referencia cuando el EPS es dudoso.
+
+### ✅ Corrección de splits — validada sobre datos reales (22/08/2026)
+
+Clasificación obtenida en la corrida definitiva:
+
+| Ticker | Saltos detectados | Acción |
+|---|---|---|
+| AAPL | 2012-09 x7,07 **discontinuidad** · 2018-09 x3,81 **split (÷4)** | corrige 2018, bloquea ventanas que cruzan 2012 |
+| LRCX | 2023-06 x9,66 **split (÷10)** | corrige |
+| RGTI | 2022-12 x4,38 · 2025-12 x1,68, ambas **discontinuidad** | no calcula CAGR de EPS ni acciones |
+| HIMS | 2021-12 x5,28 **discontinuidad** (SPAC) | idem |
+| MSFT · CAT · AMD | sin saltos | series intactas |
+
+**Auditoría crudo vs. corregido:** el único que cambió fue LRCX
+(eps5a **-26,5 → +16,4**, acc5a **+54,1 → -2,8**). Los demás quedaron
+idénticos, o sea que **la corrección no toca lo que no hay que tocar**.
+
+**Identidad contable: cierra en los 5 calculables** (diferencia máxima 0,85 pp).
+RGTI y HIMS devuelven `None`, que es el comportamiento correcto.
+
+**Cero avisos en toda la corrida.**
+
+### ✅ Regla de recencia validada (23/08/2026)
+| Ticker | años | hasta | tag ganador | descartados por obsoletos |
+|---|---|---|---|---|
+| AAPL | **9** | 2025-09-27 | `RevenueFromContractWithCustomer…` | `Revenues`, `SalesRevenueNet` |
+| CAT | 19 | 2025-12-31 | `Revenues` | `SalesRevenueNet` |
+| MSFT | 11 | 2026-06-30 | `RevenueFromContractWithCustomer…` | 3 descartados |
+
+AAPL volvió a dar **CAGR 3a = 1,81%**, idéntico a yfinance. Su `revenue_10a`
+ahora es `None` (9 puntos, hacen falta 11) — correcto y honesto. **Cero avisos.**
+
+### 🚨 Elección del tag: DOS criterios, y el orden importa (22/08/2026)
+
+Al arreglar el bug de CAT ("gana el que más años trae") **se creó otro peor**:
+
+**AAPL devolvía `SalesRevenueNet` con 11 años... que terminaban en 2017**,
+porque Apple dejó de usar ese tag con el cambio de norma contable. Todo el
+CAGR se calculaba sobre datos de hace ocho años. Quedó camuflado porque el
+CAGR a 5 años daba **7,9% en las dos ventanas por pura coincidencia**.
+
+**Regla definitiva:**
+1. **Recencia primero** — solo compiten los tags cuya serie llega al último
+   ejercicio disponible (tolerancia de ~1 año).
+2. **Entre los vigentes, gana el más largo.**
+
+Verificado en las dos direcciones: con CAT elige el largo (17 años) porque
+ambos llegan a 2025; con AAPL elige el corto (9 años) porque el largo está
+muerto desde 2017.
+
+⚠️ Ya **no hay corte anticipado**: hay que consultar todos los candidatos para
+saber cuál es el vigente. Cuesta algún request más y vale la pena.
+
+### 🚨 Otros dos bugs corregidos en el endpoint
+- **Un múltiplo negativo NO es "barato".** RGTI puntuaba **100/100 en
+  valuación** porque su forward P/E negativo caía en el extremo "más barato"
+  del percentil. Ahora los valores ≤ 0 se excluyen de las métricas donde
+  "menor es mejor" y devuelven `None`.
+- **Las banderas rojas ahora DESCUENTAN del puntaje** (-18 cada una), no solo
+  cambian la etiqueta. Antes quedaba el absurdo de **"con reparos
+  (81,8/100)"** para una empresa con ingresos cayendo y pérdidas.
+
 ### ✅ Nuevos conceptos de EDGAR
 - `GrossProfit` y `OperatingIncomeLoss` → **márgenes históricos** (% sobre
   ventas, año por año).
@@ -683,6 +975,47 @@ disponible, nunca inventarlo ni romper.
 1. Paleta hex y familias tipográficas concretas del documento.
 2. TTL exacto del caché del informe.
 3. Qué hacer cuando un activo no tiene datos en SEC EDGAR (ver arriba).
+
+---
+
+## 📦 PENDIENTE DE PUSH — lista acumulada
+
+Todo esto está escrito en la carpeta y **todavía no subido**. Verificar con
+`git status` antes de asumir.
+
+**Nuevos**
+```
+.gitignore
+api/informe.py
+informe.html
+local_bot/fetch_informe.py
+local_bot/probe_analistas.py
+local_bot/probe_edgar.py
+local_bot/requirements.txt
+local_bot/tickers_informe.txt
+src/informe/App.jsx
+src/informe/Informe.jsx
+src/informe/Selector.jsx
+src/informe/estilos.js
+src/informe/main.jsx
+```
+
+**Modificados**
+```
+CONTEXTO_INFORME_AVANZADO.md
+local_bot/fetch_fundamentals.py     (consenso + caché de CEDEAR)
+requirements.txt                    (SOLO comentarios; el pin NO cambia)
+vercel.json                         (declara api/informe.py con maxDuration 60)
+vite.config.js                      (multipágina: index.html + informe.html)
+public/data/sp500_fundamentals.json
+public/data/informe_consenso.json
+public/data/informe_detalle.json
+```
+
+**NO se sube** (está en `.gitignore`): `local_bot/.cedear_cache.json`,
+`local_bot/probe_analistas_out.json`, `local_bot/probe_edgar_out.json`.
+
+⚠️ **`src/App.jsx` sigue sin tocarse ni una línea.**
 
 ---
 

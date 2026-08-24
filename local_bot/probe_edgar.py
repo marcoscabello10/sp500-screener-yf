@@ -65,10 +65,9 @@ URL_CONCEPT = 'https://data.sec.gov/api/xbrl/companyconcept/CIK{cik}/us-gaap/{ta
 # CAT cambio de tag despues de 2010. Un informe de 2026 habria mostrado el
 # net income de 2010 sin avisar — peor que no tener el dato.
 #
-# Ahora se prueban TODOS los candidatos y gana el que mas anios anuales traiga.
-# Corte anticipado si alguno supera CORTE_ANTICIPADO, para no gastar requests
-# de mas cuando ya tenemos historia de sobra.
-CORTE_ANTICIPADO = 12
+# Ahora se prueban TODOS los candidatos, se descartan los OBSOLETOS (los que
+# no llegan al ultimo ejercicio) y entre los vigentes gana el mas largo.
+# Ya no hay corte anticipado: hay que ver todos para saber cual es el vigente.
 
 CONCEPTOS = {
     'revenue': [
@@ -174,14 +173,31 @@ def anuales(datos_unit):
     return dict(sorted(por_cierre.items()))
 
 
-def traer_concepto(cik, grupo, errores):
-    """Prueba TODOS los candidatos de la cascada y devuelve el que mas anios
-    anuales traiga (no el primero — ver el comentario del bug de CAT arriba).
+def _menos_un_anio(fecha_iso):
+    """Tolerancia: un ejercicio fiscal puede cerrar unos dias antes o despues."""
+    try:
+        return f'{int(fecha_iso[:4]) - 1}{fecha_iso[4:]}'
+    except Exception:
+        return fecha_iso
 
-    Corta antes si alguno ya supera CORTE_ANTICIPADO anios, porque a esa altura
-    tener mas historia no cambia el analisis y cada intento es un request."""
-    intentos = []
-    mejor = None
+
+def traer_concepto(cik, grupo, errores):
+    """Elige el mejor tag de la cascada. DOS criterios y el orden importa:
+
+      1. RECENCIA primero: solo compiten los tags cuya serie llega hasta el
+         ultimo ejercicio disponible (tolerancia de ~1 anio).
+      2. Entre esos, gana el que mas anios traiga.
+
+    Los dos bugs reales que motivaron cada criterio:
+      - Solo "el primero con datos": CAT devolvia NetIncomeLoss con 4 anios
+        que terminaban en 2010.
+      - Solo "el que mas anios trae": AAPL devolvia SalesRevenueNet con 11
+        anios que terminaban en 2017, porque Apple dejo de usar ese tag tras
+        el cambio de norma contable. El CAGR salia de datos de hace 8 anios,
+        y quedaba camuflado porque a 5 anios daba casi lo mismo por
+        coincidencia.
+    """
+    intentos, candidatos = [], []
     for tag in CONCEPTOS[grupo]:
         try:
             d = get_json(URL_CONCEPT.format(cik=cik, tag=tag))
@@ -195,24 +211,118 @@ def traer_concepto(cik, grupo, errores):
             continue
         time.sleep(PAUSA)
         units = d.get('units') or {}
-        # el EPS viene en 'USD/shares', las acciones en 'shares', el resto en 'USD'
         clave = next((k for k in ('USD', 'USD/shares', 'shares') if k in units), None)
         if not clave:
             intentos.append({'tag': tag, 'error': f'unidades inesperadas: {list(units)}'})
             continue
         serie = anuales(units[clave])
-        intentos.append({'tag': tag, 'anios': len(serie), 'unidad': clave})
-        if len(serie) >= 2 and (mejor is None or len(serie) > len(mejor['detalle'])):
-            mejor = {'tag_ganador': tag, 'unidad': clave,
-                     'serie': {k: v['val'] for k, v in serie.items()},
-                     'detalle': serie}
-        if mejor and len(mejor['detalle']) >= CORTE_ANTICIPADO:
-            break
-    if mejor is None:
+        intentos.append({'tag': tag, 'anios': len(serie), 'unidad': clave,
+                         'hasta': max(serie) if serie else None})
+        if len(serie) >= 2:
+            candidatos.append({'tag_ganador': tag, 'unidad': clave,
+                               'serie': {k: v['val'] for k, v in serie.items()},
+                               'detalle': serie, 'hasta': max(serie)})
+    if not candidatos:
         errores.append(f'{grupo}: ningun concepto trajo >=2 anios')
         return {'tag_ganador': None, 'serie': {}, 'intentos': intentos}
+    tope = max(c['hasta'] for c in candidatos)
+    vigentes = [c for c in candidatos if c['hasta'] >= _menos_un_anio(tope)]
+    descartados = [c['tag_ganador'] for c in candidatos if c not in vigentes]
+    mejor = max(vigentes, key=lambda c: len(c['detalle']))
     mejor['intentos'] = intentos
+    if descartados:
+        mejor['descartados_por_obsoletos'] = descartados
     return mejor
+
+
+def detectar_saltos(acciones, net_income):
+    """Encuentra saltos bruscos en la serie de acciones y los clasifica.
+
+    Por que importa: un SPLIT multiplica las acciones sin que la empresa emita
+    nada. Si no se corrige, el CAGR miente feo. Caso real (LRCX, 21/08/2026):
+    split 10 a 1 -> las acciones "crecen" 54%/anio y el EPS "cae" 26,5%/anio.
+    Ninguna de las dos cosas paso.
+
+    Como se distingue un split de una emision real:
+        En un SPLIT el net income NO cambia — la misma torta se reparte entre
+        mas porciones. Si las acciones saltan Y el net income tambien se movio
+        fuerte, fue emision genuina (HIMS al salir a bolsa por SPAC en 2021,
+        AMD al pagar Xilinx con acciones en 2022).
+
+    Devuelve una lista de {fecha, ratio, tipo, factor}."""
+    fechas = sorted(acciones)
+    saltos = []
+    for i in range(1, len(fechas)):
+        f_ant, f_act = fechas[i - 1], fechas[i]
+        v_ant, v_act = acciones[f_ant], acciones[f_act]
+        if not v_ant or not v_act or v_ant <= 0:
+            continue
+        ratio = v_act / v_ant
+        if 0.67 < ratio < 1.5:
+            continue  # variacion normal, no es un evento
+
+        ni_ant, ni_act = net_income.get(f_ant), net_income.get(f_act)
+        ni_estable = False
+        if ni_ant and ni_act and ni_ant != 0:
+            # mismo signo y magnitud parecida = la torta no cambio
+            ni_estable = (ni_ant * ni_act > 0) and (0.7 <= abs(ni_act / ni_ant) <= 1.4)
+
+        # ¿el ratio se parece a un split de los que se usan en la practica?
+        candidatos = [2, 3, 4, 5, 7, 10, 15, 20, 0.5, 1/3, 0.25, 0.2, 0.1]
+        factor = next((c for c in candidatos if abs(ratio / c - 1) < 0.12), None)
+
+        # SOLO se corrige con las dos evidencias a la vez: factor redondo Y
+        # torta sin cambiar. Con una sola no alcanza:
+        #   - HIMS salto x5,28 (cerca de 5) pero fue el SPAC, no un split.
+        #   - RGTI salto x1,68 con perdidas parecidas, y es emision real.
+        # Cuando hay salto pero no certeza, NO se inventa un ajuste: se marca
+        # como discontinuidad y los CAGR que la cruzan quedan sin calcular.
+        if ni_estable and factor:
+            tipo, ajustar = 'split', factor
+        else:
+            tipo, ajustar = 'discontinuidad', None
+        saltos.append({'fecha': f_act, 'ratio': round(ratio, 3), 'tipo': tipo,
+                       'factor': ajustar, 'factor_sospechado': factor,
+                       'ni_estable': ni_estable})
+    return saltos
+
+
+def cagr_seguro(serie, anios, saltos):
+    """CAGR que se niega a cruzar una discontinuidad no resuelta.
+
+    Vale mas un 'no se puede calcular' que un numero inventado: el EPS a 10
+    anios de AAPL daba -2,1% sin corregir, cuando en realidad venia creciendo."""
+    if not serie or len(serie) < anios + 1:
+        return None
+    ventana = sorted(serie.keys())[-(anios + 1):]
+    desde, hasta = ventana[0], ventana[-1]
+    for s in saltos or []:
+        if s['tipo'] != 'split' and desde < s['fecha'] <= hasta:
+            return None
+    return cagr(serie, anios)
+
+
+def ajustar_por_splits(serie, saltos, invertir=False):
+    """Lleva toda la serie a la base ACTUAL (la del ultimo anio).
+
+    Recorre de nuevo a viejo: cada vez que cruza un split de factor k hacia
+    atras, multiplica los anios anteriores por k. Con invertir=True hace lo
+    contrario, que es lo que necesita el EPS (si las acciones se multiplican
+    por 10, el EPS historico se divide por 10)."""
+    if not saltos:
+        return dict(serie)
+    porfecha = {s['fecha']: s for s in saltos if s['tipo'].startswith('split')}
+    if not porfecha:
+        return dict(serie)
+    fechas = sorted(serie)
+    out, acum = {}, 1.0
+    for i in range(len(fechas) - 1, -1, -1):
+        f = fechas[i]
+        out[f] = serie[f] / acum if invertir else serie[f] * acum
+        s = porfecha.get(f)
+        if s and s.get('factor'):
+            acum *= s['factor']
+    return dict(sorted(out.items()))
 
 
 def cagr(serie, anios):
@@ -305,17 +415,35 @@ def main():
                 # ya no es un error: lo resolvimos por otro camino
                 r['errores'] = [e for e in r['errores'] if not e.startswith('gross_profit')]
 
-        acc = r['acciones_diluidas']['serie']
+        acc_crudo = r['acciones_diluidas']['serie']
+        eps_crudo = r['eps_diluido']['serie']
+        ni = r['net_income']['serie']
+
+        # ── corregir splits ANTES de calcular cualquier CAGR ──
+        r['saltos_accionarios'] = detectar_saltos(acc_crudo, ni)
+        acc = ajustar_por_splits(acc_crudo, r['saltos_accionarios'])
+        eps = ajustar_por_splits(eps_crudo, r['saltos_accionarios'], invertir=True)
+        r['acciones_diluidas']['serie_ajustada'] = acc
+        r['eps_diluido']['serie_ajustada'] = eps
+
         r['cagr'] = {
             'revenue_3a':  cagr(rev, 3),
             'revenue_5a':  cagr(rev, 5),
             'revenue_10a': cagr(rev, 10),
-            'eps_3a':      cagr(r['eps_diluido']['serie'], 3),
-            'eps_5a':      cagr(r['eps_diluido']['serie'], 5),
-            'eps_10a':     cagr(r['eps_diluido']['serie'], 10),
+            # EPS y acciones: sobre la serie ajustada por splits, y ademas
+            # devuelven None si la ventana cruza una discontinuidad sin resolver
+            'eps_3a':      cagr_seguro(eps, 3, r['saltos_accionarios']),
+            'eps_5a':      cagr_seguro(eps, 5, r['saltos_accionarios']),
+            'eps_10a':     cagr_seguro(eps, 10, r['saltos_accionarios']),
             # negativo = recompras (menos acciones); positivo = dilucion
-            'acciones_3a': cagr(acc, 3),
-            'acciones_5a': cagr(acc, 5),
+            'acciones_3a': cagr_seguro(acc, 3, r['saltos_accionarios']),
+            'acciones_5a': cagr_seguro(acc, 5, r['saltos_accionarios']),
+            # net income: inmune a splits, sirve de control cruzado
+            'net_income_3a': cagr(ni, 3),
+            'net_income_5a': cagr(ni, 5),
+            # lo que habria dado SIN corregir, para poder auditar la diferencia
+            '_eps_5a_sin_ajustar':      cagr(eps_crudo, 5),
+            '_acciones_5a_sin_ajustar': cagr(acc_crudo, 5),
         }
 
         # margenes historicos: cuanto de cada dolar de venta queda
@@ -384,27 +512,60 @@ def main():
     print('  Deberia parecerse a "rev 3a". Si difiere mucho, revisar el mapeo.')
 
     print('\n' + '=' * 82)
+    print('SPLITS Y EVENTOS DE CAPITAL DETECTADOS')
+    print('=' * 82)
+    hubo = False
+    for r in res:
+        for s in r.get('saltos_accionarios') or []:
+            hubo = True
+            print(f'  {r["symbol"]:<7}{s["fecha"]}  x{s["ratio"]:<8} {s["tipo"]}'
+                  + (f' (factor {s["factor"]})' if s.get('factor') else ''))
+    if not hubo:
+        print('  ninguno')
+    print('\n  split            -> las acciones se multiplican pero la torta es la misma.')
+    print('                      Se CORRIGE: el CAGR de EPS y de acciones usa la serie ajustada.')
+    print('  evento_de_capital -> emision real (SPAC, fusion pagada en acciones).')
+    print('                      NO se corrige: la dilucion es de verdad.')
+
+    print('\n' + '=' * 82)
     print('RECOMPRAS vs DILUCION — ¿el EPS crece por el negocio o por el denominador?')
     print('=' * 82)
-    print(f'{"TICK":<7}{"acc 5a":>9}{"rev 5a":>9}{"eps 5a":>9}   lectura')
+    print(f'{"TICK":<7}{"acc 5a":>9}{"rev 5a":>9}{"eps 5a":>9}{"NI 5a":>9}   lectura')
     print('-' * 82)
     for r in res:
         if not r.get('cik'):
             continue
         c = r['cagr']
-        a, rv, ep = c['acciones_5a'], c['revenue_5a'], c['eps_5a']
+        a, rv, ep, nis = (c['acciones_5a'], c['revenue_5a'], c['eps_5a'],
+                          c.get('net_income_5a'))
         if a is None:
             lectura = 'sin datos de acciones'
         elif a < -1:
             lectura = f'RECOMPRAS: {abs(a):.1f}%/anio menos acciones'
             if rv is not None and ep is not None and ep > rv + 2:
-                lectura += ' -> parte del EPS viene de aca, no del negocio'
+                lectura += ' -> parte del EPS viene de aca'
         elif a > 3:
             lectura = f'DILUCION: {a:.1f}%/anio mas acciones -> te licuan'
         else:
             lectura = 'acciones estables'
         f = lambda v: '-' if v is None else f'{v:.1f}'
-        print(f'{r["symbol"]:<7}{f(a):>9}{f(rv):>9}{f(ep):>9}   {lectura}')
+        print(f'{r["symbol"]:<7}{f(a):>9}{f(rv):>9}{f(ep):>9}{f(nis):>9}   {lectura}')
+
+    print('\n' + '=' * 82)
+    print('AUDITORIA DEL AJUSTE POR SPLIT — sin corregir vs corregido (CAGR 5a)')
+    print('=' * 82)
+    print(f'{"TICK":<7}{"eps CRUDO":>12}{"eps ok":>10}{"acc CRUDO":>12}{"acc ok":>10}')
+    print('-' * 82)
+    for r in res:
+        if not r.get('cik'):
+            continue
+        c = r['cagr']
+        f = lambda v: '-' if v is None else f'{v:.1f}'
+        marca = '  <-- el crudo mentia' if (
+            c.get('_eps_5a_sin_ajustar') is not None and c.get('eps_5a') is not None
+            and abs(c['_eps_5a_sin_ajustar'] - c['eps_5a']) > 5) else ''
+        print(f'{r["symbol"]:<7}{f(c.get("_eps_5a_sin_ajustar")):>12}{f(c["eps_5a"]):>10}'
+              f'{f(c.get("_acciones_5a_sin_ajustar")):>12}{f(c["acciones_5a"]):>10}{marca}')
 
     print('\n' + '=' * 82)
     print('MARGENES HISTORICOS (% sobre ventas) — primero vs ultimo anio')

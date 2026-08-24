@@ -122,25 +122,62 @@ def _sec_json(url):
 
 
 def base_publica():
-    """URL del propio deploy, para leer los JSON estaticos de public/data/."""
-    for var in ('VERCEL_URL', 'VERCEL_BRANCH_URL', 'VERCEL_PROJECT_PRODUCTION_URL'):
+    """URL del propio deploy. Solo se usa como ULTIMO recurso."""
+    for var in ('VERCEL_PROJECT_PRODUCTION_URL', 'VERCEL_URL', 'VERCEL_BRANCH_URL'):
         v = os.environ.get(var)
         if v:
             return v if v.startswith('http') else f'https://{v}'
-    return 'http://localhost:3000'
+    return ''
+
+
+# Rutas donde pueden estar los JSON dentro del bundle de la funcion.
+# vercel.json los incluye con includeFiles: "public/data/**".
+RUTAS_DATOS = ('public/data', '../public/data', '/var/task/public/data',
+               os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                            'public', 'data'))
 
 
 def estatico(nombre):
-    """Lee un JSON de public/data/ y lo cachea mientras la instancia siga viva.
+    """Lee un JSON de public/data/.
 
-    Estos archivos los genera el bot local y cambian una vez por dia como
-    mucho, asi que cachearlos en memoria ahorra latencia sin arriesgar datos
-    viejos dentro de una misma invocacion."""
+    PRIMERO del disco de la propia funcion (via includeFiles en vercel.json) y
+    solo si no esta, por HTTP contra el propio deploy.
+
+    Por que en ese orden: pedirselo al propio deploy por HTTP falla si Vercel
+    tiene Deployment Protection activa — la funcion recibe un 401 y todo el
+    endpoint devuelve 500. Leer del disco no depende de la red ni de la
+    autenticacion, y ademas es mucho mas rapido (informe_detalle.json pesa
+    ~1,2 MB).
+
+    Se cachea en memoria mientras viva la instancia: estos archivos los genera
+    el bot local y cambian una vez por dia como mucho."""
     if nombre in _cache_estatico:
         return _cache_estatico[nombre]
-    d = _get_json(f'{base_publica()}/data/{nombre}')
-    _cache_estatico[nombre] = d
-    return d
+
+    errores = []
+    for base in RUTAS_DATOS:
+        try:
+            ruta = os.path.join(base, nombre)
+            if os.path.exists(ruta):
+                with open(ruta, encoding='utf-8') as fh:
+                    d = json.load(fh)
+                _cache_estatico[nombre] = d
+                return d
+        except Exception as e:
+            errores.append(f'{base}: {type(e).__name__}')
+
+    base_url = base_publica()
+    if base_url:
+        try:
+            d = _get_json(f'{base_url}/data/{nombre}')
+            _cache_estatico[nombre] = d
+            return d
+        except Exception as e:
+            errores.append(f'HTTP {base_url}: {type(e).__name__}: {e}')
+
+    raise RuntimeError(
+        f'No pude leer {nombre}. Probé: {"; ".join(errores) or "ninguna ruta"}. '
+        f'Revisá que vercel.json incluya includeFiles para public/data.')
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -800,6 +837,55 @@ def armar_datos(ticker):
     }, None
 
 
+def diagnostico():
+    """Chequea una por una las dependencias del endpoint y devuelve 200 SIEMPRE.
+
+    Existe para no adivinar: si algo falla en produccion, esta URL dice
+    exactamente que pieza es. No consume LLM ni cuesta nada."""
+    out = {'ok': True, 'entorno': {}, 'archivos': {}, 'sec': {}}
+
+    for v in ('VERCEL', 'VERCEL_ENV', 'VERCEL_URL', 'VERCEL_PROJECT_PRODUCTION_URL'):
+        out['entorno'][v] = os.environ.get(v) or None
+    out['entorno']['cwd'] = os.getcwd()
+    out['entorno']['dir_del_archivo'] = os.path.dirname(os.path.abspath(__file__))
+    out['entorno']['tiene_api_key'] = bool(os.environ.get('ANTHROPIC_API_KEY')
+                                           or os.environ.get('OPENAI_API_KEY'))
+
+    # que hay realmente en el disco de la funcion
+    listados = {}
+    for base in RUTAS_DATOS:
+        try:
+            listados[base] = sorted(os.listdir(base))[:10] if os.path.isdir(base) else None
+        except Exception as e:
+            listados[base] = f'{type(e).__name__}'
+    out['entorno']['rutas_probadas'] = listados
+
+    for nombre in ('sp500_fundamentals.json', 'informe_consenso.json',
+                   'informe_detalle.json'):
+        try:
+            d = estatico(nombre)
+            out['archivos'][nombre] = {
+                'ok': True,
+                'generado': d.get('generated_at'),
+                'elementos': len(d.get('stocks') or d.get('consenso') or d.get('activos') or []),
+            }
+        except Exception as e:
+            out['archivos'][nombre] = {'ok': False, 'error': f'{type(e).__name__}: {e}'}
+            out['ok'] = False
+
+    try:
+        cik = cik_de('AAPL')
+        out['sec'] = {'ok': bool(cik), 'cik_de_AAPL': cik,
+                      'tickers_en_el_mapa': len(_cache_cik)}
+        if not cik:
+            out['ok'] = False
+    except Exception as e:
+        out['sec'] = {'ok': False, 'error': f'{type(e).__name__}: {e}'}
+        out['ok'] = False
+
+    return out
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Handler
 # ─────────────────────────────────────────────────────────────────────────────
@@ -820,8 +906,11 @@ class handler(BaseHTTPRequestHandler):
             accion = (q.get('action') or ['datos'])[0]
             ticker = (q.get('ticker') or [''])[0].strip().upper()
 
-            if not ticker:
+            if not ticker and accion != 'diag':
                 return self._responder(400, {'error': 'Falta el parametro ticker.'})
+
+            if accion == 'diag':
+                return self._responder(200, diagnostico())
 
             if accion == 'datos':
                 datos, err = armar_datos(ticker)
@@ -843,7 +932,12 @@ class handler(BaseHTTPRequestHandler):
             return self._responder(400, {'error': f'Accion desconocida: {accion}'})
 
         except Exception as e:
-            return self._responder(500, {'error': f'{type(e).__name__}: {e}'})
+            import traceback
+            return self._responder(500, {
+                'error': f'{type(e).__name__}: {e}',
+                'donde': traceback.format_exc().strip().splitlines()[-3:],
+                'pista': 'Abrí /api/informe?action=diag para ver qué parte falla.',
+            })
 
     def do_OPTIONS(self):
         self.send_response(204)

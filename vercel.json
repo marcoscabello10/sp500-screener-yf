@@ -7,7 +7,11 @@
       "maxDuration": 30
     },
     "api/informe.py": {
-      "maxDuration": 60
+      "maxDuration": 60,
+      "includeFiles": "public/data/**"
     }
-  }
+  },
+  "rewrites": [
+    { "source": "/informe", "destination": "/informe.html" }
+  ]
 }

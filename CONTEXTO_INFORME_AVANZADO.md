@@ -978,6 +978,45 @@ disponible, nunca inventarlo ni romper.
 
 ---
 
+## 🚨 Primer deploy — dos fallas (24/08/2026)
+
+### 1. `/informe` daba 404, pero `/informe.html` cargaba bien
+No era el build: Vite generaba el archivo y Vercel lo servía. **Vercel no mapea
+la URL sin extensión** a menos que se lo pidas.
+
+**Fix:** un `rewrite` en `vercel.json`:
+```json
+"rewrites": [{ "source": "/informe", "destination": "/informe.html" }]
+```
+Se eligió un rewrite puntual en lugar de `cleanUrls: true` porque `cleanUrls`
+cambia el comportamiento de **todas** las rutas, incluidas las del screener.
+Los rewrites se evalúan **después** del filesystem, así que `/api/...` y `/`
+siguen intactas.
+
+### 2. `/api/informe` devolvía 500
+**Causa:** la función pedía los JSON de `public/data/` **a su propio deploy por
+HTTP**. Si Vercel tiene Deployment Protection activa, ese pedido vuelve 401 y
+todo el endpoint se cae. Además era lento: `informe_detalle.json` pesa 1,2 MB.
+
+**Fix — leer del disco, no de la red:**
+- `vercel.json` incluye los datos en el bundle de la función:
+  `"includeFiles": "public/data/**"`.
+- `estatico()` prueba varias rutas del disco **primero** y solo cae a HTTP como
+  último recurso.
+- Verificado sin red: los tres archivos se leen del disco y un informe completo
+  se arma igual.
+
+### 3. Diagnóstico para no volver a adivinar
+**`GET /api/informe?action=diag`** devuelve **200 siempre** y dice qué pieza
+falla: variables de entorno, qué rutas de disco existen y qué contienen, si
+cada JSON se pudo leer y de cuándo es, y si la SEC responde. No consume LLM ni
+cuesta nada.
+
+Y los 500 ahora incluyen las últimas líneas del traceback más una pista
+apuntando a `action=diag`.
+
+---
+
 ## 📦 PENDIENTE DE PUSH — lista acumulada
 
 Todo esto está escrito en la carpeta y **todavía no subido**. Verificar con
@@ -1005,7 +1044,8 @@ src/informe/main.jsx
 CONTEXTO_INFORME_AVANZADO.md
 local_bot/fetch_fundamentals.py     (consenso + caché de CEDEAR)
 requirements.txt                    (SOLO comentarios; el pin NO cambia)
-vercel.json                         (declara api/informe.py con maxDuration 60)
+vercel.json                         (función informe + includeFiles + rewrite /informe)
+api/informe.py                      (lee del disco + action=diag)
 vite.config.js                      (multipágina: index.html + informe.html)
 public/data/sp500_fundamentals.json
 public/data/informe_consenso.json

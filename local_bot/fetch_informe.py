@@ -36,8 +36,16 @@ Uso
     # informe que abras ya sale COMPLETO sin ningun paso manual.
     python fetch_informe.py --cedears
 
+    # opcion B2: los ~137 CEDEAR que NO estan en el S&P 500 (ADR de Brasil,
+    # Europa, China, mineras canadienses). SOLO PARA EL INFORME — el screener
+    # no los usa ni se entera. Antes hay que correr validar_cedears.py.
+    python fetch_informe.py --cedears-extra
+
     # los CEDEAR + los de afuera del indice que tengas en cartera
     python fetch_informe.py --cedears RGTI HIMS
+
+    # todo el universo operable desde Argentina (~288 papeles, ~25 min)
+    python fetch_informe.py --cedears --cedears-extra --dias 7
 
     # sin volver a bajar lo que ya esta fresco (ideal para correrlo seguido)
     python fetch_informe.py --cedears --dias 7
@@ -235,6 +243,35 @@ def leer_cedears(data_dir):
         return []
 
 
+def leer_cedears_extra(base_dir):
+    """Los ~137 CEDEAR de fuera del S&P 500 (ADR brasileños, europeos, chinos,
+    mineras canadienses...). SOLO PARA EL INFORME: el screener sigue trabajando
+    con las 503 del indice y no se entera de que este archivo existe.
+
+    Fuente: local_bot/cedears_ok.txt, que escribe validar_cedears.py con los
+    simbolos que Yahoo efectivamente resuelve. Si todavia no lo corriste, caemos
+    al primer candidato de cedears_informe.py y avisamos."""
+    p = base_dir / 'cedears_ok.txt'
+    if p.exists():
+        out = [l.split('#')[0].strip().upper()
+               for l in p.read_text(encoding='utf-8').splitlines()]
+        out = [t for t in out if t]
+        if out:
+            print(f'  Universo extra: {len(out)} simbolos de cedears_ok.txt')
+            return out
+    try:
+        sys.path.insert(0, str(base_dir))
+        from cedears_informe import universo
+        out = [v[0] for v in universo().values()]
+        print(f'  [aviso] no encuentro cedears_ok.txt; uso los {len(out)} candidatos '
+              f'de cedears_informe.py sin validar.')
+        print('          Corre antes:  python validar_cedears.py')
+        return out
+    except Exception as e:
+        print(f'  [aviso] no pude armar el universo extra ({type(e).__name__}: {e})')
+        return []
+
+
 def edad_dias(activo):
     """Hace cuantos dias se bajo este activo. None si no se sabe."""
     try:
@@ -285,6 +322,20 @@ def traer_activo(sym, sp500_map):
     else:
         r['sector'] = SECTOR_YF_MAP.get(info.get('sector'), info.get('sector'))
     r['sectorYahoo'] = info.get('sector')
+
+    # marketCap: Yahoo NO lo pone en .info para muchos ADR (Nokia, Ternium,
+    # Sea, JD, ICICI...). Vuelve todo lo demas —precio, sector, P/E, ROE,
+    # margenes, precio objetivo— y falta solo este campo. No es un problema de
+    # conexion ni de rate limit: reintentar no lo trae, porque no esta ahi.
+    # Si esta en fast_info, que es otro endpoint. Se resuelve ANTES de derivados()
+    # porque de ahi sale fcfYieldPct, el unico calculo que depende del dato.
+    if not info.get('marketCap'):
+        try:
+            mc = getattr(tk.fast_info, 'market_cap', None)
+            if mc:
+                info['marketCap'] = int(mc)
+        except Exception as e:
+            errores.append(f'fast_info.market_cap: {type(e).__name__}: {e}')
 
     try:
         price = info.get('currentPrice') or info.get('regularMarketPrice') or 0
@@ -365,6 +416,7 @@ def main():
     flags = {a for a in crudos if a.startswith('--')}
     reset = '--reset' in flags
     cedears = '--cedears' in flags
+    cedears_extra = '--cedears-extra' in flags
     # --dias N: saltear los activos bajados hace menos de N dias
     dias_min = 0.0
     if '--dias' in crudos:
@@ -384,6 +436,8 @@ def main():
     symbols = [s.upper() for s in args]
     if cedears:
         symbols += leer_cedears(data_dir)
+    if cedears_extra:
+        symbols += leer_cedears_extra(base_dir)
     if not symbols:
         symbols = leer_lista_tickers(base_dir)
     if not symbols:

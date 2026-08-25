@@ -46,12 +46,19 @@ export const F = {
   num:   'ui-monospace, "Cascadia Mono", Consolas, "SF Mono", "Roboto Mono", monospace',
 }
 
-// Semaforo a partir de un puntaje 0-100
+// Semaforo a partir de un puntaje 0-100.
+//
+// Los cortes son los MISMOS que los del veredicto en api/informe.py
+// (UMBRAL_COMPRA = 60, UMBRAL_VENTA = 40). Si se separan, el documento dice
+// "venta" con la pastilla en ambar y el cliente ve una contradiccion.
+export const CORTE_VERDE = 60
+export const CORTE_AMBAR = 40
+
 export function semaforo(p) {
   if (p === null || p === undefined) return { color: C.tenue, fondo: C.panel, label: 'sin datos' }
-  if (p >= 65) return { color: C.verde, fondo: C.verdeFondo, label: 'favorable' }
-  if (p >= 45) return { color: C.ambar, fondo: C.ambarFondo, label: 'neutral' }
-  return { color: C.rojo, fondo: C.rojoFondo, label: 'desfavorable' }
+  if (p >= CORTE_VERDE) return { color: C.verde, fondo: C.verdeFondo, label: 'compra' }
+  if (p >= CORTE_AMBAR) return { color: C.ambar, fondo: C.ambarFondo, label: 'neutral' }
+  return { color: C.rojo, fondo: C.rojoFondo, label: 'venta' }
 }
 
 export function colorSeveridad(s) {

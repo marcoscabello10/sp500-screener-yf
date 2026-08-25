@@ -1144,50 +1144,471 @@ sin bucle), error global del lote (también lo detecta), y error que **no** es
 
 ---
 
+## 🔄 VEREDICTO DE 3 POSICIONES + FOCO EN ROTACIÓN (25/08/2026)
+
+Pedido literal de Marcos: *"mejorar el informe centrarme más o hacerle más
+enfoque a las opciones de rotación, que activos conviene sacar, modificar
+también la tesis 'veredicto' entre neutral compra y venta, nada más que eso, ya
+que con reparos no me termina de cerrar"*.
+
+### La escala vieja y por qué se cayó
+
+```
+sin datos suficientes | con reparos | atractiva | neutral | poco atractiva
+```
+
+`con reparos` no era una posición: era un asterisco. Convivía en el mismo campo
+que las otras cuatro pero no decía qué hacer, y encima **tapaba el puntaje** —
+una empresa podía salir "con reparos (81,8/100)" y el lector no sabía si eso
+era bueno o malo.
+
+### La escala nueva — `api/informe.py`
+
+```python
+UMBRAL_COMPRA = 60.0        # >= 60  -> compra
+UMBRAL_VENTA  = 40.0        # 40-60  -> neutral,  < 40 -> venta
+PENALIZACION_GRAVE = 18.0   # cada bandera roja RESTA 18 puntos
+```
+
+Función única `veredicto_de(puntaje, graves)`, usada por el informe individual y
+por el de cartera, para que no puedan divergir.
+
+Lo que hacía `con reparos` lo hacen ahora **dos mecanismos separados y
+visibles**:
+
+1. la bandera roja **resta** 18 puntos, así que empuja sola hacia neutral/venta;
+2. si aun así queda ≥60, **topea la etiqueta en `neutral`** y marca
+   `limitado_por_bandera: true`. El informe entonces lo dice con todas las
+   letras: *"El puntaje daba compra, pero hay una bandera roja abierta"*. Antes
+   eso se insinuaba; ahora se afirma.
+
+`sin datos suficientes` se mantiene, pero **no es una cuarta opinión**: es la
+ausencia de opinión. Callar y decir "neutral" no es lo mismo.
+
+### Distribución real sobre las 503 (medida, no estimada)
+
+Corriendo `evaluar()` sobre el snapshot real (sin el bloque de crecimiento,
+que ensancharía todavía más la cola):
+
+| puntaje | empresas |
+|---|---|
+| 0–30 | 7 |
+| 30–40 | 51 |
+| 40–50 | 118 |
+| 50–60 | 168 |
+| 60–70 | 97 |
+| 70–100 | 62 |
+
+→ **compra 159 (32%) · neutral 286 (57%) · venta 58 (11,5%)**
+
+Se midió antes de fijar los cortes justamente para que no pasara lo obvio: como
+los puntajes son percentiles dentro del sector, se acumulan cerca de 50, y con
+cortes mal puestos **todo el universo habría salido "neutral"** y el informe no
+habría servido para rotar nada. Con 60/40, una cartera de 10 papeles tiene
+típicamente 1 para sacar.
+
+### El mismo veredicto, leído desde la cartera
+
+```python
+ACCION_CARTERA = {'compra': 'reforzar', 'neutral': 'mantener',
+                  'venta': 'sacar', SIN_DATOS: 'revisar a mano'}
+```
+
+**No es una escala nueva**, es la misma decisión mirada desde el otro lado. Si
+el informe individual dijera VENTA y el de cartera "mantener", el cliente
+estaría leyendo dos documentos que se contradicen. Hay un test que lo verifica.
+
+### `src/informe/estilos.js` — los cortes del semáforo se alinearon
+
+Estaban en 65/45 y el veredicto pasó a 60/40. Sin este cambio el documento
+mostraba la palabra "venta" con la pastilla en ámbar.
+
+```js
+export const CORTE_VERDE = 60   // = UMBRAL_COMPRA de api/informe.py
+export const CORTE_AMBAR = 40   // = UMBRAL_VENTA
+```
+
+### `src/informe/sugerencias.js` — nuevo `planRotacion()`
+
+Antes solo existía `sugerirReemplazos()`, que se disparaba con un umbral propio
+(`score < 45`) **distinto del veredicto**. Dos criterios para lo mismo. Ahora la
+acción sale del veredicto del backend y este módulo aporta solo lo que el
+backend no puede saber: el **orden** y el **motivo en una línea**.
+
+- **Orden de salida**: primero los que tienen banderas rojas; a igualdad de
+  banderas, el de peor puntaje; desempate alfabético para que dos corridas con
+  los mismos datos den el mismo documento.
+- **`SECTOR_PESADO_PCT = 35`**: si un sector pasa el 35% de la cartera, el
+  reemplazo "de otro sector" **no puede caer ahí**. Antes la rotación podía
+  arreglar el papel y empeorar la concentración, que es el problema más caro de
+  los dos. Si no hay nada bueno fuera de los sectores pesados, ofrece igual y el
+  documento avisa aparte.
+- **Respaldo de sector**: `sugerirReemplazos` buscaba el sector en `stocks`, y
+  un papel de afuera del S&P 500 no está ahí — se quedaba sin alternativa de su
+  propio rubro. Ahora acepta el sector del informe. Esto pasa a ser **crítico**
+  con los 137 CEDEAR nuevos.
+
+### `src/informe/Cartera.jsx` — el documento se reordenó
+
+```
+1. Portada
+2. Qué hacer con esta cartera   ← NUEVO, va arriba
+3. Resumen (ahora con columna Acción)
+4. Composición por sector
+5. Puntos de atención
+6. Análisis por activo
+7. Anexo opcional
+```
+
+La sección *"Oportunidades a considerar"* **desapareció**: estaba al final y
+desconectada del veredicto. Su contenido se absorbió dentro de "Qué hacer con
+esta cartera", junto al motivo de salida. El orden no es cosmético — antes el
+documento describía y recién al final sugería; quien lo recibía tenía que
+leerlo entero para saber qué se le estaba proponiendo.
+
+La sección trae: contadores (sacar / mantener / reforzar), la lista **ordenada**
+de lo que conviene sacar con motivo y reemplazos, el aviso de concentración, y
+una tabla con el resto.
+
+### Verificación
+
+`prueba-cartera.jsx` (render real con react-dom/server sobre los datos reales de
+Marcos + dos casos sintéticos en venta, porque **la cartera de prueba no tiene
+ninguno** y la sección no se habría ejercitado nunca):
+
+- el de bandera roja sale primero aunque tenga mejor puntaje que el otro;
+- cada activo aparece **exactamente una vez** en todo el plan;
+- ningún reemplazo repetido ni ya presente en la cartera;
+- el reemplazo de otro sector no cae en un sector sobrecargado;
+- **veredicto y acción nunca se contradicen**;
+- casos límite: sin nada para sacar, 1 activo sin metadatos, todos con error, y
+  **un veredicto viejo sin campo `accion`** (caché del navegador de una sesión
+  anterior — sin este caso el documento explotaba al primer F5 de un usuario
+  con caché).
+
+Build real de Vite: `informe-*.js` **69,19 kB**, sin una línea del screener
+(`Twelve Data`, `TD_LOTE`, `histFetch`, `mathjs` → 0 ocurrencias), y sin rastro
+de las etiquetas viejas.
+
+⚠️ `src/App.jsx` **no se tocó** en esta tanda.
+
+---
+
+## 🌎 +137 CEDEARs SOLO PARA EL INFORME (25/08/2026)
+
+Marcos pasó una lista de ~200 tickers de su broker y pidió corroborarla.
+Explícito: **"solo para el informe, no el screener (Dejar de lado en este
+caso)"**.
+
+**La lista tiene 174 tickers únicos, no ~200.** Corroborados uno por uno.
+
+### Resultado: 137 entran, 37 no
+
+| motivo | n | cuáles |
+|---|---|---|
+| **entran** | **137** | ver `local_bot/cedears_informe.py` |
+| ya están en el S&P 500 | 16 | BKR BX CAH HON HOOD HSY IP JCI MMM MOS O QCOM SNDK T TSLA XYZ |
+| código BYMA de algo que ya tenemos | 4 | DISN→DIS · BA.C→BA · BK→BNY (cambió de ticker en 2025) · BNG→BG |
+| misma empresa en otra plaza | 2 | ABEV3 y VALE3 son las acciones de B3; usamos los ADR ABEV y VALE |
+| **ETFs** (no tienen P/E ni ROE: el informe sale en blanco) | 3 | CIBR · ITA · SH |
+| deslistadas / disueltas | 6 | AABA (Altaba, disuelta 2019) · AUY (Yamana→PAAS 2023) · PTR · SNP · LFC · AOCA/ACH (los cuatro chinos salieron del NYSE en 2022) |
+| ADR rusos suspendidos desde 2022 | 3 | ATAD (Tatneft) · MBT · NLM (Novolipetsk) |
+| OTC sin comparabilidad | 3 | FNMA · FMCC (en concurso desde 2008) · HNPIY |
+
+### El problema central: el código de BYMA **no** es el ticker de Yahoo
+
+Si le pedimos "TXR" a Yahoo no devuelve Ternium: devuelve otra cosa o nada.
+**20 de los 174 eran códigos locales.** Verificados contra `rava.com/perfil/<código>`:
+
+| BYMA | es en realidad | Yahoo |
+|---|---|---|
+| ADGO | Adecoagro | AGRO |
+| CBRD | Companhia Brasileira de Distribuição | CBD |
+| KOFM | Coca-Cola FEMSA | KOF |
+| LAR | Lithium Americas **(Argentina)** | LAAC ← ojo: **no** es LAC, que también está en la lista |
+| NOKA | Nokia | NOK |
+| TXR | Ternium | TX |
+| WBO | **Weibo** (no Wabtec) | WB |
+| XROX | Xerox | XRX |
+| BBV | BBVA | BBVA |
+| B | **Barrick** (cambió de GOLD a B en 2025) | B |
+| ADS · BAS · BAYN · BSN · DTEA · EOAN · MBG | adidas · BASF · Bayer · **Danone** · Deutsche Telekom · E.ON · Mercedes-Benz | ADR en USD, con la acción local como respaldo |
+| HHPD · SMSN | Hon Hai (Foxconn) · Samsung | HNHPF/2317.TW · SMSN.IL |
+
+### Cómo se resolvió sin depender de que yo acertara
+
+`local_bot/cedears_informe.py` no guarda un símbolo por CEDEAR: guarda una
+**cascada de candidatos**. Para las europeas va primero el ADR en USD y después
+la acción local (`.DE`, `.PA`), porque el informe compara múltiplos entre
+papeles y mezclar monedas los rompe. Si el primero no trae fundamentals, se cae
+al segundo solo.
+
+### `local_bot/validar_cedears.py` — hay que correrlo ANTES de bajar nada
+
+Un ADR OTC puede existir y no traer P/E, ROE ni margen. Ese papel entra al
+informe con todos los bloques en blanco y queda **peor que no estar**. El
+validador lo dice antes: por cada CEDEAR prueba los candidatos y clasifica en
+`OK / SIN_PRECIO / NO_ES_ACCION / SIN_SECTOR / POCOS_FUNDAMENTALS`, exigiendo al
+menos 3 de las 6 métricas con las que el informe puntúa. Avisa aparte de los que
+sirven pero **no tienen cobertura de analistas** (sin precio objetivo ni
+consenso).
+
+Escribe `local_bot/cedears_ok.txt`, que es lo que después lee el bot.
+Probado offline con un yfinance falso que ejercita las ocho ramas, incluida la
+caída de `BASFY` → `BAS.DE`.
+
+### `local_bot/fetch_informe.py` — nueva bandera `--cedears-extra`
+
+4 líneas de inserción + una función. `--cedears` (los 151 del S&P) sigue igual.
+Si falta `cedears_ok.txt` usa los primeros candidatos y **avisa** que están sin
+validar.
+
+### Decisión de diseño: los 137 NO entran a la base de percentiles
+
+Se reportan y se pueden proponer como reemplazo, pero **la base contra la que se
+calculan los percentiles por sector sigue siendo las 503 del S&P**. Si un banco
+brasileño entrara a la distribución de `Financials`, los percentiles del informe
+dejarían de coincidir con los que muestra F1 y los dos productos empezarían a
+decir números distintos sobre la misma empresa.
+
+- base de comparación → 503 del S&P (sin cambios)
+- universo reportable → 503 + 137
+- candidatos a reemplazo → los que tengan CEDEAR de ambos conjuntos
+
+### ⚠️ Peso del archivo — hay que mirarlo después de la corrida
+
+`informe_detalle.json` está en ~1,2 MB con 151 activos (~8 kB cada uno). Con 137
+más queda en **~2,3 MB**, y el endpoint hoy lo lee **por HTTP en cada arranque
+en frío** (el `includeFiles` del `vercel.json` nunca llegó al bundle:
+`rutas_probadas` da todo `null`). No bloquea, pero si el informe se siente lento
+después de esta tanda, **este es el motivo y no otro**.
+
+---
+
 ## 📦 PENDIENTE DE PUSH — lista acumulada
 
 Todo esto está escrito en la carpeta y **todavía no subido**. Verificar con
 `git status` antes de asumir.
 
-> Lo anterior a esta línea ya fue pusheado el 24/08/2026. Lo que sigue es la
-> tanda del informe de cartera: `src/informe/Cartera.jsx`,
-> `src/informe/sugerencias.js`, y los cambios en `App.jsx`, `Selector.jsx` e
-> `Informe.jsx`.
+> Todo lo anterior (informe de cartera incluido) y el arreglo de Twelve Data en
+> `src/App.jsx` **ya fueron pusheados** por Marcos. Lo que sigue es la tanda del
+> **25/08/2026**: veredicto de 3 posiciones, foco en rotación y los CEDEARs.
 
-**Nuevos**
+**Nuevos — tanda 25/08/2026**
 ```
-.gitignore
-api/informe.py
-informe.html
-local_bot/fetch_informe.py
-local_bot/probe_analistas.py
-local_bot/probe_edgar.py
-local_bot/requirements.txt
-local_bot/tickers_informe.txt
-src/informe/App.jsx
-src/informe/Informe.jsx
-src/informe/Selector.jsx
-src/informe/estilos.js
-src/informe/main.jsx
+local_bot/cedears_informe.py        (universo: 137 entran, 37 excluidos con motivo)
+local_bot/validar_cedears.py        (validador; correrlo ANTES del bot)
 ```
 
-**Modificados**
+**Modificados — tanda 25/08/2026**
 ```
 CONTEXTO_INFORME_AVANZADO.md
-local_bot/fetch_fundamentals.py     (consenso + caché de CEDEAR)
-requirements.txt                    (SOLO comentarios; el pin NO cambia)
-vercel.json                         (función informe + includeFiles + rewrite /informe)
-api/informe.py                      (lee del disco + action=diag)
-vite.config.js                      (multipágina: index.html + informe.html)
-public/data/sp500_fundamentals.json
-public/data/informe_consenso.json
-public/data/informe_detalle.json
+api/informe.py                      (veredicto compra/neutral/venta + accion + tope por bandera)
+src/informe/estilos.js              (cortes del semaforo 60/40, alineados al veredicto)
+src/informe/sugerencias.js          (planRotacion + sector pesado + respaldo de sector)
+src/informe/Cartera.jsx             (seccion "Que hacer con esta cartera"; se fue "Oportunidades")
+src/informe/Informe.jsx             (el veredicto muestra la accion y el tope por bandera)
+local_bot/fetch_informe.py          (bandera --cedears-extra)
 ```
 
-**NO se sube** (está en `.gitignore`): `local_bot/.cedear_cache.json`,
-`local_bot/probe_analistas_out.json`, `local_bot/probe_edgar_out.json`.
+**Se genera al correr el bot, y ese sí se sube después:**
+```
+public/data/informe_detalle.json    (crece de ~1,2 MB a ~2,3 MB con los 137)
+```
 
-⚠️ **`src/App.jsx` sigue sin tocarse ni una línea.**
+**NO se sube** (agregar a `.gitignore` si no están):
+`local_bot/.cedear_cache.json`, `local_bot/probe_analistas_out.json`,
+`local_bot/probe_edgar_out.json`, `local_bot/cedears_validacion.json`,
+`local_bot/cedears_ok.txt`.
+
+⚠️ **`src/App.jsx` no se tocó en esta tanda.** El único cambio que tiene es el
+de Twelve Data de la tanda anterior, ya pusheado.
+
+### ✅ Corrida real del 25/08/2026 — y el estrangulamiento de Yahoo
+
+| paso | resultado |
+|---|---|
+| `validar_cedears.py` | **129 de 137** resueltos |
+| `fetch_informe.py --cedears-extra` | `informe_detalle.json`: 151 → **281 activos**, 1,2 MB → **2,2 MB** |
+| de los 130 nuevos bajados | **115 completos**, 15 con precio y capitalización en blanco |
+
+**La cascada de candidatos funcionó y no hizo falta ni un respaldo `.DE`:** las
+siete europeas resolvieron al ADR en dólares (ADS→ADDYY, BAS→BASFY,
+BAYN→BAYRY, BSN→DANOY, DTEA→DTEGY, EOAN→EONGY, MBG→MBGYY). **Los 129 quedaron
+en USD**, así que no hay mezcla de monedas.
+
+Los 16 códigos de BYMA se tradujeron solos y bien: ADGO→AGRO, BBV→BBVA,
+HHPD→HNHPF, KOFM→KOF, NOKA→NOK, SMSN→SMSN.IL, TXR→TX, WBO→WB, XROX→XRX.
+
+#### ❌ Diagnóstico equivocado que hay que no repetir
+
+Cuando 23 papeles quedaron a medias dije que era **rate limit de Yahoo** y que
+se arreglaba reintentando. **Era falso.** Marcos reintentó los 23 y volvieron
+exactamente igual. Recién ahí se miró el contenido de los registros, que es lo
+que había que hacer desde el principio, y aparecieron **dos problemas
+distintos** que yo había metido en la misma bolsa:
+
+```
+NOK   price 9.96   sector Technology   pe 71.1   pb 2.28   roe 3.45
+      netMargin 3.47   targetMean 15.02   9 analistas   marketCap → 0
+```
+
+Nokia tiene **todo** menos un campo. El rate limit no devuelve un `.info`
+completo al que le falta exactamente el mismo campo, dos veces seguidas.
+
+**Regla: antes de culpar a la red, imprimir el registro.** Un "falta el dato"
+y un "falta ese dato" son diagnósticos opuestos y se ven en diez segundos.
+
+#### Problema 1 — `marketCap` no está en `.info` para muchos ADR (15 papeles)
+
+**AAP, AI, ASR, CX, GFI, HMY, IBN, JD, KOF, LND, NIO, NOK, SE, SMSN.IL, TX.**
+Todos con 4–6 de las 6 métricas presentes. Yahoo simplemente no publica
+`marketCap` en `.info` para esos símbolos: está en `fast_info`, que es otro
+endpoint.
+
+Impacto real: **casi nulo**. `marketCap` no es una de las seis métricas con las
+que se puntúa. Lo único que se pierde es `fcfYieldPct`, que se calcula como
+`freeCashflow / marketCap`.
+
+Arreglado en `fetch_informe.py` con un respaldo a `fast_info.market_cap`,
+resuelto **antes** de `derivados()` para que el FCF yield se calcule igual. Si
+`fast_info` falla, se anota el aviso y se sigue: nunca aborta el activo.
+
+#### Problema 2 — 8 que no devuelven absolutamente nada
+
+**BRFS, CAJ, CBD, EBR, ELP, ERJ, LAAC, ORAN.** `.info` vacío, sin sector, sin
+precio, en dos corridas separadas. Acá sí puede ser que el ADR se haya
+deslistado del NYSE (a varios ADR europeos y japoneses les pasó entre 2023 y
+2025) y haya que ir a la acción local o al símbolo OTC nuevo.
+
+**No se adivina.** `local_bot/probe_vacios.py` prueba, por cada uno, `.info` +
+`fast_info` + `history(5d)` sobre el símbolo original y sus alternativas
+conocidas (`EMBR3.SA` para Embraer, `ORANY`/`ORA.PA` para Orange, `CAJPY`/`7751.T`
+para Canon, etc.), y clasifica en `SIRVE` / `OPERA_SIN_INFO` / `NO_OPERA`. No
+escribe ningún archivo: solo informa.
+
+**Decisión de Marcos (25/08/2026): los 8 se dejan afuera y se sigue.** Pasaron a
+`EXCLUIDOS` en `cedears_informe.py` **con el símbolo alternativo anotado en el
+motivo**, así que retomarlo después es correr la sonda y mover una línea. Y se
+borraron sus 8 registros huecos de `informe_detalle.json`.
+
+**Universo final: 129 CEDEARs nuevos** (129 + 45 excluidos = los 174 de la
+lista), y `informe_detalle.json` queda en **281 activos / 2,22 MB**.
+
+Del arreglo de `marketCap`: de los 15, entraron **14**. Sigue sin
+capitalización **SMSN.IL** (el GDR de Samsung en Londres), que igual tiene las
+6 métricas y solo se queda sin FCF yield.
+
+#### 🛡️ Dos guardarraíles en `api/informe.py` que faltaban
+
+Los 8 huecos destaparon dos agujeros que no tenían nada que ver con los CEDEARs
+y que estaban desde el principio:
+
+**1. Registro presente pero vacío.** `armar_datos` solo chequeaba
+`if fund is None and detalle is None`. Un registro que existe con `sector: None`
+y `price: 0` pasaba el control y armaba un informe con todos los bloques en
+cero y un veredicto calculado sobre la nada. Ahora se detecta y se rechaza con
+un mensaje que dice qué pasó y qué correr. Importante: si el papel **sí** está
+en el S&P, el registro hueco se ignora y el informe sale igual en modo
+`reducido` con los datos del screener — probado con AAPL.
+
+**2. Activos sin sector — los ETF.** Todos los puntajes son percentiles contra
+el mismo sector; sin sector, los cinco bloques dan `None` y salía un documento
+en blanco con veredicto "sin datos suficientes", que no explicaba nada.
+**`SPY` está en `sp500_fundamentals.json`** porque es el índice de referencia
+del screener, así que cualquiera podía escribirlo en el buscador y recibir ese
+informe vacío. Ahora devuelve un mensaje que explica que un ETF se mira por su
+composición, no por sus múltiplos.
+
+### 🧩 Los dos archivos "M" que NO son de esta tanda
+
+`git status` muestra dos modificados que no salieron del informe. Verificado el
+25/08/2026, para que nadie los arrastre a un commit del informe por las dudas:
+
+**`src/main.jsx` — es del SCREENER, y el cambio es fantasma.**
+
+Es el punto de entrada del screener: `index.html` → `src/main.jsx` →
+`src/App.jsx`, montando en `#root`. El informe tiene el suyo, aparte:
+`informe.html` → `src/informe/main.jsx` → `src/informe/App.jsx`, montando en
+`#root-informe`. Son dos apps que solo comparten dominio.
+
+El diff son **únicamente saltos de línea** (LF → CRLF). Confirmado con
+`git diff --ignore-cr-at-eol src/main.jsx`, que sale **vacío**: ni un carácter
+de contenido cambió. Lo dejó alguna escritura previa desde Windows; el repo no
+tiene `.gitattributes` ni `core.autocrlf` definido, así que git lo ve como
+archivo entero reescrito.
+
+→ Se descarta con `git checkout -- src/main.jsx`. No hay nada que salvar ahí.
+No conviene meter un `.gitattributes` global ahora: renormalizaría todo el repo
+de una y ensuciaría un diff que hoy está limpio.
+
+**`PROYECTO_CONTEXTO.md` — es el contexto del SCREENER, y tiene contenido real.**
+
+119 inserciones / 77 borrados de verdad (no saltos de línea). Es el archivo
+gemelo de este: documenta el bug de F5 que devolvía todo en $0.00, el arreglo de
+`runClientP1` para que use el snapshot local en vez de pegarle a Yahoo en vivo,
+y la tabla de estado de F1–F7. Ese trabajo **ya está pusheado** en el código; lo
+que quedó sin subir son las notas.
+
+→ Va en un commit **separado**, del screener. Mezclarlo con el commit del
+informe rompería la separación entre los dos proyectos, que es justamente la
+regla del proyecto.
+
+### El orden importa
+
+`cedears_ok.txt` es la entrada de `--cedears-extra`. Si se corre el bot antes
+del validador, usa candidatos sin validar y baja papeles que después hay que
+sacar a mano.
+
+```
+0. git checkout -- src/main.jsx                  (descartar el diff fantasma)
+1. cd local_bot
+2. python validar_cedears.py                     (~5 min, una sola vez)
+3. revisar el resumen que imprime
+4. python fetch_informe.py --cedears-extra       (~12 min)
+5. python fetch_informe.py <los que quedaron a medias>   (rescate del rate limit)
+6. commit del INFORME  (los 9 archivos de esta tanda + informe_detalle.json)
+7. commit del SCREENER (PROYECTO_CONTEXTO.md, aparte)
+8. git push
+```
+
+### 🔒 `.git/index.lock` — lo dejé yo, y bloquea TODO git
+
+El 25/08/2026 Marcos no pudo hacer ni `git checkout`, ni `git add`, ni
+`git commit`: los tres cortaron con
+
+```
+fatal: Unable to create '.../.git/index.lock': File exists.
+```
+
+Causa: **`device_bash` corrió `git status` en su repo.** Git crea `index.lock`,
+y al terminar no lo pudo borrar porque **`device_bash` no tiene permiso de
+borrado** (`rm` da `Operation not permitted`). Quedó un lock de 0 bytes,
+huérfano, sin ningún git corriendo.
+
+**Regla: no correr comandos de git contra el repo de Marcos desde
+`device_bash`.** Ni `git status`, que parece de solo lectura y no lo es —
+refresca el índice y por eso toma el lock. Para ver el estado del repo se leen
+los archivos directamente (con `ls`, `cat`, `python`), que no tocan `.git/`.
+
+Y si ya pasó: **lo tiene que borrar Marcos**, porque desde acá no se puede.
+
+```powershell
+Remove-Item "C:\Users\otero\Desktop\sp500-screener-yf\.git\index.lock"
+```
+
+### 🚫 `npm run build` NO se corre en la PC de Marcos
+
+**No tiene Node instalado** (`npm` no se reconoce en PowerShell, `node_modules/`
+no existe, no hay `package-lock.json`). Nunca hizo falta: **Vercel compila al
+recibir el push**. La verificación de que el proyecto compila se hace del lado
+de Claude, con los archivos reales, antes de entregarlos.
+
+Anotado porque ya lo puse por error en una guía de pasos y lo frenó en seco.
+
+Dos commits, no uno. La separación entre los dos proyectos también vale para el
+historial: dentro de tres meses, `git log` tiene que poder contar cuál de los
+dos se tocó.
 
 ---
 

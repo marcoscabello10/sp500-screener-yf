@@ -13,3 +13,11 @@ local_bot/probe_edgar_out.json
 .env
 .env.local
 .env*.local
+
+# Salidas del validador de CEDEARs: se regeneran corriendo validar_cedears.py
+local_bot/cedears_validacion.json
+local_bot/cedears_ok.txt
+
+# Cache de Python del bot local
+local_bot/__pycache__/
+__pycache__/

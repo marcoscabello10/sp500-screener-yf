@@ -467,6 +467,55 @@ RECOMENDACION_TEXTO = {
     'sell': 'venta', 'strong_sell': 'venta fuerte',
 }
 
+# ─── La escala del veredicto ────────────────────────────────────────────────
+# Tres posiciones y nada mas: COMPRA / NEUTRAL / VENTA. Antes habia cinco, y la
+# quinta ("con reparos") no era una posicion: era un asterisco. Un informe que
+# termina en un asterisco no le sirve a nadie que tenga que decidir si compra,
+# si se queda o si sale.
+#
+# Lo que hacia "con reparos" ahora lo hacen dos cosas mas honestas:
+#   1. la bandera roja RESTA puntos (PENALIZACION_GRAVE), asi que empuja sola
+#      hacia neutral o venta;
+#   2. si igual queda alto, TOPEA la etiqueta en neutral. Una empresa con una
+#      bandera roja abierta no se recomienda comprar, por lindos que sean los
+#      multiplos. Eso queda registrado en 'limitado_por_bandera' para que el
+#      informe pueda decirlo con todas las letras en vez de insinuarlo.
+#
+# 'sin datos' no es una cuarta opinion: es la ausencia de opinion. Se distingue
+# a proposito, porque callar y decir "neutral" no es lo mismo.
+UMBRAL_COMPRA = 60.0
+UMBRAL_VENTA = 40.0
+PENALIZACION_GRAVE = 18.0
+
+SIN_DATOS = 'sin datos suficientes'
+
+# Como se lee el mismo veredicto cuando el papel YA esta en la cartera. Es la
+# misma decision mirada desde el otro lado: no es una escala nueva.
+ACCION_CARTERA = {
+    'compra':  'reforzar',
+    'neutral': 'mantener',
+    'venta':   'sacar',
+    SIN_DATOS: 'revisar a mano',
+}
+
+ACLARACION_VEREDICTO = (
+    'COMPRA / NEUTRAL / VENTA resume los bloques que se pudieron calcular y '
+    'las banderas rojas. Es una lectura de fundamentales a la fecha del dato, '
+    'no una recomendacion personalizada: no conoce tu horizonte, tu impuesto '
+    'ni cuanto pesa el papel en tu cartera.')
+
+
+def veredicto_de(puntaje, graves):
+    """(etiqueta, topeada_por_bandera). Unico lugar donde se decide la etiqueta:
+    lo usan el informe individual y el de cartera, asi no pueden divergir."""
+    if puntaje is None:
+        return SIN_DATOS, False
+    if puntaje >= UMBRAL_COMPRA:
+        return ('neutral', True) if graves else ('compra', False)
+    if puntaje >= UMBRAL_VENTA:
+        return 'neutral', False
+    return 'venta', False
+
 
 def recomendacion_legible(cons, detalle):
     """Yahoo manda el STRING 'none' en 32 papeles, y 29 de ellos SI tienen
@@ -719,32 +768,27 @@ def evaluar(ticker, fund, cons, detalle, hist, sec):
     global_ = round(sum(puntajes) / len(puntajes), 1) if puntajes else None
     graves = [r for r in riesgos if r['severidad'] == 'alta']
     # Las banderas rojas DESCUENTAN del puntaje, no solo cambian la etiqueta.
-    # Si no, quedaba el absurdo de "con reparos (81,8/100)" para una empresa
-    # con ingresos cayendo y perdidas.
     if global_ is not None and graves:
-        global_ = round(max(0.0, global_ - 18.0 * len(graves)), 1)
-    if global_ is None:
-        etiqueta = 'sin datos suficientes'
-    elif graves:
-        etiqueta = 'con reparos'
-    elif global_ >= 65:
-        etiqueta = 'atractiva'
-    elif global_ >= 45:
-        etiqueta = 'neutral'
-    else:
-        etiqueta = 'poco atractiva'
+        global_ = round(max(0.0, global_ - PENALIZACION_GRAVE * len(graves)), 1)
+
+    etiqueta, cap = veredicto_de(global_, graves)
     porque = [f"{s['bloque'].replace('_', ' ')}: {s['puntaje']:.0f}/100"
               for s in senales if s['puntaje'] is not None]
     if graves:
-        porque.append(f'{len(graves)} bandera(s) roja(s) que el puntaje no refleja')
+        porque.append(
+            f'{len(graves)} bandera(s) roja(s): '
+            + '; '.join(r['codigo'].replace('_', ' ') for r in graves))
+    if cap:
+        porque.append('con una bandera roja abierta no puede quedar en COMPRA, '
+                      'por bueno que sea el puntaje')
 
     return {
         'senales': senales,
         'riesgos': riesgos,
         'veredicto': {'puntaje': global_, 'etiqueta': etiqueta, 'porque': porque,
-                      'aclaracion': 'El puntaje resume los bloques calculables. '
-                                    'Las banderas rojas pesan aparte: una sola '
-                                    'etiqueta no reemplaza leer el detalle.'},
+                      'accion': ACCION_CARTERA.get(etiqueta),
+                      'limitado_por_bandera': cap,
+                      'aclaracion': ACLARACION_VEREDICTO},
         'hechos': hechos,
     }
 
@@ -765,10 +809,44 @@ def armar_datos(ticker):
 
     fund = porsym.get(ticker)
     detalle = det_all.get(ticker)
+
+    # Un registro puede EXISTIR y estar hueco: Yahoo devuelve `.info` sin nada
+    # y el bot lo guarda igual, con sector None y precio 0. Pasó con 8 ADR el
+    # 25/08/2026. Tomarlo como dato bueno arma un informe con todos los bloques
+    # en cero y un veredicto calculado sobre la nada — bastante peor que decir
+    # "no tengo el dato". Se descarta acá, una sola vez, para que ni el informe
+    # individual ni el de cartera puedan verlo.
+    hueco = bool(detalle) and not detalle.get('sector') and not detalle.get('price')
+    if hueco:
+        detalle = None
+
     if fund is None and detalle is None:
+        if hueco:
+            return None, (
+                f'{ticker} figura en informe_detalle.json pero el registro vino '
+                f'vacio: la fuente no devolvio ni sector ni precio. No es un '
+                f'informe reducido, es un dato que no existe. Corre '
+                f'local_bot/probe_vacios.py {ticker} para ver si el papel opera '
+                f'con otro simbolo.')
         return None, f'No tengo datos de {ticker}. Si no es del S&P 500, ' \
                      f'agregalo a local_bot/tickers_informe.txt y corre ' \
                      f'fetch_informe.py.'
+
+    # Sin sector no hay informe posible: TODOS los puntajes son percentiles
+    # contra las empresas del mismo sector, asi que sin sector todos los bloques
+    # dan None y sale un documento en blanco con un veredicto de "sin datos" —
+    # que no explica nada. Le pasa a los ETF, que no tienen sector por
+    # definicion: SPY esta en el snapshot del screener porque es el indice de
+    # referencia, y hasta ahora si alguien lo escribia en el buscador recibia
+    # ese informe vacio.
+    sector_final = (fund or {}).get('sector') or (detalle or {}).get('sector')
+    if not sector_final:
+        return None, (
+            f'{ticker} no tiene sector asignado, asi que no es una empresa '
+            f'individual: casi seguro es un ETF o un indice. Todo el informe se '
+            f'construye comparando contra las empresas del mismo sector, y sin '
+            f'sector no hay contra que comparar. Para un ETF mira su composicion, '
+            f'no sus multiplos.')
     if fund is None:      # fuera del S&P 500: los datos vienen del detalle
         fund = {k: detalle.get(k) for k in
                 ('symbol', 'name', 'sector', 'price', 'changePercent', 'marketCap',

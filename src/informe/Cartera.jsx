@@ -1,6 +1,6 @@
 import React from 'react'
 import Informe from './Informe.jsx'
-import { sugerirReemplazos, concentracionPorSector } from './sugerencias.js'
+import { planRotacion, concentracionPorSector, SECTOR_PESADO_PCT } from './sugerencias.js'
 import { C, F, semaforo, colorSeveridad, num, pct, fecha } from './estilos.js'
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -8,12 +8,17 @@ import { C, F, semaforo, colorSeveridad, num, pct, fecha } from './estilos.js'
 //
 // Estructura:
 //   1. Portada (cliente, comitente, fecha, logo opcional)
-//   2. Resumen: una fila por activo con su veredicto
-//   3. Composición por sector
-//   4. Puntos de atención (los riesgos altos de toda la cartera juntos)
-//   5. Ficha de media página por activo
-//   6. Oportunidades a considerar (reemplazos para los flojos)
+//   2. Qué hacer con esta cartera  ← la sección que se lee primero
+//   3. Resumen: una fila por activo con su veredicto y su acción
+//   4. Composición por sector
+//   5. Puntos de atención (los riesgos altos de toda la cartera juntos)
+//   6. Ficha de media página por activo
 //   7. Anexo OPCIONAL con el informe completo de cada activo
+//
+// El orden no es casual. Antes el documento empezaba describiendo y terminaba,
+// muy abajo, con "oportunidades a considerar". Quien lo recibía tenía que leer
+// todo para saber qué se le estaba proponiendo. Ahora la conclusión —qué sale,
+// qué se queda, qué se refuerza— va arriba, y el resto la respalda.
 //
 // Los activos se tratan por igual: NO se ponderan por cantidad ni precio de
 // compra (decisión de Marcos, 24/08/2026). Esto sirve tanto para una cartera
@@ -22,20 +27,8 @@ import { C, F, semaforo, colorSeveridad, num, pct, fecha } from './estilos.js'
 
 export default function Cartera({ informes, meta, stocks, scores, conAnexo }) {
   const validos = informes.filter(i => i && !i.error)
-  const enCartera = validos.map(i => i.ticker)
 
-  // Se acumulan los ya sugeridos para no repetir el mismo papel en dos
-  // recomendaciones distintas: en un documento queda pobre.
-  const sugerencias = []
-  const yaSugeridos = []
-  for (const i of validos) {
-    const s = sugerirReemplazos(i.ticker, stocks, scores,
-                                [...enCartera, ...yaSugeridos])
-    if (!s) continue
-    if (s.mismoSector) yaSugeridos.push(s.mismoSector.symbol)
-    if (s.otroSector) yaSugeridos.push(s.otroSector.symbol)
-    sugerencias.push(s)
-  }
+  const plan = planRotacion(validos, stocks, scores)
 
   const concentracion = concentracionPorSector(
     validos.map(i => ({ sector: i.sector })))
@@ -47,15 +40,14 @@ export default function Cartera({ informes, meta, stocks, scores, conAnexo }) {
   return (
     <div style={{ maxWidth: 940, margin: '0 auto', padding: '26px 22px 70px' }}>
       <Portada meta={meta} n={validos.length} />
-      <Resumen informes={validos} />
+      <Rotacion plan={plan} total={validos.length} />
+      <Resumen informes={validos} plan={plan} />
       <Composicion datos={concentracion} />
       {riesgosAltos.length > 0 && <PuntosDeAtencion riesgos={riesgosAltos} />}
 
       <Seccion titulo="Análisis por activo">
         {validos.map(i => <Ficha key={i.ticker} d={i} />)}
       </Seccion>
-
-      {sugerencias.length > 0 && <Oportunidades sugerencias={sugerencias} />}
 
       {conAnexo && (
         <div className="salto-antes">
@@ -106,13 +98,207 @@ function Portada({ meta, n }) {
   )
 }
 
-function Resumen({ informes }) {
+// ─────────────────────────────────────────────────────────────────────────────
+// La sección que da foco al documento: qué se hace con cada papel.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const COLOR_ACCION = {
+  sacar:            { color: C.rojo,  fondo: C.rojoFondo,  verbo: 'Sacar' },
+  mantener:         { color: C.ambar, fondo: C.ambarFondo, verbo: 'Mantener' },
+  reforzar:         { color: C.verde, fondo: C.verdeFondo, verbo: 'Reforzar' },
+  'revisar a mano': { color: C.tenue, fondo: C.panel, verbo: 'Revisar a mano' },
+}
+
+export function Pastilla({ accion, chica }) {
+  const a = COLOR_ACCION[accion] || COLOR_ACCION.mantener
+  return (
+    <span style={{ background: a.fondo, color: a.color, borderRadius: 5,
+                   padding: chica ? '2px 8px' : '3px 11px',
+                   fontSize: chica ? 12 : 13, fontWeight: 700,
+                   whiteSpace: 'nowrap' }}>
+      {a.verbo}
+    </span>
+  )
+}
+
+function Rotacion({ plan, total }) {
+  const { sacar, mantener, reforzar, sinDatos, sectoresPesados } = plan
+  const nada = sacar.length === 0
+
+  return (
+    <Seccion titulo="Qué hacer con esta cartera"
+             nota="Una acción por activo, ordenada por urgencia. Sale de los
+                   fundamentales a la fecha del dato: no contempla tu horizonte,
+                   el costo impositivo de vender ni cuánto pesa cada papel en
+                   pesos.">
+
+      <div className="evitar-corte" style={{
+        display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 16 }}>
+        {[['sacar', sacar.length], ['mantener', mantener.length],
+          ['reforzar', reforzar.length], ['revisar a mano', sinDatos.length]]
+          .filter(([, n]) => n > 0).map(([accion, n]) => {
+            const a = COLOR_ACCION[accion]
+            return (
+              <div key={accion} style={{ background: a.fondo, borderRadius: 8,
+                                         padding: '9px 15px', minWidth: 96 }}>
+                <div style={{ fontFamily: F.num, fontSize: 22, fontWeight: 700,
+                              color: a.color, lineHeight: 1.1 }}>{n}</div>
+                <div style={{ fontSize: 12.5, color: a.color }}>
+                  {a.verbo.toLowerCase()}
+                </div>
+              </div>
+            )
+          })}
+      </div>
+
+      {nada ? (
+        <p style={{ fontSize: 14.5 }}>
+          Ningún activo de los {total} analizados cae en venta por
+          fundamentales. No hay rotación que proponer hoy.
+        </p>
+      ) : (
+        <>
+          <h3 style={{ fontSize: 15, color: C.rojo, margin: '0 0 4px' }}>
+            Conviene sacar — en este orden
+          </h3>
+          <p style={{ color: C.tenue, fontSize: 13, marginTop: 0, marginBottom: 12 }}>
+            Primero los que tienen banderas rojas abiertas; después, a igualdad
+            de banderas, los de peor puntaje contra su propio sector.
+          </p>
+          {sacar.map((f, i) => <FilaSacar key={f.ticker} f={f} orden={i + 1} />)}
+        </>
+      )}
+
+      {sectoresPesados.length > 0 && (
+        <p style={{ marginTop: 14, fontSize: 13.5, color: C.ambar }}>
+          {sectoresPesados.join(' y ')} {sectoresPesados.length > 1 ? 'pesan' : 'pesa'}
+          {' '}más del {SECTOR_PESADO_PCT}% de la cartera. Los reemplazos de otro
+          sector evitan a propósito {sectoresPesados.length > 1 ? 'esos sectores' : 'ese sector'}:
+          rotar dentro de lo que ya sobra arregla el papel y deja el problema.
+        </p>
+      )}
+
+      {(reforzar.length > 0 || mantener.length > 0) && (
+        <div className="evitar-corte" style={{ marginTop: 20 }}>
+          <h3 style={{ fontSize: 15, color: C.subtitulo, margin: '0 0 8px' }}>
+            El resto de la cartera
+          </h3>
+          <table>
+            <thead>
+              <tr>
+                <th>Activo</th><th>Sector</th><th>Acción</th>
+                <th className="n">Puntaje</th><th>Por qué</th>
+              </tr>
+            </thead>
+            <tbody>
+              {[...reforzar, ...mantener, ...sinDatos].map(f => (
+                <tr key={f.ticker}>
+                  <td>
+                    <span style={{ fontFamily: F.num, fontWeight: 600,
+                                   color: C.titulo }}>{f.ticker}</span>
+                  </td>
+                  <td style={{ fontSize: 13, color: C.tenue }}>{f.sector || '—'}</td>
+                  <td><Pastilla accion={f.accion} chica /></td>
+                  <td className="n">{f.puntaje != null ? num(f.puntaje, 0) : '—'}</td>
+                  <td style={{ fontSize: 13 }}>
+                    {f.limitadoPorBandera
+                      ? 'Puntaje de compra, pero con una bandera roja abierta no se recomienda ampliar.'
+                      : f.motivo}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Seccion>
+  )
+}
+
+function FilaSacar({ f, orden }) {
+  const r = f.reemplazos
+  const alternativas = [['Mismo sector', r?.mismoSector],
+                        ['Otro sector', r?.otroSector]].filter(([, a]) => a)
+  return (
+    <div className="evitar-corte" style={{
+      border: `1px solid ${C.borde}`, borderLeft: `4px solid ${C.rojo}`,
+      borderRadius: 9, padding: '13px 16px', marginBottom: 10 }}>
+
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 10,
+                    flexWrap: 'wrap' }}>
+        <span style={{ fontFamily: F.num, fontSize: 13, color: C.tenue }}>
+          {orden}.
+        </span>
+        <span style={{ fontFamily: F.num, fontSize: 17, fontWeight: 700,
+                       color: C.titulo }}>{f.ticker}</span>
+        <span style={{ color: C.subtitulo, fontSize: 14 }}>{f.nombre}</span>
+        <span style={{ fontSize: 12.5, color: C.tenue }}>{f.sector}</span>
+        <span style={{ marginLeft: 'auto', display: 'flex', gap: 8,
+                       alignItems: 'center' }}>
+          {f.banderas > 0 && (
+            <span style={{ fontSize: 12, color: C.rojo }}>
+              {f.banderas} bandera{f.banderas > 1 ? 's' : ''} roja{f.banderas > 1 ? 's' : ''}
+            </span>
+          )}
+          {f.puntaje != null && (
+            <span style={{ fontFamily: F.num, fontSize: 13, color: C.tenue }}>
+              {num(f.puntaje, 0)}/100
+            </span>
+          )}
+          <Pastilla accion="sacar" />
+        </span>
+      </div>
+
+      <p style={{ fontSize: 13.5, margin: '9px 0 0' }}>{f.motivo}</p>
+
+      {alternativas.length > 0 && (
+        <div style={{ marginTop: 11 }}>
+          <div style={{ fontSize: 12, color: C.tenue, textTransform: 'uppercase',
+                        letterSpacing: '.03em', marginBottom: 5 }}>
+            En su lugar, para revisar
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>Alternativa</th><th>Sector</th>
+                <th className="n">Puntaje</th><th className="n">P/E</th>
+                <th className="n">ROE</th>
+              </tr>
+            </thead>
+            <tbody>
+              {alternativas.map(([label, a]) => (
+                <tr key={label}>
+                  <td>
+                    <span style={{ fontFamily: F.num, fontWeight: 600,
+                                   color: C.titulo }}>{a.symbol}</span>
+                    <span style={{ color: C.tenue, fontSize: 12.5, marginLeft: 7 }}>
+                      {a.name}
+                    </span>
+                    <div style={{ fontSize: 11.5, color: C.tenue }}>{label}</div>
+                  </td>
+                  <td style={{ fontSize: 13.5, color: C.tenue }}>{a.sector}</td>
+                  <td className="n" style={{ color: C.verde, fontWeight: 600 }}>
+                    {num(a.score, 0)}
+                  </td>
+                  <td className="n">{a.pe != null ? `${num(a.pe, 1)}x` : '—'}</td>
+                  <td className="n">{pct(a.roe)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function Resumen({ informes, plan }) {
   return (
     <Seccion titulo="Resumen">
       <table>
         <thead>
           <tr>
-            <th>Activo</th><th>Sector</th><th>Veredicto</th>
+            <th>Activo</th><th>Sector</th><th>Veredicto</th><th>Acción</th>
             <th className="n">Puntaje</th><th className="n">Recorrido</th>
             <th className="n">Riesgos</th>
           </tr>
@@ -139,6 +325,9 @@ function Resumen({ informes }) {
                                  textTransform: 'capitalize' }}>
                     {v.etiqueta}
                   </span>
+                </td>
+                <td>
+                  <Pastilla accion={plan.porTicker[i.ticker]?.accion || v.accion} chica />
                 </td>
                 <td className="n">{v.puntaje != null ? num(v.puntaje, 0) : '—'}</td>
                 <td className="n" style={{
@@ -281,57 +470,6 @@ function Ficha({ d }) {
         </div>
       ))}
     </div>
-  )
-}
-
-function Oportunidades({ sugerencias }) {
-  return (
-    <Seccion titulo="Oportunidades a considerar"
-             nota="Para los activos con puntaje bajo, alternativas con CEDEAR
-                   disponible que hoy puntúan mejor. No son órdenes de compra:
-                   son candidatos para revisar.">
-      {sugerencias.map(s => (
-        <div key={s.ticker} className="evitar-corte" style={{
-          border: `1px solid ${C.borde}`, borderRadius: 9, padding: '13px 16px',
-          marginBottom: 10 }}>
-          <div style={{ fontSize: 14.5, marginBottom: 9 }}>
-            <b style={{ fontFamily: F.num, color: C.titulo }}>{s.ticker}</b>
-            {' '}puntúa <b>{num(s.score, 0)}/100</b> dentro de {s.sector}.
-            Alternativas:
-          </div>
-          <table>
-            <thead>
-              <tr>
-                <th>Alternativa</th><th>Sector</th>
-                <th className="n">Puntaje</th><th className="n">P/E</th>
-                <th className="n">ROE</th>
-              </tr>
-            </thead>
-            <tbody>
-              {[['Mismo sector', s.mismoSector], ['Otro sector', s.otroSector]]
-                .filter(([, a]) => a).map(([label, a]) => (
-                <tr key={label}>
-                  <td>
-                    <span style={{ fontFamily: F.num, fontWeight: 600,
-                                   color: C.titulo }}>{a.symbol}</span>
-                    <span style={{ color: C.tenue, fontSize: 12.5, marginLeft: 7 }}>
-                      {a.name}
-                    </span>
-                    <div style={{ fontSize: 11.5, color: C.tenue }}>{label}</div>
-                  </td>
-                  <td style={{ fontSize: 13.5, color: C.tenue }}>{a.sector}</td>
-                  <td className="n" style={{ color: C.verde, fontWeight: 600 }}>
-                    {num(a.score, 0)}
-                  </td>
-                  <td className="n">{a.pe != null ? `${num(a.pe, 1)}x` : '—'}</td>
-                  <td className="n">{pct(a.roe)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      ))}
-    </Seccion>
   )
 }
 

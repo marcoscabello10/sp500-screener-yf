@@ -179,13 +179,26 @@ function Veredicto({ d }) {
       borderLeft: `5px solid ${s.color}` }}>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 14, flexWrap: 'wrap' }}>
         <span style={{ fontSize: 22, fontWeight: 700, color: s.color,
-                       textTransform: 'capitalize' }}>{v.etiqueta}</span>
+                       textTransform: 'uppercase', letterSpacing: '.02em' }}>
+          {v.etiqueta}
+        </span>
         {v.puntaje != null && (
           <span style={{ fontFamily: F.num, fontSize: 17, color: C.cuerpo }}>
             {num(v.puntaje, 1)}<span style={{ color: C.tenue, fontSize: 14 }}>/100</span>
           </span>
         )}
+        {v.accion && (
+          <span style={{ fontSize: 13.5, color: C.cuerpo }}>
+            Si ya lo tenés en cartera: <b style={{ color: s.color }}>{v.accion}</b>.
+          </span>
+        )}
       </div>
+      {v.limitado_por_bandera && (
+        <div style={{ marginTop: 8, fontSize: 13.5, color: C.rojo, fontWeight: 600 }}>
+          El puntaje daba compra, pero hay una bandera roja abierta: no se
+          recomienda ampliar hasta resolverla.
+        </div>
+      )}
       {v.porque?.length > 0 && (
         <div style={{ marginTop: 8, fontSize: 13.5, color: C.cuerpo }}>
           {v.porque.join(' · ')}

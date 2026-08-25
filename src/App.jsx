@@ -62,6 +62,37 @@ const CEDEAR_TICKERS = new Set([
 
 const delay  = (ms) => new Promise(r => setTimeout(r, ms));
 const chunk  = (arr, n) => { const o=[]; for(let i=0;i<arr.length;i+=n) o.push(arr.slice(i,i+n)); return o; };
+
+// ── Twelve Data: límite de 8 créditos por MINUTO ────────────────────────────
+// CADA símbolo del lote cuenta como un crédito. Con lotes de 8 (7 activos +
+// SPY) quedábamos justo en el límite: cualquier crédito gastado antes dentro
+// del mismo minuto tiraba un 429, y el mensaje de error culpaba a Yahoo, que
+// no tenía nada que ver.
+const TD_LOTE      = 6;      // deja margen para SPY y para un reintento
+const TD_ESPERA_MS = 62000;  // el contador de TD es por minuto calendario
+
+// Trae un lote de histórico. Si la fuente devuelve 429, espera el minuto y
+// reintenta UNA vez, avisando por pantalla en vez de fallar en silencio.
+async function histFetch(BASE, batch, from, onAviso) {
+  const url = `${BASE}?action=history&symbol=${batch.join(',')}&from=${from}`;
+  for (let intento = 0; intento < 2; intento++) {
+    const r = await fetch(url);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const d = await r.json();
+    let err = d && d._error;
+    if (!err && d && typeof d === 'object' && !Array.isArray(d)) {
+      for (const v of Object.values(d)) {
+        if (v && !Array.isArray(v) && v._error) { err = v._error; break; }
+      }
+    }
+    const esLimite = typeof err === 'string' && err.indexOf('429') >= 0;
+    if (!esLimite || intento === 1) return d;
+    for (let seg = Math.round(TD_ESPERA_MS / 1000); seg > 0; seg--) {
+      if (onAviso) onAviso(`Límite de la fuente de datos alcanzado — reintento en ${seg}s`);
+      await delay(1000);
+    }
+  }
+}
 const fmtP   = v => v==null ? "—" : `$${Number(v).toFixed(2)}`;
 const fmtCap = v => { if(!v||v<=0) return"—"; if(v>=1e12) return`$${(v/1e12).toFixed(2)}T`; if(v>=1e9) return`$${(v/1e9).toFixed(1)}B`; return`$${(v/1e6).toFixed(0)}M`; };
 const fmtPct = (v,d=1) => v==null||!isFinite(v) ? "—" : `${Number(v).toFixed(d)}%`;
@@ -1576,14 +1607,13 @@ export default function App() {
         setLp({step:`⚡ Histórico desde caché (${HIST_CACHE_DAYS} días)...`,pct:84,phase:2});
         done = total;
       } else {
-        // Un fetch por lote de 20 símbolos — mucho más rápido que individual
+        // Un fetch por lote — el tamaño lo fija TD_LOTE por el límite de créditos
         const allWithSpy = ['SPY', ...allSyms];
         setLp({step:`Descargando histórico (${allWithSpy.length} activos)...`,pct:3,phase:2});
-        for (const batch of chunk(allWithSpy, 8)) {
+        for (const batch of chunk(allWithSpy, TD_LOTE)) {
           try {
-            const r = await fetch(`${BASE}?action=history&symbol=${batch.join(',')}&from=${from}`);
-            if (!r.ok) throw new Error(`HTTP ${r.status}`);
-            const d = await r.json();
+            const d = await histFetch(BASE, batch, from,
+              (msg) => setLp({step: msg, pct: 3, phase: 2}));
             if (d && d._error) {
               batch.forEach(s => { histErrors[s] = d._error; });
             } else if (d && typeof d === 'object' && !Array.isArray(d)) {
@@ -1632,7 +1662,16 @@ export default function App() {
       }
       const totalValid = Object.values(rr).flat().filter(s=>s.rcp!=null).length;
       if (totalValid === 0) {
-        throw new Error(`No se pudo descargar histórico de precios para ninguno de los ${allSyms.length} activos de F1. El proxy de datos (Twelve Data) no está devolviendo datos — revisá ?action=debug&symbol=SPY para ver el error real.`);
+        // Mostrar el error REAL de la fuente en vez de un diagnóstico inventado:
+        // el mensaje anterior culpaba a Twelve Data incluso cuando el problema
+        // era el límite de créditos por minuto, y mandaba a mirar un debug que
+        // (con un solo símbolo) siempre daba OK.
+        const real = Object.values(histErrors)[0];
+        const esLimite = typeof real === 'string' && real.indexOf('429') >= 0;
+        throw new Error(
+          esLimite
+            ? `Se alcanzó el límite de la fuente de datos (8 consultas por minuto) al pedir ${allSyms.length} activos. Esperá un minuto y reintentá — ya se reintentó una vez automáticamente.`
+            : `No se pudo descargar histórico de precios para ninguno de los ${allSyms.length} activos. ${real ? 'La fuente respondió: ' + real : 'Revisá ?action=debug&symbol=SPY.'}`);
       }
       setRiskData(rr);
       setTab("risk");
@@ -1681,11 +1720,10 @@ export default function App() {
       } else {
         const allWithSpy = ['SPY', ...allSyms];
         setLp({step:`Descargando histórico correlación (${allWithSpy.length} activos)...`,pct:3,phase:3});
-        for (const batch of chunk(allWithSpy, 8)) {
+        for (const batch of chunk(allWithSpy, TD_LOTE)) {
           try {
-            const r = await fetch(`${BASE}?action=history&symbol=${batch.join(',')}&from=${from}`);
-            if (!r.ok) throw new Error(`HTTP ${r.status}`);
-            const d = await r.json();
+            const d = await histFetch(BASE, batch, from,
+              (msg) => setLp({step: msg, pct: 3, phase: 3}));
             if (d && d._error) {
               // Error global del batch (ej. rate-limit de TD) — aplica a todos los símbolos del lote
               batch.forEach(s => { histErrors[s] = d._error; });
@@ -1792,11 +1830,10 @@ export default function App() {
       } else {
         const allWithSpy = ['SPY', ...allSyms];
         setLp({step:`Descargando histórico optimización (${allWithSpy.length} activos)...`,pct:2,phase:4});
-        for (const batch of chunk(allWithSpy, 8)) {
+        for (const batch of chunk(allWithSpy, TD_LOTE)) {
           try {
-            const r = await fetch(`${BASE}?action=history&symbol=${batch.join(',')}&from=${from}`);
-            if (!r.ok) throw new Error(`HTTP ${r.status}`);
-            const d = await r.json();
+            const d = await histFetch(BASE, batch, from,
+              (msg) => setLp({step: msg, pct: 2, phase: 4}));
             if (d && d._error) {
               // Error global del batch (ej. rate-limit de TD) — aplica a todos los símbolos del lote
               batch.forEach(s => { histErrors[s] = d._error; });
@@ -2002,7 +2039,7 @@ export default function App() {
       <div style={{background:"#0c1a0c",border:"1px solid #166534",borderRadius:10,padding:"12px 18px",maxWidth:480,width:"100%"}}>
         <div style={{fontSize:10,color:"#4ade80",marginBottom:5,fontWeight:700}}>Posibles causas</div>
         <div style={{fontSize:10,color:"#86efac",lineHeight:1.8}}>
-          Yahoo Finance puede estar caído · Sin conexión a internet · Intentá de nuevo en unos minutos
+          Límite de consultas por minuto de la fuente de datos · La fuente puede estar caída · Sin conexión a internet · Esperá un minuto y reintentá
         </div>
       </div>
       <button onClick={()=>setPhase("idle")} style={{marginTop:4,background:"#1e293b",border:"1px solid #334155",borderRadius:8,padding:"10px 28px",color:"#e2e8f0",cursor:"pointer",fontSize:12}}>

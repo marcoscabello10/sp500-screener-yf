@@ -1101,6 +1101,49 @@ sube a ningún lado). Si nunca carga uno, la portada simplemente no lo muestra.
 
 ---
 
+## 🐛 BUG DEL SCREENER — límite de Twelve Data en F2/F3/F4 (24/08/2026)
+
+**No tiene nada que ver con el informe.** Apareció al usar F5 con la cartera
+propia: al pasar al paso de riesgo, "No se pudo descargar histórico… El proxy
+de datos (Twelve Data) no está devolviendo datos".
+
+### El mensaje mentía dos veces
+1. Culpaba a Twelve Data. **Twelve Data respondía perfecto** —
+   `action=debug&symbol=SPY` daba status 200 con datos del día.
+2. Las "posibles causas" nombraban a **Yahoo Finance**, que ni siquiera es la
+   fuente del histórico (Yahoo sí estaba con `YFRateLimitError`, pero eso es
+   otra parte del flujo).
+
+### La causa real
+`TD error 429: 13 API credits were used, with the current limit being 8.`
+
+**Cada símbolo del lote cuesta un crédito.** `src/App.jsx` usaba
+`chunk(allWithSpy, 8)` en **tres** lugares (F2 línea ~1584, F3 ~1686,
+F4 ~1797). Con 7 activos + SPY = **8 símbolos = 8 créditos, justo en el
+límite**: cualquier crédito gastado antes en el mismo minuto lo desbordaba.
+
+⚠️ El diagnóstico con **un solo símbolo siempre da OK** — por eso el mensaje
+mandaba a un debug que nunca reproducía el problema.
+
+### Arreglo aplicado (elección de Marcos: lotes + reintento)
+- **`TD_LOTE = 6`** en lugar de 8, en los tres lugares. Deja margen para SPY
+  y para un reintento.
+- **`histFetch()`**: helper nuevo que ante un 429 **espera 62 segundos y
+  reintenta una sola vez**, con cuenta regresiva en pantalla. Nunca entra en
+  bucle: máximo dos intentos.
+- **Los mensajes dejan de mentir**: si es límite de créditos lo dice y explica
+  cuánto esperar; si no, muestra **la respuesta textual de la fuente**.
+
+**Diff: 41 líneas agregadas, 13 reemplazadas.** Nada más de `App.jsx` se tocó.
+
+**Probado** extrayendo la función real del archivo y ejecutándola con `fetch`
+simulado: respuesta OK a la primera (1 llamada, sin esperas), 429 y después OK
+(reintenta y devuelve los datos buenos), 429 dos veces (corta en 2 intentos,
+sin bucle), error global del lote (también lo detecta), y error que **no** es
+429 (devuelve enseguida, sin esperar al pedo). Build real limpio.
+
+---
+
 ## 📦 PENDIENTE DE PUSH — lista acumulada
 
 Todo esto está escrito en la carpeta y **todavía no subido**. Verificar con

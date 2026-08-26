@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react'
 import Selector, { guardarEnHistorial } from './Selector.jsx'
 import Informe from './Informe.jsx'
 import Cartera from './Cartera.jsx'
+import { PERFILES, PERFIL_POR_DEFECTO } from './cartera.js'
 import { scoresPorSector } from './sugerencias.js'
 import { C, F, CSS_GLOBAL } from './estilos.js'
 
@@ -45,7 +46,7 @@ function cacheGuardar(ticker, datos) {
 }
 
 const META_VACIA = { cliente: '', comitente: '', preparadoPor: '', logo: '',
-                     titulo: 'Análisis de cartera' }
+                     titulo: 'Análisis de cartera', perfil: PERFIL_POR_DEFECTO }
 
 function metaLeer() {
   try { return { ...META_VACIA, ...(JSON.parse(localStorage.getItem(CLAVE_META)) || {}) } }
@@ -60,7 +61,11 @@ export default function App() {
   const [cartera, setCartera] = useState(null)
   const [meta, setMeta] = useState(metaLeer)
   const [conAnexo, setConAnexo] = useState(false)
-  const [pendientes, setPendientes] = useState(null)   // tickers elegidos, antes de generar
+  const [pendientes, setPendientes] = useState(null)
+  // Cantidad, precio de compra y valor por activo, tal como los dejo F5.
+  // Vacio = cartera propuesta (o Excel sin cantidades): el informe sale igual,
+  // solo que sin la capa de pesos.
+  const [posiciones, setPosiciones] = useState({})   // tickers elegidos, antes de generar
   const [progreso, setProgreso] = useState(null)
   const [cargando, setCargando] = useState(false)
   const [error, setError] = useState(null)
@@ -187,7 +192,7 @@ export default function App() {
           <BarraAcciones etiqueta={`Cartera · ${cartera.length} activos`}
                          onVolver={volver} />
           <Cartera informes={cartera} meta={meta} stocks={stocks} scores={scores}
-                   conAnexo={conAnexo} />
+                   conAnexo={conAnexo} posiciones={posiciones} />
         </>
       ) : datos ? (
         <>
@@ -198,7 +203,8 @@ export default function App() {
         </>
       ) : (
         <Selector universo={universo} completos={completos} onElegir={pedir}
-                  onCartera={ts => setPendientes(ts)} cargando={cargando} />
+                  onCartera={(ts, pos) => { setPosiciones(pos || {}); setPendientes(ts) }}
+                  cargando={cargando} />
       )}
     </>
   )
@@ -260,6 +266,35 @@ function FormularioCartera({ tickers, meta, conAnexo, setMeta, setConAnexo,
         {campo('cliente', 'Cliente', 'Nombre del cliente (opcional)')}
         {campo('comitente', 'Número de comitente', 'Opcional')}
         {campo('preparadoPor', 'Preparado por', 'Tu nombre')}
+
+        {/* El perfil define los topes de concentración: cuánto puede pesar una
+            posición y cuánto un sector. No cambia el análisis de la empresa,
+            cambia qué se considera demasiado en ESTA cartera. */}
+        <div style={{ marginBottom: 14 }}>
+          <div style={{ fontSize: 12.5, color: C.subtitulo, marginBottom: 5 }}>
+            Perfil de la cartera
+          </div>
+          <div style={{ display: 'flex', gap: 7 }}>
+            {Object.values(PERFILES).map(p => {
+              const activo = (meta.perfil || PERFIL_POR_DEFECTO) === p.clave
+              return (
+                <button key={p.clave} onClick={() => setMeta({ ...meta, perfil: p.clave })}
+                  style={{ flex: 1, padding: '8px 6px', borderRadius: 7,
+                           border: `1px solid ${activo ? C.acento : C.bordeFuerte}`,
+                           background: activo ? C.acentoFondo : '#fff',
+                           color: activo ? C.acento : C.cuerpo,
+                           fontWeight: activo ? 600 : 400, fontSize: 13.5 }}>
+                  {p.nombre}
+                </button>
+              )
+            })}
+          </div>
+          <div style={{ fontSize: 11.5, color: C.tenue, marginTop: 5 }}>
+            {(PERFILES[meta.perfil] || PERFILES[PERFIL_POR_DEFECTO]).resumen}
+            {' '}Tope por posición {(PERFILES[meta.perfil] || PERFILES[PERFIL_POR_DEFECTO]).maxPosicion}%,
+            por sector {(PERFILES[meta.perfil] || PERFILES[PERFIL_POR_DEFECTO]).maxSector}%.
+          </div>
+        </div>
 
         <div style={{ marginBottom: 14 }}>
           <div style={{ fontSize: 12.5, color: C.subtitulo, marginBottom: 4 }}>

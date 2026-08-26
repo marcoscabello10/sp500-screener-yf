@@ -1,6 +1,8 @@
 import React from 'react'
 import Informe from './Informe.jsx'
 import { planRotacion, concentracionPorSector, SECTOR_PESADO_PCT } from './sugerencias.js'
+import { analizarCartera, CLASE_TEXTO, ESTADO_TEXTO, ACCION_PESO_TEXTO,
+         PERFIL_POR_DEFECTO } from './cartera.js'
 import { C, F, semaforo, colorSeveridad, num, pct, fecha } from './estilos.js'
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -25,10 +27,17 @@ import { C, F, semaforo, colorSeveridad, num, pct, fecha } from './estilos.js'
 // existente como para una propuesta.
 // ─────────────────────────────────────────────────────────────────────────────
 
-export default function Cartera({ informes, meta, stocks, scores, conAnexo }) {
+export default function Cartera({ informes, meta, stocks, scores, conAnexo,
+                                 posiciones }) {
   const validos = informes.filter(i => i && !i.error)
 
+  // Los dos puntajes, calculados por separado y a proposito:
+  //   plan  -> responde "¿es buena la empresa?"   (fundamental)
+  //   cart  -> responde "¿esta bien que pese esto?" (cartera)
+  // No se promedian nunca. Se cruzan en la matriz de cartera.js.
   const plan = planRotacion(validos, stocks, scores)
+  const cart = analizarCartera(validos, posiciones,
+                               meta.perfil || PERFIL_POR_DEFECTO)
 
   const concentracion = concentracionPorSector(
     validos.map(i => ({ sector: i.sector })))
@@ -39,8 +48,9 @@ export default function Cartera({ informes, meta, stocks, scores, conAnexo }) {
 
   return (
     <div style={{ maxWidth: 940, margin: '0 auto', padding: '26px 22px 70px' }}>
-      <Portada meta={meta} n={validos.length} />
-      <Rotacion plan={plan} total={validos.length} />
+      <Portada meta={meta} n={validos.length} cart={cart} />
+      {cart.hayPesos && <Pesos cart={cart} />}
+      <Rotacion plan={plan} total={validos.length} cart={cart} />
       <Resumen informes={validos} plan={plan} />
       <Composicion datos={concentracion} />
       {riesgosAltos.length > 0 && <PuntosDeAtencion riesgos={riesgosAltos} />}
@@ -72,7 +82,7 @@ export default function Cartera({ informes, meta, stocks, scores, conAnexo }) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-function Portada({ meta, n }) {
+function Portada({ meta, n, cart }) {
   return (
     <div className="evitar-corte" style={{ borderBottom: `2px solid ${C.titulo}`,
                                            paddingBottom: 18, marginBottom: 6 }}>
@@ -90,6 +100,10 @@ function Portada({ meta, n }) {
       <div style={{ display: 'flex', gap: 26, marginTop: 14, flexWrap: 'wrap',
                     fontSize: 13, color: C.tenue }}>
         <span>{n} activos analizados</span>
+        {cart?.hayPesos && (
+          <span>Valor de la cartera: US$ {num(cart.valorTotal, 0)}</span>
+        )}
+        <span>Perfil: {cart?.perfil?.nombre || '—'}</span>
         <span>Fecha: {new Date().toLocaleDateString('es-AR', {
           day: '2-digit', month: 'long', year: 'numeric' })}</span>
         {meta.preparadoPor && <span>Preparado por {meta.preparadoPor}</span>}
@@ -107,6 +121,10 @@ const COLOR_ACCION = {
   mantener:         { color: C.ambar, fondo: C.ambarFondo, verbo: 'Mantener' },
   reforzar:         { color: C.verde, fondo: C.verdeFondo, verbo: 'Reforzar' },
   'revisar a mano': { color: C.tenue, fondo: C.panel, verbo: 'Revisar a mano' },
+  // Las dos que aparecen recien cuando hay pesos. "Recortar" no es "sacar":
+  // la empresa esta bien, lo que esta mal es cuanto pesa.
+  recortar:         { color: C.ambar, fondo: C.ambarFondo, verbo: 'Recortar' },
+  consolidar:       { color: C.tenue, fondo: C.panel, verbo: 'Consolidar o salir' },
 }
 
 export function Pastilla({ accion, chica }) {
@@ -121,21 +139,142 @@ export function Pastilla({ accion, chica }) {
   )
 }
 
-function Rotacion({ plan, total }) {
+// ─────────────────────────────────────────────────────────────────────────────
+// PESOS — el segundo puntaje, el que el veredicto no puede ver.
+//
+// Solo aparece si la cartera trae cantidades y precios de compra. Sin eso no
+// hay pesos que analizar y la sección entera se omite en vez de inventar una
+// equiponderación que nadie pidió.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const COLOR_ESTADO = {
+  critico: C.rojo, sobre: C.ambar, banda: C.verde, sub: C.tenue,
+}
+
+function Pesos({ cart }) {
+  const { perfil, activos, sectores, clases, valorTotal, sinPeso } = cart
+  const fuera = activos.filter(a => a.estado === 'critico' || a.estado === 'sobre')
+  const chicos = activos.filter(a => a.estado === 'sub')
+  const sectoresFuera = sectores.filter(s => s.excede)
+
+  return (
+    <Seccion titulo="Cuánto pesa cada cosa"
+             nota={`Perfil ${perfil.nombre.toLowerCase()}: tope de ${num(cart.topeGeneral, 0)}% por posición
+                    (Core), ${num(cart.topeGeneral * 0.75, 0)}% Growth, ${num(cart.topeGeneral * 0.4, 0)}% Especulativo.
+                    El tope no es fijo: es el mayor entre el del perfil y un múltiplo del peso
+                    equiponderado (${num(cart.pesoEquiponderado, 1)}%), para no marcar sobrepeso
+                    solo por tener pocas posiciones.`}>
+
+      {sinPeso > 0 && (
+        <p style={{ fontSize: 13.5, color: C.ambar, marginTop: 0 }}>
+          {sinPeso} de los {activos.length} activos no tienen cantidad cargada, así
+          que quedan fuera del cálculo de pesos. El resto suma 100%.
+        </p>
+      )}
+
+      <div className="evitar-corte" style={{ display: 'flex', gap: 10,
+                                             flexWrap: 'wrap', marginBottom: 14 }}>
+        {clases.map(c => (
+          <div key={c.clase} style={{ background: C.panel, borderRadius: 8,
+                                      padding: '9px 15px', minWidth: 118 }}>
+            <div style={{ fontFamily: F.num, fontSize: 20, fontWeight: 700,
+                          color: C.titulo, lineHeight: 1.1 }}>{num(c.pct, 1)}%</div>
+            <div style={{ fontSize: 12.5, color: C.tenue }}>
+              {CLASE_TEXTO[c.clase]} · {c.n} activo{c.n > 1 ? 's' : ''}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Activo</th><th>Clase</th>
+            <th className="n">Peso</th><th className="n">Tope</th>
+            <th>Estado</th><th className="n">Resultado</th>
+          </tr>
+        </thead>
+        <tbody>
+          {activos.slice().sort((a, b) => (b.peso ?? -1) - (a.peso ?? -1)).map(a => (
+            <tr key={a.ticker}>
+              <td>
+                <span style={{ fontFamily: F.num, fontWeight: 600, color: C.titulo }}>
+                  {a.ticker}
+                </span>
+              </td>
+              <td style={{ fontSize: 13, color: C.tenue }}>{CLASE_TEXTO[a.clase]}</td>
+              <td className="n" style={{ fontWeight: a.estado === 'critico' ? 700 : 400,
+                                         color: COLOR_ESTADO[a.estado] || C.cuerpo }}>
+                {a.peso != null ? `${num(a.peso, 1)}%` : '—'}
+              </td>
+              <td className="n" style={{ color: C.tenue }}>{num(a.topeClase, 1)}%</td>
+              <td style={{ fontSize: 12.5, color: COLOR_ESTADO[a.estado] || C.tenue }}>
+                {ESTADO_TEXTO[a.estado] || '—'}
+              </td>
+              <td className="n" style={{
+                color: a.gananciaPct > 0 ? C.verde : a.gananciaPct < 0 ? C.rojo : C.tenue }}>
+                {a.gananciaPct != null ? pct(a.gananciaPct, 1, true) : '—'}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      {fuera.length > 0 && (
+        <p style={{ fontSize: 13.5, marginTop: 12 }}>
+          <b style={{ color: C.ambar }}>Por encima del tope:</b>{' '}
+          {fuera.map(a => `${a.ticker} (${num(a.peso, 1)}%, US$ ${num(a.excesoUSD, 0)} de exceso)`)
+            .join(' · ')}.
+        </p>
+      )}
+      {chicos.length > 0 && (
+        <p style={{ fontSize: 13.5, marginTop: 6, color: C.tenue }}>
+          <b>Posiciones muy chicas:</b> {chicos.map(a => a.ticker).join(', ')}.
+          Pesan menos de un tercio de lo equiponderado: aunque acierten, casi no
+          mueven el resultado de la cartera. Conviene consolidarlas o salir.
+        </p>
+      )}
+      {sectoresFuera.length > 0 && (
+        <p style={{ fontSize: 13.5, marginTop: 6, color: C.ambar }}>
+          <b>Sectores por encima del {num(sectoresFuera[0].tope, 0)}%:</b>{' '}
+          {sectoresFuera.map(s => `${s.sector} ${num(s.pct, 1)}%`).join(' · ')}.
+          {valorTotal ? ` Volver al tope implica mover unos US$ ${num(
+            sectoresFuera.reduce((a, s) => a + (s.excesoUSD || 0), 0), 0)}.` : ''}
+        </p>
+      )}
+    </Seccion>
+  )
+}
+
+function Rotacion({ plan, total, cart }) {
   const { sacar, mantener, reforzar, sinDatos, sectoresPesados } = plan
   const nada = sacar.length === 0
 
+  // Con pesos, la accion sale de cruzar los DOS puntajes (matriz en cartera.js).
+  // Sin pesos, sale solo del fundamental, como venia. Los contadores tienen que
+  // reflejar lo que el documento realmente recomienda, no una de las dos mitades.
+  const conPesos = cart?.hayPesos
+  const recortar = conPesos ? cart.activos.filter(a => a.accion === 'recortar') : []
+  const consolidar = conPesos ? cart.activos.filter(a => a.accion === 'consolidar') : []
+  const contadores = conPesos
+    ? ['sacar', 'recortar', 'consolidar', 'mantener', 'reforzar', 'revisar a mano']
+        .map(k => [k, cart.activos.filter(a => a.accion === k).length])
+    : [['sacar', sacar.length], ['mantener', mantener.length],
+       ['reforzar', reforzar.length], ['revisar a mano', sinDatos.length]]
+
   return (
     <Seccion titulo="Qué hacer con esta cartera"
-             nota="Una acción por activo, ordenada por urgencia. Sale de los
-                   fundamentales a la fecha del dato: no contempla tu horizonte,
-                   el costo impositivo de vender ni cuánto pesa cada papel en
-                   pesos.">
+             nota={conPesos
+               ? `Una acción por activo, del cruce de dos preguntas distintas:
+                  si la empresa está bien, y si está bien que pese lo que pesa.
+                  No contempla tu horizonte ni el costo impositivo de vender.`
+               : `Una acción por activo, ordenada por urgencia. Sale solo de los
+                  fundamentales: esta cartera no trae cantidades, así que el
+                  informe no sabe cuánto pesa cada papel.`}>
 
       <div className="evitar-corte" style={{
         display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 16 }}>
-        {[['sacar', sacar.length], ['mantener', mantener.length],
-          ['reforzar', reforzar.length], ['revisar a mano', sinDatos.length]]
+        {contadores
           .filter(([, n]) => n > 0).map(([accion, n]) => {
             const a = COLOR_ACCION[accion]
             return (
@@ -169,7 +308,62 @@ function Rotacion({ plan, total }) {
         </>
       )}
 
-      {sectoresPesados.length > 0 && (
+      {recortar.length > 0 && (
+        <div style={{ marginTop: 22 }}>
+          <h3 style={{ fontSize: 15, color: C.ambar, margin: '0 0 4px' }}>
+            Conviene recortar — no por la empresa, por el tamaño
+          </h3>
+          <p style={{ color: C.tenue, fontSize: 13, marginTop: 0, marginBottom: 10 }}>
+            Estos papeles no tienen problemas de fundamentales. Lo que está fuera
+            de lugar es cuánto pesan: si cualquiera de ellos cae fuerte, se lleva
+            puesta la cartera. Recortar no es salir.
+          </p>
+          <table>
+            <thead>
+              <tr>
+                <th>Activo</th><th>Veredicto</th>
+                <th className="n">Peso</th><th className="n">Tope</th>
+                <th className="n">Vender aprox.</th><th>Nota</th>
+              </tr>
+            </thead>
+            <tbody>
+              {recortar.map(a => (
+                <tr key={a.ticker}>
+                  <td>
+                    <span style={{ fontFamily: F.num, fontWeight: 600, color: C.titulo }}>
+                      {a.ticker}
+                    </span>
+                    <span style={{ color: C.tenue, fontSize: 12, marginLeft: 6 }}>
+                      {CLASE_TEXTO[a.clase]}
+                    </span>
+                  </td>
+                  <td style={{ fontSize: 13, textTransform: 'capitalize' }}>{a.etiqueta}</td>
+                  <td className="n" style={{ color: COLOR_ESTADO[a.estado], fontWeight: 600 }}>
+                    {num(a.peso, 1)}%
+                  </td>
+                  <td className="n" style={{ color: C.tenue }}>{num(a.topeClase, 1)}%</td>
+                  <td className="n">US$ {num(a.excesoUSD, 0)}</td>
+                  <td style={{ fontSize: 12.5, color: C.tenue }}>
+                    {a.tomaGanancia
+                      ? `Sale con ${pct(a.gananciaPct, 0, true)} de ganancia: es toma de ganancia, no corrección de un error.`
+                      : a.estado === 'critico' ? 'Sobrepeso crítico.' : 'Sobre el tope del perfil.'}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {consolidar.length > 0 && (
+        <p style={{ marginTop: 14, fontSize: 13.5, color: C.tenue }}>
+          <b>Consolidar o salir:</b> {consolidar.map(a => `${a.ticker} (${num(a.peso, 1)}%)`).join(' · ')}.
+          Son posiciones tan chicas que su resultado casi no cambia el de la
+          cartera, pero siguen ocupando atención y costo de operar.
+        </p>
+      )}
+
+      {sectoresPesados.length > 0 && !conPesos && (
         <p style={{ marginTop: 14, fontSize: 13.5, color: C.ambar }}>
           {sectoresPesados.join(' y ')} {sectoresPesados.length > 1 ? 'pesan' : 'pesa'}
           {' '}más del {SECTOR_PESADO_PCT}% de la cartera. Los reemplazos de otro
@@ -178,7 +372,8 @@ function Rotacion({ plan, total }) {
         </p>
       )}
 
-      {(reforzar.length > 0 || mantener.length > 0) && (
+      {[...reforzar, ...mantener, ...sinDatos].some(f => !conPesos ||
+          !['recortar', 'consolidar', 'sacar'].includes(cart.porTicker[f.ticker]?.accion)) && (
         <div className="evitar-corte" style={{ marginTop: 20 }}>
           <h3 style={{ fontSize: 15, color: C.subtitulo, margin: '0 0 8px' }}>
             El resto de la cartera
@@ -191,14 +386,28 @@ function Rotacion({ plan, total }) {
               </tr>
             </thead>
             <tbody>
-              {[...reforzar, ...mantener, ...sinDatos].map(f => (
+              {/* Con pesos, algunos de estos pasaron a recortar o consolidar y ya
+                  tienen su propio bloque arriba: si no se filtran, el mismo activo
+                  aparece dos veces con dos recomendaciones distintas. */}
+              {[...reforzar, ...mantener, ...sinDatos]
+                .filter(f => !conPesos ||
+                  !['recortar', 'consolidar', 'sacar'].includes(
+                    cart.porTicker[f.ticker]?.accion))
+                .map(f => (
                 <tr key={f.ticker}>
                   <td>
                     <span style={{ fontFamily: F.num, fontWeight: 600,
                                    color: C.titulo }}>{f.ticker}</span>
+                    {conPesos && cart.porTicker[f.ticker]?.peso != null && (
+                      <span style={{ color: C.tenue, fontSize: 12, marginLeft: 6,
+                                     fontFamily: F.num }}>
+                        {num(cart.porTicker[f.ticker].peso, 1)}%
+                      </span>
+                    )}
                   </td>
                   <td style={{ fontSize: 13, color: C.tenue }}>{f.sector || '—'}</td>
-                  <td><Pastilla accion={f.accion} chica /></td>
+                  <td><Pastilla accion={conPesos
+                        ? (cart.porTicker[f.ticker]?.accion || f.accion) : f.accion} chica /></td>
                   <td className="n">{f.puntaje != null ? num(f.puntaje, 0) : '—'}</td>
                   <td style={{ fontSize: 13 }}>
                     {f.limitadoPorBandera

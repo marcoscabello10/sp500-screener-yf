@@ -1515,14 +1515,160 @@ enchufen; dejarlo para después obliga a rehacer lo del medio.
 
 ### Plan en pasos
 
-- **Paso 1** (sin IA, sin bot): F5 le pasa las posiciones al informe. Habilita
-  1, 2, 3, 4, 5 y 11. ⚠️ **Toca `src/App.jsx`**, que hasta ahora se tocó una
-  sola vez y con permiso explícito.
-- **Paso 2** (input): perfil + horizonte en el formulario de cartera → 6, 13, y
-  pondera 7 y 10.
+- **Paso 1** ✅ **HECHO** (25/08/2026) — ver abajo.
+- **Paso 2** (input): horizonte temporal y objetivo declarado → 6, 13, y pondera
+  7 y 10. El **perfil** ya entró en el paso 1.
 - **Paso 3** (IA): `action=tesis` recibe todo lo anterior ya calculado y escribe
   resumen ejecutivo, thesis risk y escenarios → 14, 18, 9.
-- **Después**: 16 y 12, que son los que piden datos nuevos y bot.
+- **Paso 4**: 17 (expected return), 19 (stress test con betas), 15 (catalysts) —
+  derivables de lo que ya hay.
+- **Paso 5**: 16 (P/E vs su historia) y 12 (correlación) — piden datos nuevos y
+  tocan el bot. Ver la nota sobre bajar el histórico de una vez.
+
+---
+
+## ✅ PASO 1 — LA CAPA DE CARTERA (25/08/2026)
+
+### No hizo falta tocar `src/App.jsx`
+
+Era la parte que más preocupaba y resultó innecesaria. En `src/App.jsx`,
+línea ~1521, F5 hace:
+
+```js
+const enriched = items.map(({sym,q,p,r})=>({
+  symbol:sym, name:..., sector, price:..., pe:..., roe:..., score:...,
+  ...(valuations[sym]||{}),     // ← cantidad, precioCompra, valorActual,
+}))                             //    costoBase, gananciaUSD, gananciaPct, pctActual
+```
+
+y después `clientCacheSave(clientName, results, spy)` lo guarda entero en
+`localStorage`. **Las posiciones ya estaban ahí desde siempre.**
+
+Verificación de que el screener no se tocó: el bundle `main-*.js` sale con el
+**mismo hash** que antes del cambio (`main-wr6GwcBs.js`). Byte por byte.
+
+### 🐛 Y ahí apareció un bug silencioso
+
+`leerCarterasF5()` en `Selector.jsx` buscaba `d.holdings || d.tickers || d.rows`.
+El screener guarda `{fundData: {sector: [...]}, spy, timestamp}` — **ninguna de
+esas tres claves existe**.
+
+No fallaba: devolvía `[]`, el grupo no se agregaba, y el bloque **"Cartera
+propia" simplemente nunca aparecía** en el informe. Sin error, sin consola, sin
+nada. La única forma de notarlo era buscarlo.
+
+Ahora lee la forma real (con respaldo a la plana por si hay carteras viejas),
+saltea SPY, y trae de paso la antigüedad del snapshot para avisar si pasó de los
+7 días que dura el caché de F5.
+
+### `src/informe/cartera.js` (nuevo) — el segundo puntaje
+
+**Los dos puntajes no se promedian nunca.** Promediarlos daría un número sin
+significado: mezclaría "cuán buena es la empresa" con "cuánto tenés". Son
+preguntas distintas y se cruzan en una matriz explícita:
+
+|                | venta | neutral | compra |
+|---|---|---|---|
+| **sobrepeso**  | sacar | recortar | recortar (toma de ganancia) |
+| **en banda**   | sacar | mantener | reforzar |
+| **subpeso**    | sacar | consolidar o salir | reforzar |
+
+**Perfiles y el detalle que no es obvio.** Los topes salen del perfil elegido
+(conservador 8% / moderado 12% / agresivo 20% por posición). Pero un tope duro
+del 8% en una cartera de 6 activos marcaría **las seis** en sobrepeso, porque
+equiponderada ya da 16,7% cada una. Por eso:
+
+```
+topeGeneral = max(tope del perfil, factorEquiponderado × 100/N)
+```
+
+Así el informe señala concentración de verdad y no el hecho aritmético de tener
+pocas posiciones. Lo mismo con los sectores.
+
+**Clases** (derivadas de datos, decisión de Marcos): especulativo si no gana
+plata, o capitaliza menos de US$2.000 M, o beta > 1,8; core si capitaliza más de
+US$50.000 M y beta ≤ 1,2; growth el resto. **El orden importa**: primero se
+descarta lo especulativo, porque una empresa que pierde plata no es "core" por
+más grande que sea. Cada clase tiene su propio tope: Core 100% del general,
+Growth 75%, Especulativo 40%.
+
+**Take profit (punto 11)**: si un papel está sobre el tope, el veredicto NO es
+venta y gana más del 15%, se marca como toma de ganancia. La distinción es todo
+el punto: *recortar porque subió* y *salir porque la empresa está mal* son dos
+motivos de venta completamente distintos y el cliente tiene que verlos separados.
+
+**El monto**: cada recorte trae `excesoUSD`, cuánto vender para volver al tope.
+Sin monto la recomendación no se puede operar.
+
+### Qué cambió en el documento
+
+- **Portada**: valor total de la cartera y perfil aplicado.
+- **"Cuánto pesa cada cosa"** (nueva, solo si hay cantidades): composición por
+  clase, tabla de peso vs tope con estado y resultado latente, y los tres avisos
+  — sobre el tope, posiciones muy chicas, sectores excedidos.
+- **"Qué hacer con esta cartera"**: los contadores ahora salen de la matriz.
+  Nuevo bloque **"Conviene recortar — no por la empresa, por el tamaño"**, con
+  peso, tope, monto a vender y el motivo.
+- **Degradación**: sin cantidades, la sección de pesos **no se muestra** y todo
+  funciona como antes. No se inventa una equiponderación que nadie pidió.
+
+### Verificación — `prueba-pesos.jsx`
+
+Reproduce la forma **exacta** de `clientCacheSave` en un `localStorage` falso y
+cubre: lectura de las dos formas (actual y vieja), que SPY no entre como activo,
+la caducidad de 7 días, los 5 casos de clasificación, que **la matriz nunca
+devuelva "sacar" si el veredicto no es venta**, que los pesos sumen 100 en los
+tres perfiles, que el tope nunca quede por debajo del perfil, cartera parcial
+(algunos con cantidad y otros no), sin posiciones, perfil ausente, perfil
+inexistente y posiciones con basura (`null`, strings, tickers que no están).
+
+Y lo que más importa: que **ningún activo reciba dos recomendaciones distintas**
+en el mismo documento — el bloque "recortar" y la tabla "el resto" no se pisan.
+
+### Lo que el paso 1 NO resuelve
+
+- **Peso objetivo real por activo**: hoy hay topes, no objetivos. Un papel dentro
+  del tope no tiene "target" contra el cual estar corto o largo.
+- **Punto 6 (objetivo y horizonte)**: el perfil es un proxy. Falta el horizonte
+  temporal, que es lo que debería ponderar crecimiento contra dividendos.
+- **Costo de rotar (punto 20)**: el informe dice cuánto vender, no cuánto cuesta.
+
+---
+
+## 💡 CONSULTA DE MARCOS — bajar el histórico de precios de una vez
+
+Preguntó si en vez de pedirle a Twelve Data en cada corrida no se puede bajar
+todo el histórico una vez y guardarlo local. **Sí, y conviene** — no es
+prioridad, pero queda anotado con el análisis hecho.
+
+**La fuente debería ser yfinance, no Twelve Data.** El bot corre en la PC de
+Marcos, donde Yahoo sí responde, y `yf.download()` acepta muchos símbolos por
+llamada: ~640 papeles en tandas de 50 son 13 llamadas, minutos. Twelve Data en
+gratuito da 8 créditos por minuto y 800 por día: los mismos 640 papeles son
+~107 llamadas y **casi dos horas** de espera forzada.
+
+Lo que resolvería:
+- El bug de 429 en F2/F3/F4 desaparece: no habría llamadas en vivo.
+- F2/F3/F4 pasarían a ser instantáneas.
+- Habilita el punto **16** (P/E contra su propia historia) y el **12**
+  (correlación), que hoy no se pueden hacer.
+
+Lo que hay que mirar antes:
+- **Peso**: 640 símbolos × 5 años diarios ≈ 4-8 MB. Para correlaciones alcanza
+  con cierres **semanales**, que bajan eso a menos de 1 MB.
+- **Los números van a moverse**: Twelve Data y Yahoo ajustan dividendos distinto,
+  así que las volatilidades y correlaciones no van a dar idénticas. Hay que
+  correr las dos en paralelo sobre los mismos 10 tickers y comparar **antes** de
+  cambiar la fuente.
+- **Alineación de fechas**: papeles con menos historia (IPO reciente) necesitan
+  recorte a ventana común, si no la matriz de correlación sale sesgada.
+- `auto_adjust=True` obligatorio, o los splits arruinan los retornos.
+
+**Cómo probarlo sin riesgo**: el bot genera el snapshot, y F2/F3/F4 lo usan solo
+si existe, con Twelve Data como respaldo. Se comparan las dos salidas y recién
+cuando coinciden se saca el camino viejo.
+
+---
 
 ---
 
@@ -1534,6 +1680,24 @@ Todo esto está escrito en la carpeta y **todavía no subido**. Verificar con
 > Todo lo anterior (informe de cartera incluido) y el arreglo de Twelve Data en
 > `src/App.jsx` **ya fueron pusheados** por Marcos. Lo que sigue es la tanda del
 > **25/08/2026**: veredicto de 3 posiciones, foco en rotación y los CEDEARs.
+
+### Tanda del paso 1 (capa de cartera)
+
+**Nuevos**
+```
+src/informe/cartera.js       (perfiles, clases, pesos, matriz de los dos puntajes)
+```
+
+**Modificados**
+```
+src/informe/Selector.jsx     (lee bien la cartera de F5 + pasa las posiciones)
+src/informe/App.jsx          (estado de posiciones + selector de perfil)
+src/informe/Cartera.jsx      (seccion "Cuanto pesa cada cosa" + bloque de recorte)
+CONTEXTO_INFORME_AVANZADO.md
+```
+
+⚠️ **`src/App.jsx` NO se tocó.** Verificable: el bundle `main-*.js` sale con el
+mismo hash que antes (`main-wr6GwcBs.js`).
 
 **Nuevos — tanda 25/08/2026**
 ```

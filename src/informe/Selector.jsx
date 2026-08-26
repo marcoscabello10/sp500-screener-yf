@@ -27,6 +27,24 @@ export function guardarEnHistorial(ticker) {
 // El screener guarda la cartera de F5 con la clave sp500_client_{nombre}_v1.
 // Es la UNICA clave del screener que persiste algo util para nosotros: el
 // resultado filtrado de F1 vive solo en estado de React y se recalcula.
+//
+// ⚠️ FORMA REAL (verificada en src/App.jsx, clientCacheSave):
+//     { fundData: { "Technology": [ {symbol, sector, price, pe, ..., cantidad,
+//                                    precioCompra, valorActual, costoBase,
+//                                    gananciaUSD, gananciaPct, pctActual}, ... ],
+//                   "Financials": [ ... ] },
+//       spy: {...}, timestamp: 1724... }
+//
+// Antes esta funcion buscaba `holdings` / `tickers` / `rows`, que NO existen en
+// esa clave. El resultado no era un error: era silencio. `tickers` quedaba
+// vacio, el grupo no se agregaba, y el bloque "Cartera propia" simplemente
+// nunca aparecia en el informe. Nadie lo noto porque no habia nada que fallara.
+//
+// Y lo importante: el screener YA guarda cantidad, precio de compra y valor
+// por posicion. No hay que tocar App.jsx para tener los pesos; habia que
+// leerlos bien.
+const CADUCIDAD_DIAS = 7   // mismo CLIENT_CACHE_DAYS que usa el screener
+
 export function leerCarterasF5() {
   const out = []
   try {
@@ -34,13 +52,47 @@ export function leerCarterasF5() {
       const k = localStorage.key(i)
       if (!k || !k.startsWith('sp500_client_') || !k.endsWith('_v1')) continue
       const d = JSON.parse(localStorage.getItem(k))
-      const tickers = (d?.holdings || d?.tickers || d?.rows || [])
-        .map(x => (typeof x === 'string' ? x : x?.ticker || x?.symbol))
-        .filter(Boolean)
-      if (tickers.length) {
-        out.push({ nombre: k.replace('sp500_client_', '').replace('_v1', ''),
-                   tickers: [...new Set(tickers.map(t => String(t).toUpperCase()))] })
+      if (!d) continue
+
+      // forma actual: fundData agrupado por sector
+      let activos = []
+      if (d.fundData && typeof d.fundData === 'object' && !Array.isArray(d.fundData)) {
+        activos = Object.values(d.fundData).flat().filter(Boolean)
       }
+      // respaldo por si alguna version vieja guardo una lista plana
+      if (!activos.length) {
+        activos = (d.holdings || d.tickers || d.rows || [])
+          .map(x => (typeof x === 'string' ? { symbol: x } : x))
+          .filter(Boolean)
+      }
+
+      const posiciones = {}
+      const tickers = []
+      for (const a of activos) {
+        const t = String(a.symbol || a.ticker || '').toUpperCase().trim()
+        if (!t || t === 'SPY' || posiciones[t]) continue
+        tickers.push(t)
+        posiciones[t] = {
+          cantidad: a.cantidad ?? null,
+          precioCompra: a.precioCompra ?? null,
+          valorActual: a.valorActual ?? null,
+          costoBase: a.costoBase ?? null,
+          gananciaUSD: a.gananciaUSD ?? null,
+          gananciaPct: a.gananciaPct ?? null,
+          pctActual: a.pctActual ?? null,
+        }
+      }
+      if (!tickers.length) continue
+
+      const edadDias = d.timestamp ? (Date.now() - d.timestamp) / 86400000 : null
+      out.push({
+        nombre: k.replace('sp500_client_', '').replace('_v1', ''),
+        tickers,
+        posiciones,
+        conPesos: tickers.filter(t => posiciones[t].valorActual > 0).length,
+        edadDias: edadDias == null ? null : Math.round(edadDias * 10) / 10,
+        vencida: edadDias != null && edadDias > CADUCIDAD_DIAS,
+      })
     }
   } catch { /* si falla, simplemente no hay carteras */ }
   return out
@@ -146,6 +198,18 @@ export default function Selector({ universo, completos, onElegir, onCartera, car
 
   const historial = useMemo(() => leerHistorial(), [])
   const carteras = useMemo(() => leerCarterasF5(), [])
+
+  // Las posiciones (cantidad, precio de compra, valor) de TODAS las carteras de
+  // F5 en un solo mapa. La seleccion mezcla activos de varios origenes —
+  // buscador, cartera propia, historial — asi que al generar el informe se
+  // manda solo el pedazo que corresponde a lo seleccionado. Un activo elegido
+  // desde el buscador simplemente no tiene posicion, y el informe lo trata
+  // como cartera propuesta en vez de cartera existente.
+  const posicionesF5 = useMemo(() => {
+    const m = {}
+    for (const c of carteras) Object.assign(m, c.posiciones || {})
+    return m
+  }, [carteras])
 
   async function procesar(file) {
     setErrorArchivo(null); setSubidos(null)
@@ -265,6 +329,15 @@ export default function Selector({ universo, completos, onElegir, onCartera, car
       {/* ── Cartera propia ── */}
       {carteras.map(c => (
         <Grupo key={c.nombre} titulo={`Cartera propia — ${c.nombre}`}
+               subtitulo={
+                 (c.conPesos
+                   ? `${c.conPesos} de ${c.tickers.length} con cantidad y precio de compra: `
+                     + 'el informe puede analizar pesos y rotación.'
+                   : 'Sin cantidades en el Excel: se analiza como lista, sin pesos.')
+                 + (c.vencida
+                     ? ` ⚠ El snapshot de F5 tiene ${c.edadDias} días; volvé a correr F5 para actualizar precios.`
+                     : '')
+               }
                activos={c.tickers.map(t => ({ ticker: t, nombre: nombreDe(universo, t) }))}
                onElegir={onElegir} cargando={cargando} completos={completos}
                seleccion={seleccion} alternar={alternar}
@@ -293,7 +366,10 @@ export default function Selector({ universo, completos, onElegir, onCartera, car
           <button onClick={() => setSeleccion(new Set())}
             style={{ background: 'none', border: 'none', color: C.tenue,
                      fontSize: 13.5 }}>Limpiar</button>
-          <button onClick={() => onCartera([...seleccion])} disabled={cargando}
+          <button onClick={() => onCartera([...seleccion],
+                    Object.fromEntries([...seleccion]
+                      .filter(t => posicionesF5[t])
+                      .map(t => [t, posicionesF5[t]])))} disabled={cargando}
             style={{ marginLeft: 'auto', background: C.acento, color: '#fff',
                      border: 'none', borderRadius: 7, padding: '9px 18px',
                      fontSize: 14, fontWeight: 600, opacity: cargando ? .5 : 1 }}>

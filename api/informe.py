@@ -19,7 +19,7 @@ funcionando igual y la tesis simplemente no se ofrece.
 --------------------------------
 Yahoo bloquea IPs de datacenter. **Este archivo NUNCA llama a Yahoo.** Todo
 dato de Yahoo entra por los snapshots que genera el bot local. La SEC si acepta
-IPs de cloud, asi que EDGAR se consulta en vivo desde aca.
+IPs de cloud, así que EDGAR se consulta en vivo desde acá.
 
 Endpoints
 ---------
@@ -75,21 +75,21 @@ SECTOR_OCULTAR = {
 
 SECTOR_NOTAS = {
     'Real Estate': {
-        'pe': 'En REITs el P/E esta inflado porque la depreciacion aplasta la '
-              'ganancia contable. El multiplo correcto seria FFO, que no esta '
+        'pe': 'En REITs el P/E está inflado porque la depreciación aplasta la '
+              'ganancia contable. El múltiplo correcto sería FFO, que no está '
               'en esta fuente. Mediana del sector: 33,4x.',
     },
     'Utilities': {
-        'de': 'En Utilities la deuda alta es estructural, no una senal de '
+        'de': 'En Utilities la deuda alta es estructural, no una señal de '
               'alarma: la mediana del sector es 1,6 contra 0,6 en Technology. '
               'Por eso se compara contra el sector y no contra un umbral fijo.',
     },
     'Energy': {
-        'pe': 'Energy es ciclico: un P/E bajo en el pico del ciclo es la trampa '
-              'de valor clasica. Mirar el CAGR a 5 y 10 anios, no a 3.',
+        'pe': 'Energy es cíclico: un P/E bajo en el pico del ciclo es la trampa '
+              'de valor clásica. Mirar el CAGR a 5 y 10 años, no a 3.',
     },
     'Financials': {
-        'pb': 'En bancos el P/B y el ROE son los multiplos que mandan, no el '
+        'pb': 'En bancos el P/B y el ROE son los múltiplos que mandan, no el '
               'EV/EBITDA ni la deuda neta.',
     },
 }
@@ -122,7 +122,7 @@ def _sec_json(url):
 
 
 def base_publica():
-    """URL del propio deploy. Solo se usa como ULTIMO recurso."""
+    """URL del propio deploy. Solo se usa como Último recurso."""
     for var in ('VERCEL_PROJECT_PRODUCTION_URL', 'VERCEL_URL', 'VERCEL_BRANCH_URL'):
         v = os.environ.get(var)
         if v:
@@ -140,17 +140,17 @@ RUTAS_DATOS = ('public/data', '../public/data', '/var/task/public/data',
 def estatico(nombre):
     """Lee un JSON de public/data/.
 
-    PRIMERO del disco de la propia funcion (via includeFiles en vercel.json) y
+    PRIMERO del disco de la propia función (via includeFiles en vercel.json) y
     solo si no esta, por HTTP contra el propio deploy.
 
     Por que en ese orden: pedirselo al propio deploy por HTTP falla si Vercel
-    tiene Deployment Protection activa — la funcion recibe un 401 y todo el
+    tiene Deployment Protection activa — la función recibe un 401 y todo el
     endpoint devuelve 500. Leer del disco no depende de la red ni de la
-    autenticacion, y ademas es mucho mas rapido (informe_detalle.json pesa
+    autenticación, y además es mucho más rápido (informe_detalle.json pesa
     ~1,2 MB).
 
     Se cachea en memoria mientras viva la instancia: estos archivos los genera
-    el bot local y cambian una vez por dia como mucho."""
+    el bot local y cambian una vez por día como mucho."""
     if nombre in _cache_estatico:
         return _cache_estatico[nombre]
 
@@ -195,8 +195,8 @@ def cik_de(ticker):
 
 
 def anuales(filas):
-    """Solo periodos anuales de 10-K, con las reformulaciones pisando al dato
-    viejo (se queda con la de 'filed' mas reciente por fecha de cierre)."""
+    """Solo períodos anuales de 10-K, con las reformulaciones pisando al dato
+    viejo (se queda con la de 'filed' más reciente por fecha de cierre)."""
     por_cierre = {}
     for e in filas:
         try:
@@ -223,15 +223,15 @@ def traer_concepto(cik, grupo):
     orden importa:
 
       1. RECENCIA primero: solo compiten los tags cuya serie llega hasta el
-         ultimo ejercicio disponible (tolerancia de ~1 anio).
-      2. Entre esos, gana el que mas anios traiga.
+         último ejercicio disponible (tolerancia de ~1 año).
+      2. Entre esos, gana el que más años traiga.
 
     Por que en ese orden — los dos bugs reales que lo motivaron:
-      - Solo "el primero con datos": CAT devolvia NetIncomeLoss con 4 anios
+      - Solo "el primero con datos": CAT devolvia NetIncomeLoss con 4 años
         que terminaban en 2010.
-      - Solo "el que mas anios trae": AAPL devolvia SalesRevenueNet con 11
-        anios... que terminaban en 2017, porque Apple dejo de usar ese tag.
-        El CAGR se calculaba sobre datos de hace ocho anios.
+      - Solo "el que más años trae": AAPL devolvia SalesRevenueNet con 11
+        años... que terminaban en 2017, porque Apple dejo de usar ese tag.
+        El CAGR se calculaba sobre datos de hace ocho años.
     """
     candidatos = []
     for tag in CONCEPTOS[grupo]:
@@ -258,7 +258,7 @@ def traer_concepto(cik, grupo):
 
 
 def _menos_un_anio(fecha_iso):
-    """Tolerancia: un ejercicio fiscal puede cerrar unos dias antes o despues."""
+    """Tolerancia: un ejercicio fiscal puede cerrar unos días antes o después."""
     try:
         return f'{int(fecha_iso[:4]) - 1}{fecha_iso[4:]}'
     except Exception:
@@ -325,7 +325,7 @@ def cagr(serie, anios):
 def cagr_seguro(serie, anios, saltos):
     """Se niega a cruzar una discontinuidad sin resolver.
 
-    Vale mas un None que un numero con el signo dado vuelta: el EPS de LRCX
+    Vale más un None que un número con el signo dado vuelta: el EPS de LRCX
     daba -26,5% sin corregir cuando en realidad crecia 16,4%."""
     if not serie or len(serie) < anios + 1:
         return None
@@ -337,14 +337,14 @@ def cagr_seguro(serie, anios, saltos):
 
 
 def historico_edgar(ticker):
-    """Todo el bloque historico de un activo. Devuelve avisos en vez de romper
+    """Todo el bloque histórico de un activo. Devuelve avisos en vez de romper
     cuando la empresa no reporta a la SEC."""
     out = {'disponible': False, 'avisos': []}
     cik = cik_de(ticker)
     if not cik:
         out['avisos'].append(
-            f'{ticker} no figura en el registro de la SEC, asi que no hay '
-            f'historico auditado. El resto del informe no se ve afectado.')
+            f'{ticker} no figura en el registro de la SEC, así que no hay '
+            f'histórico auditado. El resto del informe no se ve afectado.')
         return out
     out['cik'] = cik
 
@@ -405,11 +405,11 @@ def historico_edgar(ticker):
         if s['tipo'] == 'split':
             out['avisos'].append(
                 f"Split detectado en {s['fecha'][:7]} (factor {s['factor']:g}). "
-                f"Las series de EPS y acciones estan corregidas.")
+                f"Las series de EPS y acciones están corregidas.")
         else:
             out['avisos'].append(
                 f"Salto de {s['ratio']}x en las acciones en {s['fecha'][:7]} "
-                f"que no se pudo confirmar como split (puede ser emision, "
+                f"que no se pudo confirmar como split (puede ser emisión, "
                 f"fusion o salida a bolsa). Los CAGR que cruzan esa fecha "
                 f"quedan sin calcular a proposito.")
     return out
@@ -419,11 +419,11 @@ def historico_edgar(ticker):
 # Percentiles contra el sector
 # ─────────────────────────────────────────────────────────────────────────────
 def percentil(valor, valores, menor_es_mejor=False):
-    """Posicion dentro del sector, 0-100, donde 100 = mejor.
+    """Posición dentro del sector, 0-100, donde 100 = mejor.
 
-    Para los multiplos donde "menor es mejor" se descartan los valores <= 0:
+    Para los múltiplos donde "menor es mejor" se descartan los valores <= 0:
     un P/E o un forward P/E negativo NO significa barato, significa que la
-    empresa pierde plata. Sin este filtro RGTI puntuaba 100/100 en valuacion."""
+    empresa pierde plata. Sin este filtro RGTI puntuaba 100/100 en valuación."""
     if menor_es_mejor:
         valores = [x for x in valores if x is not None and x > 0]
         if valor is not None and valor <= 0:
@@ -489,6 +489,18 @@ PENALIZACION_GRAVE = 18.0
 
 SIN_DATOS = 'sin datos suficientes'
 
+# Los bloques viajan con su identificador SIN acento ('valuacion'), porque es la
+# clave con la que los lee el front. El nombre que se imprime va aparte: si se
+# deriva del identificador con un .replace(), al cliente le llega "valuacion"
+# en un documento donde todo lo demas esta acentuado.
+BLOQUE_TEXTO = {
+    'valuacion':        'valuación',
+    'crecimiento':      'crecimiento',
+    'salud_financiera': 'salud financiera',
+    'dividendos':       'dividendos',
+    'consenso':         'consenso',
+}
+
 # Como se lee el mismo veredicto cuando el papel YA esta en la cartera. Es la
 # misma decision mirada desde el otro lado: no es una escala nueva.
 ACCION_CARTERA = {
@@ -501,13 +513,13 @@ ACCION_CARTERA = {
 ACLARACION_VEREDICTO = (
     'COMPRA / NEUTRAL / VENTA resume los bloques que se pudieron calcular y '
     'las banderas rojas. Es una lectura de fundamentales a la fecha del dato, '
-    'no una recomendacion personalizada: no conoce tu horizonte, tu impuesto '
+    'no una recomendación personalizada: no conoce tu horizonte, tu impuesto '
     'ni cuanto pesa el papel en tu cartera.')
 
 
 def veredicto_de(puntaje, graves):
     """(etiqueta, topeada_por_bandera). Unico lugar donde se decide la etiqueta:
-    lo usan el informe individual y el de cartera, asi no pueden divergir."""
+    lo usan el informe individual y el de cartera, así no pueden divergir."""
     if puntaje is None:
         return SIN_DATOS, False
     if puntaje >= UMBRAL_COMPRA:
@@ -520,7 +532,7 @@ def veredicto_de(puntaje, graves):
 def recomendacion_legible(cons, detalle):
     """Yahoo manda el STRING 'none' en 32 papeles, y 29 de ellos SI tienen
     analistas y precio objetivo — solo falta el promedio agregado. En ese caso
-    lo reconstruimos desde la distribucion de recomendaciones."""
+    lo reconstruimos desde la distribución de recomendaciones."""
     clave = cons.get('recommendationKey')
     if clave and clave != 'none':
         return {'etiqueta': RECOMENDACION_TEXTO.get(clave, clave),
@@ -543,7 +555,7 @@ def recomendacion_legible(cons, detalle):
 
 
 def evaluar(ticker, fund, cons, detalle, hist, sec):
-    """Produce las senales. Cada una dice QUE pasa y POR QUE, para que el
+    """Produce las señales. Cada una dice QUE pasa y POR QUE, para que el
     veredicto nunca sea una etiqueta suelta."""
     sector = fund.get('sector')
     ocultar = SECTOR_OCULTAR.get(sector, set())
@@ -563,13 +575,13 @@ def evaluar(ticker, fund, cons, detalle, hist, sec):
     val_puntos, val_notas = [], []
     if pe is None:
         val_notas.append('Sin P/E: la empresa no tiene ganancias positivas, '
-                         'asi que el multiplo no existe. Se mira ventas y caja.')
+                         'así que el múltiplo no existe. Se mira ventas y caja.')
     if pe and fpe and fpe < pe * 0.75:
         val_notas.append(
             f'El P/E adelantado ({fpe:.1f}x) es muy inferior al actual '
-            f'({pe:.1f}x): el mercado espera un salto de ganancias, asi que '
-            f'juzgarla por el multiplo de hoy la hace parecer mas cara de lo '
-            f'que esta.')
+            f'({pe:.1f}x): el mercado espera un salto de ganancias, así que '
+            f'juzgarla por el múltiplo de hoy la hace parecer más cara de lo '
+            f'que está.')
         hechos.append(f'P/E actual {pe:.1f}x vs adelantado {fpe:.1f}x')
     if peg is not None:
         val_puntos.append(70 if peg < 1 else 50 if peg < 2 else 25)
@@ -580,6 +592,7 @@ def evaluar(ticker, fund, cons, detalle, hist, sec):
         if p is not None:
             val_puntos.append(p)
     senales.append({'bloque': 'valuacion',
+                    'titulo': BLOQUE_TEXTO['valuacion'],
                     'puntaje': round(sum(val_puntos) / len(val_puntos), 1) if val_puntos else None,
                     'notas': val_notas})
 
@@ -589,45 +602,46 @@ def evaluar(ticker, fund, cons, detalle, hist, sec):
     r3, r5, r10 = c.get('revenue_3a'), c.get('revenue_5a'), c.get('revenue_10a')
     if r5 is not None:
         cre_puntos.append(min(100, max(0, 50 + r5 * 2.5)))
-        cre_notas.append(f'Ingresos: {r5:+.1f}% anual a 5 anios' +
+        cre_notas.append(f'Ingresos: {r5:+.1f}% anual a 5 años' +
                          (f', {r3:+.1f}% a 3.' if r3 is not None else '.'))
         hechos.append(f'CAGR de ingresos 5a {r5:+.1f}%')
     if r10 is not None:
-        cre_notas.append(f'A 10 anios: {r10:+.1f}% anual.')
+        cre_notas.append(f'A 10 años: {r10:+.1f}% anual.')
     if r3 is not None and r5 is not None and abs(r3 - r5) > 6:
         cre_notas.append(
-            f'Ojo con la ventana: a 3 anios da {r3:+.1f}% y a 5 {r5:+.1f}%'
+            f'Ojo con la ventana: a 3 años da {r3:+.1f}% y a 5 {r5:+.1f}%'
             + (f' y a 10 {r10:+.1f}%' if r10 is not None else '')
-            + '. La diferencia viene del anio base, no del negocio.')
+            + '. La diferencia viene del año base, no del negocio.')
     # choque entre ventana anual y trimestral (caso RGTI)
     rev_tri = fund.get('revGrowth')
     if r3 is not None and rev_tri is not None and (r3 < 0 < rev_tri - 20 or rev_tri < 0 < r3 - 20):
         cre_notas.append(
-            f'CONTRADICCION: el CAGR anual da {r3:+.1f}% pero el crecimiento '
-            f'del ultimo trimestre contra el mismo del anio anterior da '
+            f'Contradicción: el CAGR anual da {r3:+.1f}% pero el crecimiento '
+            f'del último trimestre contra el mismo del año anterior da '
             f'{rev_tri:+.1f}%. Las dos cifras son correctas y dicen cosas '
             f'opuestas — mirar las dos antes de concluir.')
-        hechos.append(f'contradiccion: CAGR anual {r3:+.1f}% vs trimestral {rev_tri:+.1f}%')
+        hechos.append(f'contradicción: CAGR anual {r3:+.1f}% vs trimestral {rev_tri:+.1f}%')
 
     # recompras vs dilucion
     a5, e5, n5 = c.get('acciones_5a'), c.get('eps_5a'), c.get('net_income_5a')
     if a5 is not None:
         if a5 < -1:
             cre_notas.append(
-                f'Recompras: {abs(a5):.1f}% menos acciones por anio.' +
+                f'Recompras: {abs(a5):.1f}% menos acciones por año.' +
                 (f' Parte del crecimiento del EPS ({e5:+.1f}%) viene de ahi y no '
                  f'del negocio, que gana {n5:+.1f}%.' if (e5 is not None and n5 is not None
                                                           and e5 > n5 + 1.5) else ''))
-            hechos.append(f'recompras {abs(a5):.1f}%/anio')
+            hechos.append(f'recompras {abs(a5):.1f}%/año')
         elif a5 > 3:
             cre_puntos.append(20)
             cre_notas.append(
-                f'DILUCION: {a5:+.1f}% mas acciones por anio.' +
+                f'Dilución: {a5:+.1f}% más acciones por año.' +
                 (f' Por eso el EPS crece {e5:+.1f}% aunque la empresa gane '
-                 f'{n5:+.1f}%: tu porcion se achica.' if (e5 is not None and n5 is not None)
+                 f'{n5:+.1f}%: tu porción se achica.' if (e5 is not None and n5 is not None)
                  else ''))
-            hechos.append(f'dilucion {a5:+.1f}%/anio')
+            hechos.append(f'dilución {a5:+.1f}%/año')
     senales.append({'bloque': 'crecimiento',
+                    'titulo': BLOQUE_TEXTO['crecimiento'],
                     'puntaje': round(sum(cre_puntos) / len(cre_puntos), 1) if cre_puntos else None,
                     'notas': cre_notas})
 
@@ -636,18 +650,18 @@ def evaluar(ticker, fund, cons, detalle, hist, sec):
     if 'netDebt' in ocultar:
         sal_notas.append(
             'En bancos y aseguradoras la deuda neta y el EV/EBITDA no se '
-            'muestran: los depositos entran como caja y el numero no significa '
+            'muestran: los depósitos entran como caja y el número no significa '
             'nada. Se mira P/B y ROE.')
     else:
         nd, nde = cons.get('netDebt'), cons.get('netDebtToEbitda')
         if nd is not None and nd < 0:
             sal_notas.append(f'Caja neta positiva: tiene {abs(nd)/1e9:.1f} mil '
-                             f'millones mas en caja que en deuda.')
+                             f'millones más en caja que en deuda.')
             sal_puntos.append(85)
         elif nde is not None:
             sal_puntos.append(85 if nde < 1 else 60 if nde < 3 else 25)
             sal_notas.append(f'Deuda neta sobre EBITDA: {nde:.1f}x' +
-                             (' — comoda.' if nde < 1 else ' — manejable.' if nde < 3
+                             (' — cómoda.' if nde < 1 else ' — manejable.' if nde < 3
                               else ' — exigente.'))
         p = pct('netDebtToEbitda', nde)
         if p is not None:
@@ -655,7 +669,7 @@ def evaluar(ticker, fund, cons, detalle, hist, sec):
     fcf = cons.get('fcfYieldPct')
     if fcf is not None:
         sal_notas.append(f'Rendimiento del flujo libre: {fcf:.1f}% sobre la '
-                         f'capitalizacion.')
+                         f'capitalización.')
         hechos.append(f'FCF yield {fcf:.1f}%')
         p = pct('fcfYieldPct', fcf)
         if p is not None:
@@ -666,10 +680,11 @@ def evaluar(ticker, fund, cons, detalle, hist, sec):
         delta = mb[ks[-1]] - mb[ks[0]]
         if abs(delta) > 3:
             sal_notas.append(
-                f'Margen bruto {"en expansion" if delta > 0 else "en compresion"}: '
+                f'Margen bruto {"en expansión" if delta > 0 else "en compresión"}: '
                 f'de {mb[ks[0]]:.1f}% a {mb[ks[-1]]:.1f}% desde {ks[0][:4]}.')
             hechos.append(f'margen bruto {mb[ks[0]]:.1f}% -> {mb[ks[-1]]:.1f}%')
     senales.append({'bloque': 'salud_financiera',
+                    'titulo': BLOQUE_TEXTO['salud_financiera'],
                     'puntaje': round(sum(sal_puntos) / len(sal_puntos), 1) if sal_puntos else None,
                     'notas': sal_notas})
 
@@ -689,6 +704,7 @@ def evaluar(ticker, fund, cons, detalle, hist, sec):
     else:
         div_notas.append('No paga dividendos.')
     senales.append({'bloque': 'dividendos',
+                    'titulo': BLOQUE_TEXTO['dividendos'],
                     'puntaje': round(sum(div_puntos) / len(div_puntos), 1) if div_puntos else None,
                     'notas': div_notas})
 
@@ -709,19 +725,20 @@ def evaluar(ticker, fund, cons, detalle, hist, sec):
     if disp is not None:
         if disp > 90:
             con_notas.append(
-                f'Dispersion del precio objetivo: {disp:.0f}%, muy por encima '
-                f'de la mediana del mercado (40%). Eso no es conviccion, es '
+                f'Dispersión del precio objetivo: {disp:.0f}%, muy por encima '
+                f'de la mediana del mercado (40%). Eso no es convicción, es '
                 f'desacuerdo profundo entre analistas.')
             con_puntos.append(35)
-            hechos.append(f'dispersion alta {disp:.0f}%')
+            hechos.append(f'dispersión alta {disp:.0f}%')
         elif disp == 0:
             con_notas.append('Todos los analistas con el mismo precio objetivo '
-                             'exacto: mas probable que sea dato desactualizado '
+                             'exacto: más probable que sea dato desactualizado '
                              'que unanimidad real.')
     if n_an is not None and n_an < 5:
         con_notas.append(f'Solo {n_an} analistas cubren el papel: el consenso '
                          f'pesa poco.')
     senales.append({'bloque': 'consenso',
+                    'titulo': BLOQUE_TEXTO['consenso'],
                     'puntaje': round(sum(con_puntos) / len(con_puntos), 1) if con_puntos else None,
                     'notas': con_notas, 'recomendacion': rec})
 
@@ -741,22 +758,22 @@ def evaluar(ticker, fund, cons, detalle, hist, sec):
                                  f'distinto del presente.'})
     if a5 is not None and a5 > 10:
         riesgos.append({'codigo': 'dilucion_fuerte', 'severidad': 'alta',
-                        'texto': f'Emite {a5:.0f}% mas acciones por anio. Aunque '
-                                 f'el negocio crezca, tu porcion se achica.'})
+                        'texto': f'Emite {a5:.0f}% más acciones por año. Aunque '
+                                 f'el negocio crezca, tu porción se achica.'})
     beta = cons.get('beta')
     if beta and beta > 1.8:
         riesgos.append({'codigo': 'volatilidad', 'severidad': 'media',
-                        'texto': f'Beta {beta:.2f}: se mueve mucho mas que el '
+                        'texto': f'Beta {beta:.2f}: se mueve mucho más que el '
                                  f'mercado en las dos direcciones.'})
     sf = cons.get('shortPercentOfFloat')
     if sf and sf > 0.10:
         riesgos.append({'codigo': 'short_alto', 'severidad': 'media',
-                        'texto': f'{sf*100:.1f}% del capital flotante esta vendido '
+                        'texto': f'{sf*100:.1f}% del capital flotante está vendido '
                                  f'en corto: hay una apuesta grande en contra.'})
     dmax = cons.get('desdeMaximo52wPct')
     if dmax is not None and dmax < -40:
         riesgos.append({'codigo': 'lejos_del_maximo', 'severidad': 'media',
-                        'texto': f'Cotiza {abs(dmax):.0f}% por debajo de su maximo '
+                        'texto': f'Cotiza {abs(dmax):.0f}% por debajo de su máximo '
                                  f'de 52 semanas.'})
     for s in (hist.get('avisos') or []):
         if 'no se pudo confirmar' in s:
@@ -772,7 +789,7 @@ def evaluar(ticker, fund, cons, detalle, hist, sec):
         global_ = round(max(0.0, global_ - PENALIZACION_GRAVE * len(graves)), 1)
 
     etiqueta, cap = veredicto_de(global_, graves)
-    porque = [f"{s['bloque'].replace('_', ' ')}: {s['puntaje']:.0f}/100"
+    porque = [f"{BLOQUE_TEXTO.get(s['bloque'], s['bloque'])}: {s['puntaje']:.0f}/100"
               for s in senales if s['puntaje'] is not None]
     if graves:
         porque.append(
@@ -842,11 +859,11 @@ def armar_datos(ticker):
     sector_final = (fund or {}).get('sector') or (detalle or {}).get('sector')
     if not sector_final:
         return None, (
-            f'{ticker} no tiene sector asignado, asi que no es una empresa '
-            f'individual: casi seguro es un ETF o un indice. Todo el informe se '
+            f'{ticker} no tiene sector asignado, así que no es una empresa '
+            f'individual: casi seguro es un ETF o un índice. Todo el informe se '
             f'construye comparando contra las empresas del mismo sector, y sin '
             f'sector no hay contra que comparar. Para un ETF mira su composicion, '
-            f'no sus multiplos.')
+            f'no sus múltiplos.')
     if fund is None:      # fuera del S&P 500: los datos vienen del detalle
         fund = {k: detalle.get(k) for k in
                 ('symbol', 'name', 'sector', 'price', 'changePercent', 'marketCap',
@@ -862,13 +879,13 @@ def armar_datos(ticker):
     avisos = list(hist.get('avisos') or [])
     if not completo:
         avisos.insert(0,
-            f'Informe REDUCIDO: {ticker} no esta en informe_detalle.json, asi '
+            f'Informe REDUCIDO: {ticker} no está en informe_detalle.json, así '
             f'que faltan el consenso a futuro y el sentimiento. Para el informe '
             f'completo agregalo a local_bot/tickers_informe.txt y corre '
             f'fetch_informe.py.')
     if sec['n'] < 25:
         avisos.append(f'El sector {fund.get("sector")} tiene solo {sec["n"]} '
-                      f'empresas en el indice: los percentiles son ruidosos.')
+                      f'empresas en el índice: los percentiles son ruidosos.')
 
     return {
         'ticker': ticker,
@@ -909,8 +926,8 @@ def armar_datos(ticker):
         'sentimiento': (detalle or {}).get('sentimiento'),
         'consenso_forward': (detalle or {}).get('consenso_forward'),
         'avisos': avisos,
-        'descargo': 'Este informe es analisis automatizado sobre datos publicos '
-                    'y NO constituye recomendacion de inversion. Verifica las '
+        'descargo': 'Este informe es análisis automatizado sobre datos públicos '
+                    'y NO constituye recomendación de inversión. Verifica las '
                     'cifras antes de operar.',
     }, None
 
@@ -918,7 +935,7 @@ def armar_datos(ticker):
 def diagnostico():
     """Chequea una por una las dependencias del endpoint y devuelve 200 SIEMPRE.
 
-    Existe para no adivinar: si algo falla en produccion, esta URL dice
+    Existe para no adivinar: si algo falla en producción, esta URL dice
     exactamente que pieza es. No consume LLM ni cuesta nada."""
     out = {'ok': True, 'entorno': {}, 'archivos': {}, 'sec': {}}
 
@@ -1001,13 +1018,13 @@ class handler(BaseHTTPRequestHandler):
                 # depende de esto: el informe se ve completo igual.
                 if not os.environ.get('ANTHROPIC_API_KEY') and not os.environ.get('OPENAI_API_KEY'):
                     return self._responder(501, {
-                        'error': 'La redaccion de la tesis todavia no esta '
+                        'error': 'La redacción de la tesis todavía no está '
                                  'configurada. Falta cargar la API key en las '
                                  'variables de entorno de Vercel.',
                         'sin_costo': True})
                 return self._responder(501, {'error': 'Pendiente de implementar.'})
 
-            return self._responder(400, {'error': f'Accion desconocida: {accion}'})
+            return self._responder(400, {'error': f'Accion desconocida: {acción}'})
 
         except Exception as e:
             import traceback

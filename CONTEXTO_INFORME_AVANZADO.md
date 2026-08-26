@@ -1385,6 +1385,147 @@ después de esta tanda, **este es el motivo y no otro**.
 
 ---
 
+## 🔤 ACENTOS Y BUSCADOR (25/08/2026, después del push)
+
+### El buscador no dejaba comparar
+
+`Selector.jsx` renderizaba los resultados de la búsqueda con `<Chip>` **sin**
+`seleccionado` ni `onAlternar`, así que no aparecía la casilla y el clic iba
+directo al informe individual. Los grupos de cartera propia e historial sí las
+pasaban: era el mismo componente usado de dos formas distintas. Dos props.
+
+De paso: el pie flotante decía *"1 activos seleccionados"*.
+
+### Todo el texto del endpoint estaba sin tildes
+
+No era solo "anios". **`api/informe.py` entero estaba escrito en ASCII** — y
+esas cadenas son el cuerpo del informe que recibe el cliente: "valuacion",
+"dilucion", "multiplo", "capitalizacion", "recomendacion", "ciclico",
+"depositos". El front (JSX) sí tenía acentos, así que el documento mezclaba
+los dos y se notaba.
+
+Se acentuaron **76 literales**, con `tokenize` para tocar solo los tokens de
+tipo STRING. Verificado extrayendo todo el texto que ve el cliente sobre 16
+tickers reales y revisando las 294 palabras distintas una por una.
+
+Los acentos viajan sin problema: `json.dumps` los escapa a `\uXXXX` y el
+navegador los reconstruye.
+
+### 🐛 El bug que esto se llevó puesto — y por qué ahora hay un test de contrato
+
+El reemplazo automático sobre literales también renombró **claves de
+diccionario**: `'senales'` → `'señales'`, `'accion'` → `'acción'`,
+`'historico'` → `'histórico'`, `'bloque': 'valuacion'` → `'valuación'`.
+
+Lo peligroso es cómo se veía: **el archivo compilaba, el endpoint devolvía
+200 y el JSON era válido.** Lo que se rompía estaba del otro lado — el front
+leía `d.senales`, recibía `undefined`, y el informe salía en blanco sin un
+solo error en consola. Lo agarró la corrida de pruebas, no la lectura del
+diff.
+
+Se revirtieron las 10 claves y se agregó **`test/test_contrato.py`**, que
+congela: el set exacto de claves de la raíz, del veredicto y de cada señal;
+que la etiqueta esté siempre dentro de `compra/neutral/venta/sin datos`; que
+la acción esté dentro de `reforzar/mantener/sacar/revisar a mano`; que
+**ninguna clave lleve tilde**; y que **ningún texto del cliente esté sin
+tilde**. Las dos mitades de la misma regla, en el mismo test.
+
+### `titulo` en cada señal
+
+`porque` armaba el texto con `bloque.replace('_', ' ')`, así que imprimía
+"valuacion: 30/100" — el identificador, sin acento, en un documento donde todo
+lo demás sí lo tenía. Ahora cada señal viaja con `titulo` ya acentuado
+(`BLOQUE_TEXTO` en el endpoint) y el front lo usa con respaldo al identificador
+para informes cacheados de antes.
+
+---
+
+## 🧭 LAS 20 MEJORAS DE CARTERA — análisis y plan (25/08/2026)
+
+Marcos pasó una lista de 20 mejoras en tiers (S/A/B/C) y pidió pensarla antes
+de tocar nada: qué puede hacer la IA, qué hay que agregar al bot o al snapshot,
+y qué parte conviene automatizar.
+
+### El hallazgo que reordena todo
+
+**`src/App.jsx` (F5) ya calcula, por posición: `cantidad`, `precioCompra`,
+`pctExcel`, `valorActual`, `costoBase`, `gananciaUSD`, `gananciaPct` y
+`pctActual`.** Está desde la línea 1458. El Excel del cliente ya se parsea con
+esas columnas, y hay respaldo para cuando viene solo la lista de tickers.
+
+**El informe de cartera no recibe nada de eso.** Trata todos los activos por
+igual — decisión del 24/08, tomada cuando el informe todavía no apuntaba a
+rotación.
+
+Consecuencia: los puntos **2, 3, 4 y 5 del Tier S no necesitan IA, ni datos
+nuevos, ni bot**. Necesitan que el informe reciba un dato que ya existe.
+
+### Los 20 agrupados por lo que REQUIEREN (no por tier)
+
+| grupo | puntos | qué hace falta |
+|---|---|---|
+| 🟢 Ya se puede | 1, 2, 3, 4, 5, 11 | pasar los pesos de F5 al informe |
+| 🔵 Input del usuario | 6, peso objetivo del 2, clasificación del 3 | no hay IA que lo adivine |
+| 🟡 Dato nuevo en el bot | 16, 12, 8, 15 | ver abajo |
+| 🟣 Acá sí la IA | 14, 9, 18, 13, resumen ejecutivo | juicio, no aritmética |
+| ⚪ Derivable de lo que hay | 17, 7, 10, 19 | solo código |
+| ⚫ Input aparte | 20 | comisiones y régimen impositivo |
+
+Detalle del grupo 🟡:
+
+- **16 (P/E vs su propia historia)** — el EPS histórico ya lo trae EDGAR; falta
+  la **serie de precios**. Es lo más caro de toda la lista.
+- **12 (correlación)** — necesita retornos históricos. El screener los saca de
+  Twelve Data en F3, pero el informe **no puede llamar a Twelve Data**
+  (8 créditos/minuto, y ya nos costó el bug de F2/F3/F4). Habría que
+  snapshotear una matriz desde el bot.
+- **8 (quality of growth)** — márgenes y FCF ya están; falta **ROIC**, que pide
+  tags nuevos de EDGAR (capital invertido).
+- **15 (catalysts)** — `upgrades_downgrades` ya está; falta la fecha del
+  próximo earnings.
+
+### Regla: la IA no calcula, juzga
+
+Los números los hace el código. El modelo recibe los números **ya calculados**
+y escribe el juicio. Dos razones: la regla de gasto que puso Marcos, y que un
+LLM haciendo aritmética sobre 280 activos sale caro y con peor precisión que
+un `for`.
+
+### Por qué el punto 1 va primero
+
+Separar Fundamental Score de Portfolio Score no es una mejora más: es lo que
+ordena las otras 19. El Fundamental Score ya existe — es el veredicto
+compra/neutral/venta. El Portfolio Score es una capa arriba (peso,
+concentración, correlación, objetivo). Separarlos ahora hace que 2 a 20 se
+enchufen; dejarlo para después obliga a rehacer lo del medio.
+
+### ✅ Decisiones de Marcos (25/08/2026)
+
+1. **Peso objetivo: por perfil, con topes.** Se elige conservador / moderado /
+   agresivo al generar el informe y de ahí salen el máximo por posición y el
+   máximo por sector. Es una **regla, no una tabla**: sirve igual para una
+   cartera existente que para una propuesta, y no hay que cargar nada por
+   activo. (Se descartó equal weight porque marcaría sobreponderación en
+   cualquier posición grande aunque sea deliberada.)
+2. **Core / Growth / Speculative: derivado de datos** — capitalización, beta,
+   si gana plata y antigüedad de la serie. Automático y consistente para los
+   ~800 papeles, con posibilidad de corregir un caso puntual a mano.
+3. **Orden: paso 1 primero** — separar los dos scores y hacer que el informe
+   reciba cantidad, precio de compra y peso real.
+
+### Plan en pasos
+
+- **Paso 1** (sin IA, sin bot): F5 le pasa las posiciones al informe. Habilita
+  1, 2, 3, 4, 5 y 11. ⚠️ **Toca `src/App.jsx`**, que hasta ahora se tocó una
+  sola vez y con permiso explícito.
+- **Paso 2** (input): perfil + horizonte en el formulario de cartera → 6, 13, y
+  pondera 7 y 10.
+- **Paso 3** (IA): `action=tesis` recibe todo lo anterior ya calculado y escribe
+  resumen ejecutivo, thesis risk y escenarios → 14, 18, 9.
+- **Después**: 16 y 12, que son los que piden datos nuevos y bot.
+
+---
+
 ## 📦 PENDIENTE DE PUSH — lista acumulada
 
 Todo esto está escrito en la carpeta y **todavía no subido**. Verificar con

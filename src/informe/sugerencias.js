@@ -140,7 +140,9 @@ function motivoCorto(inf) {
     .filter(s => s.puntaje != null)
     .sort((a, b) => a.puntaje - b.puntaje)[0]
   if (peor) {
-    return `El bloque más débil es ${peor.bloque.replace(/_/g, ' ')} `
+    // `titulo` viene acentuado desde el endpoint; `bloque` es el identificador
+    // sin acento y solo sirve de respaldo para un informe cacheado de antes.
+    return `El bloque más débil es ${peor.titulo || peor.bloque.replace(/_/g, ' ')} `
       + `(${Math.round(peor.puntaje)}/100)`
       + (peor.notas?.[0] ? `: ${peor.notas[0]}` : '.')
   }

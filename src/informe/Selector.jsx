@@ -232,13 +232,26 @@ export default function Selector({ universo, completos, onElegir, onCartera, car
             color: C.cuerpo, background: '#fff',
           }} />
         {resultados.length > 0 && (
-          <div style={{ marginTop: 10, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-            {resultados.map(a => (
-              <Chip key={a.symbol} onClick={() => onElegir(a.symbol)} disabled={cargando}
-                    principal={a.symbol} secundario={a.name}
-                    completo={completos?.has(a.symbol)} />
-            ))}
-          </div>
+          <>
+            <p style={{ color: C.tenue, fontSize: 13, margin: '8px 0 0' }}>
+              Clic en el activo para verlo solo; tildá la casilla para sumarlo a
+              una comparación con otros.
+            </p>
+            <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+              {/* Estos Chip nacieron sin casilla, así que desde el buscador solo
+                  se podía abrir un activo por vez. Los de cartera e historial sí
+                  la tenían: era la misma tarjeta usada de dos formas distintas.
+                  Ahora comparten la selección, que es lo que alimenta el informe
+                  de cartera. */}
+              {resultados.map(a => (
+                <Chip key={a.symbol} onClick={() => onElegir(a.symbol)} disabled={cargando}
+                      principal={a.symbol} secundario={a.name}
+                      completo={completos?.has(a.symbol)}
+                      seleccionado={seleccion.has(a.symbol)}
+                      onAlternar={() => alternar(a.symbol)} />
+              ))}
+            </div>
+          </>
         )}
         {q.trim().length >= 1 && resultados.length === 0 && (
           <p style={{ color: C.tenue, fontSize: 14 }}>
@@ -274,7 +287,8 @@ export default function Selector({ universo, completos, onElegir, onCartera, car
           boxShadow: '0 -2px 14px rgba(11,46,79,.08)', padding: '12px 22px',
           display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
           <span style={{ fontSize: 14, color: C.titulo }}>
-            <b style={{ fontFamily: F.num }}>{seleccion.size}</b> activos seleccionados
+            <b style={{ fontFamily: F.num }}>{seleccion.size}</b>
+            {seleccion.size === 1 ? ' activo seleccionado' : ' activos seleccionados'}
           </span>
           <button onClick={() => setSeleccion(new Set())}
             style={{ background: 'none', border: 'none', color: C.tenue,

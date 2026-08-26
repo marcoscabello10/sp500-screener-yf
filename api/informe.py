@@ -23,8 +23,14 @@ IPs de cloud, así que EDGAR se consulta en vivo desde acá.
 
 Endpoints
 ---------
-    GET /api/informe?action=datos&ticker=AAPL
-    GET /api/informe?action=tesis&ticker=AAPL     (requiere API key)
+    GET /api/informe?action=datos&ticker=AAPL                    CERO costo
+    GET /api/informe?action=proveedores                          CERO costo
+    GET /api/informe?action=tesis&ticker=AAPL&proveedor=anthropic  <- gasta
+    GET /api/informe?action=tesis&ticker=AAPL&proveedor=openai     <- gasta
+
+El parametro `proveedor` es obligatorio y no tiene valor por defecto: sin el no
+se llama a ningun modelo. Y no hay fallback entre proveedores — si elegis uno y
+su clave no esta, falla diciendo eso, no gasta en el otro.
 """
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
@@ -839,6 +845,244 @@ def evaluar(ticker, fund, cons, detalle, hist, sec):
     }
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# LA TESIS — el ÚNICO lugar de todo el proyecto que gasta plata
+#
+# Regla que define el diseño de este bloque, pedida por Marcos:
+#
+#     "solo al generar la parte del informe que requiera y no todo o por todo,
+#      que no va a gastar solo por gastar por correr algo que no requiera su
+#      uso, solo cuándo lo requiera"
+#
+# Cómo se cumple, concretamente:
+#   · No se llama al modelo en `action=datos`. El informe se ve COMPLETO sin
+#     gastar un centavo.
+#   · Se llama solo con `action=tesis`, que el front dispara con clic explícito.
+#   · Un clic = una llamada. No hay reintentos que puedan cobrar dos veces.
+#   · El front cachea la tesis: releer el informe no vuelve a cobrar.
+#   · Tope duro de tokens de salida, así una respuesta desbocada no puede
+#     costar 50 veces lo previsto.
+#
+# Y la regla de los DOS PROVEEDORES, que también pidió Marcos:
+#
+#     "dos clicks diferentes, solo que gaste si selecciono uno, si elijo openai
+#      no use tokens de anthropic o viceversa"
+#
+# Por eso NO HAY FALLBACK ENTRE PROVEEDORES. Si elegís OpenAI y su clave no
+# está, el endpoint devuelve un error diciendo eso — no se cae a Anthropic para
+# "salvar" la respuesta. Un fallback silencioso sería exactamente gastar en un
+# proveedor que no elegiste.
+# ─────────────────────────────────────────────────────────────────────────────
+
+MAX_TOKENS_TESIS = 900        # tope duro de salida
+TIMEOUT_LLM = 45
+
+# Precios por millón de tokens, para estimar el costo de cada tesis y
+# devolverlo en la respuesta. Si Anthropic u OpenAI cambian la lista, esto
+# queda viejo: es una ESTIMACIÓN para que Marcos vea el orden de magnitud, no
+# una factura. La factura real está en la consola de cada proveedor.
+PRECIOS = {
+    'claude-sonnet-5':  (2.00, 10.00),
+    'claude-haiku-4-5': (1.00,  5.00),
+    'claude-opus-5':    (5.00, 25.00),
+    'gpt-5.6-luna':     (0.20,  1.20),
+    'gpt-5.6-terra':    (2.00, 12.00),
+}
+
+PROVEEDORES = {
+    'anthropic': {
+        'nombre': 'Anthropic',
+        'env_clave': 'ANTHROPIC_API_KEY',
+        'env_modelo': 'MODELO_ANTHROPIC',
+        'modelo_default': 'claude-sonnet-5',
+        'url': 'https://api.anthropic.com/v1/messages',
+    },
+    'openai': {
+        'nombre': 'OpenAI',
+        'env_clave': 'OPENAI_API_KEY',
+        'env_modelo': 'MODELO_OPENAI',
+        'modelo_default': 'gpt-5.6-luna',
+        'url': 'https://api.openai.com/v1/chat/completions',
+    },
+}
+
+SISTEMA = """Sos un analista de inversiones que redacta para un cliente minorista argentino.
+
+REGLAS QUE NO SE NEGOCIAN:
+1. NO inventes ni un solo numero. Usa exclusivamente las cifras del JSON que te
+   paso. Si un dato no esta, decilo: "no tengo ese dato". Jamas lo estimes.
+2. NO redondees hacia un numero mas lindo ni cambies un signo.
+3. El consenso de analistas es de ANALISTAS, nunca lo escribas como si fuera
+   proyeccion de la empresa.
+4. Si hay banderas rojas, tienen que aparecer en el texto. No las suavices.
+5. Escribi en castellano rioplatense neutro, sin "tu" ni "usted". Sin emojis.
+   Sin vinetas: prosa corrida.
+6. Nada de formulas de relleno tipo "es importante destacar" o "en conclusion".
+7. No prometas rendimientos ni des ordenes de compra. Sos una lectura de
+   fundamentales, no un asesor que conoce al cliente.
+
+FORMATO: tres parrafos, maximo 200 palabras en total.
+  Parrafo 1: que hace la empresa y de donde sale el veredicto.
+  Parrafo 2: el argumento mas fuerte a favor, con la cifra que lo sostiene.
+  Parrafo 3: que tendria que pasar para que la tesis falle. Si hay banderas
+             rojas, este parrafo arranca por ahi."""
+
+
+def _resumen_para_llm(d):
+    """Lo MINIMO que el modelo necesita para juzgar.
+
+    No se le mandan las series historicas crudas ni el sentimiento completo: son
+    miles de tokens que el modelo no usa para escribir tres parrafos, y cada
+    token de mas se paga. Medido: este resumen da ~450 tokens por activo contra
+    ~4.000 del informe entero."""
+    return {
+        'ticker': d['ticker'], 'nombre': d['nombre'], 'sector': d['sector'],
+        'veredicto': {k: d['veredicto'][k] for k in ('puntaje', 'etiqueta', 'porque')},
+        'bloques': [{'nombre': s['titulo'], 'puntaje': s['puntaje'], 'notas': s['notas']}
+                    for s in d['senales']],
+        'banderas_rojas': [r['texto'] for r in d['riesgos'] if r['severidad'] == 'alta'],
+        'otros_riesgos': [r['texto'] for r in d['riesgos'] if r['severidad'] != 'alta'],
+        'hechos': d['hechos'],
+        'multiplos': {k: d['fundamentales'].get(k) for k in
+                      ('pe', 'pb', 'roe', 'de', 'evEbitda', 'netMargin', 'revGrowth')},
+        'nota_del_sector': (d.get('sector_contexto') or {}).get('notas') or {},
+    }
+
+
+def _post_json(url, headers, cuerpo, timeout=TIMEOUT_LLM):
+    datos = json.dumps(cuerpo).encode('utf-8')
+    req = urllib.request.Request(url, data=datos, headers=headers, method='POST')
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read().decode('utf-8'))
+
+
+def _llamar_anthropic(clave, modelo, prompt):
+    r = _post_json(PROVEEDORES['anthropic']['url'], {
+        'x-api-key': clave,
+        'anthropic-version': '2023-06-01',
+        'content-type': 'application/json',
+    }, {
+        'model': modelo,
+        'max_tokens': MAX_TOKENS_TESIS,
+        'system': SISTEMA,
+        'messages': [{'role': 'user', 'content': prompt}],
+    })
+    texto = ''.join(b.get('text', '') for b in (r.get('content') or [])
+                    if b.get('type') == 'text')
+    u = r.get('usage') or {}
+    return texto.strip(), u.get('input_tokens'), u.get('output_tokens')
+
+
+def _llamar_openai(clave, modelo, prompt):
+    cabeceras = {'Authorization': f'Bearer {clave}',
+                 'Content-Type': 'application/json'}
+    base = {
+        'model': modelo,
+        'messages': [{'role': 'system', 'content': SISTEMA},
+                     {'role': 'user', 'content': prompt}],
+    }
+    # Los modelos nuevos de OpenAI usan max_completion_tokens y rechazan
+    # max_tokens; los viejos, al reves. Se prueba el nuevo y, si lo rechaza por
+    # el nombre del parametro, se reintenta con el viejo. El reintento NO puede
+    # cobrar dos veces: el primer intento muere en un 400 antes de generar nada.
+    for campo in ('max_completion_tokens', 'max_tokens'):
+        try:
+            r = _post_json(PROVEEDORES['openai']['url'], cabeceras,
+                           dict(base, **{campo: MAX_TOKENS_TESIS}))
+            break
+        except urllib.error.HTTPError as e:
+            detalle = e.read().decode('utf-8', 'replace')
+            if e.code == 400 and campo in detalle and campo == 'max_completion_tokens':
+                continue
+            raise RuntimeError(f'OpenAI {e.code}: {detalle[:300]}')
+    else:
+        raise RuntimeError('OpenAI rechazo el tope de tokens con los dos nombres.')
+
+    texto = (((r.get('choices') or [{}])[0].get('message') or {}).get('content') or '')
+    u = r.get('usage') or {}
+    return texto.strip(), u.get('prompt_tokens'), u.get('completion_tokens')
+
+
+def proveedores_disponibles():
+    """Que proveedores tienen clave cargada. El front usa esto para mostrar un
+    boton por proveedor: si no hay clave, no hay boton, y entonces no hay forma
+    de gastar por accidente."""
+    out = {}
+    for k, p in PROVEEDORES.items():
+        out[k] = {
+            'nombre': p['nombre'],
+            'disponible': bool(os.environ.get(p['env_clave'])),
+            'modelo': os.environ.get(p['env_modelo'], p['modelo_default']),
+        }
+    return out
+
+
+def generar_tesis(ticker, proveedor):
+    """action=tesis. El UNICO camino del proyecto que consume tokens.
+
+    Devuelve (resultado, error). Nunca cae de un proveedor al otro."""
+    if proveedor not in PROVEEDORES:
+        return None, (f'Proveedor desconocido: {proveedor!r}. '
+                      f'Validos: {", ".join(PROVEEDORES)}.')
+    p = PROVEEDORES[proveedor]
+    clave = os.environ.get(p['env_clave'])
+    if not clave:
+        # Sin fallback a proposito: ver el comentario largo arriba.
+        return None, (f'No hay clave de {p["nombre"]} configurada. Cargá '
+                      f'{p["env_clave"]} en las variables de entorno de Vercel. '
+                      f'No se usa el otro proveedor en su lugar: elegiste este.')
+
+    datos, err = armar_datos(ticker)
+    if err:
+        return None, err
+
+    modelo = os.environ.get(p['env_modelo'], p['modelo_default'])
+    prompt = ('Escribi la tesis de inversion para este activo, siguiendo las '
+              'reglas al pie de la letra. Datos:\n\n'
+              + json.dumps(_resumen_para_llm(datos), ensure_ascii=False, indent=1))
+
+    t0 = time.time()
+    try:
+        fn = _llamar_anthropic if proveedor == 'anthropic' else _llamar_openai
+        texto, t_ent, t_sal = fn(clave, modelo, prompt)
+    except urllib.error.HTTPError as e:
+        cuerpo = e.read().decode('utf-8', 'replace')[:300]
+        return None, (f'{p["nombre"]} devolvio {e.code}. {cuerpo} '
+                      + ('Revisá que la clave sea correcta y tenga credito.'
+                         if e.code in (401, 403) else
+                         'Estas yendo muy rapido: esperá unos segundos.'
+                         if e.code == 429 else
+                         f'Revisá que el modelo {modelo!r} exista para tu cuenta.'
+                         if e.code == 404 else ''))
+    except Exception as e:
+        return None, f'No pude hablar con {p["nombre"]}: {type(e).__name__}: {e}'
+
+    if not texto:
+        return None, (f'{p["nombre"]} respondio vacio. No se genero la tesis '
+                      f'(igual puede haberse cobrado la llamada).')
+
+    pe, ps = PRECIOS.get(modelo, (None, None))
+    costo = (round((t_ent or 0) * pe / 1e6 + (t_sal or 0) * ps / 1e6, 5)
+             if pe is not None else None)
+    return {
+        'ticker': ticker,
+        'texto': texto,
+        'proveedor': proveedor,
+        'proveedor_nombre': p['nombre'],
+        'modelo': modelo,
+        'tokens': {'entrada': t_ent, 'salida': t_sal},
+        'costo_estimado_usd': costo,
+        'costo_nota': ('Estimado con la lista de precios que tiene guardada el '
+                       'endpoint. La cifra real esta en la consola de '
+                       f'{p["nombre"]}.') if costo is not None else
+                      (f'No tengo el precio de {modelo!r} en la tabla, asi que '
+                       f'no puedo estimar el costo.'),
+        'segundos': round(time.time() - t0, 1),
+        'generado_en': datetime.now(timezone.utc).isoformat(),
+        'descargo': datos.get('descargo'),
+    }, None
+
+
 def armar_datos(ticker):
     """action=datos — CERO llamadas al modelo de lenguaje."""
     ticker = ticker.upper().strip()
@@ -1042,18 +1286,36 @@ class handler(BaseHTTPRequestHandler):
                     return self._responder(404, {'error': err})
                 return self._responder(200, datos)
 
-            if accion == 'tesis':
-                # Se implementa cuando exista la API key. action=datos no
-                # depende de esto: el informe se ve completo igual.
-                if not os.environ.get('ANTHROPIC_API_KEY') and not os.environ.get('OPENAI_API_KEY'):
-                    return self._responder(501, {
-                        'error': 'La redacción de la tesis todavía no está '
-                                 'configurada. Falta cargar la API key en las '
-                                 'variables de entorno de Vercel.',
-                        'sin_costo': True})
-                return self._responder(501, {'error': 'Pendiente de implementar.'})
+            # Que proveedores hay. NO gasta un solo token: solo mira si las
+            # variables de entorno existen. El front lo usa para decidir que
+            # botones mostrar.
+            if accion == 'proveedores':
+                return self._responder(200, {'proveedores': proveedores_disponibles()})
 
-            return self._responder(400, {'error': f'Accion desconocida: {acción}'})
+            if accion == 'tesis':
+                # EL ÚNICO camino que consume tokens en todo el proyecto.
+                # El proveedor es OBLIGATORIO y explicito: no hay default, para
+                # que sea imposible gastar en uno creyendo que elegiste el otro.
+                proveedor = (q.get('proveedor') or [''])[0].strip().lower()
+                if not proveedor:
+                    return self._responder(400, {
+                        'error': 'Falta el parametro proveedor (anthropic u '
+                                 'openai). Es obligatorio a proposito: sin el, '
+                                 'no se llama a ninguno.',
+                        'sin_costo': True})
+                res, err = generar_tesis(ticker, proveedor)
+                if err:
+                    return self._responder(502 if res is None and 'devolvio' in err else 400,
+                                           {'error': err, 'sin_costo': True})
+                return self._responder(200, res)
+
+            # ⚠️ Acá decía {acción} — el pase de acentos del 25/08 le puso tilde
+            # a la variable dentro del f-string y la variable se llama `accion`.
+            # Habría reventado con NameError, pero solo por esta rama, que es la
+            # de "acción desconocida" y nunca se ejercitaba. El detector de
+            # nombres no definidos lo encontró; los tests no, porque todos
+            # pasaban acciones válidas.
+            return self._responder(400, {'error': f'Accion desconocida: {accion}'})
 
         except Exception as e:
             import traceback

@@ -75,7 +75,7 @@ export default function Cartera({ informes, meta, stocks, scores, conAnexo,
           </Seccion>
           {validos.map(i => (
             <div key={i.ticker} className="salto-antes">
-              <Informe d={i} onVolver={null} />
+              <Informe d={i} onVolver={null} conTesis={false} />
             </div>
           ))}
         </div>

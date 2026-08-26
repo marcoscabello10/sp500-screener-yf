@@ -3,6 +3,7 @@ import {
   ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid, Legend,
 } from 'recharts'
 import { C, F, semaforo, colorSeveridad, num, pct, dinero, fecha } from './estilos.js'
+import Tesis from './tesis.jsx'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // El informe. Todo lo que se ve aca sale de action=datos, o sea CERO llamadas
@@ -37,7 +38,7 @@ const METRICAS = [
   { k: 'dividendYieldPct',  de: 'cons', label: 'Dividendo',         fmt: v => pct(v, 2) },
 ]
 
-export default function Informe({ d, onVolver }) {
+export default function Informe({ d, onVolver, conTesis = true }) {
   const ocultar = new Set(d.sector_contexto?.ocultar || [])
   const notas = d.sector_contexto?.notas || {}
   const medianas = d.sector_contexto?.medianas || {}
@@ -57,6 +58,11 @@ export default function Informe({ d, onVolver }) {
 
       <Encabezado d={d} />
       <Veredicto d={d} />
+      {/* La tesis va arriba de todo el detalle, pegada al veredicto: es la
+          lectura en prosa de eso mismo. En el anexo del informe de cartera se
+          apaga (conTesis=false) — serian N botones que gastan, uno por activo,
+          dentro de un documento que ya se genero. */}
+      {conTesis && <Tesis ticker={d.ticker} />}
 
       {d.avisos?.length > 0 && (
         <div className="evitar-corte" style={{ marginTop: 18 }}>

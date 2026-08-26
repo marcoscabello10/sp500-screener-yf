@@ -1518,10 +1518,12 @@ enchufen; dejarlo para después obliga a rehacer lo del medio.
 - **Paso 1** ✅ **HECHO** (25/08/2026) — ver abajo.
 - **Paso 2** ✅ **HECHO** (26/08/2026) — objetivo + horizonte + afinidad (6, 13),
   el arreglo del dividendo (7) y el stress test (19).
-- **Paso 3** (IA): `action=tesis` recibe todo lo anterior ya calculado y escribe
-  resumen ejecutivo, thesis risk y escenarios → 14, 18, 9.
-  ⚠️ **Bloqueado**: falta que Marcos cree la API key de Anthropic con crédito
-  prepago y auto-recarga apagada.
+- **Paso 3** ✅ **HECHO** (26/08/2026) — tesis por activo con dos proveedores
+  separados. ⚠️ Falta que Marcos cargue las claves en Vercel para que aparezcan
+  los botones. Sin claves, el informe funciona igual y no hay botón.
+  Pendiente del paso 3: el **resumen ejecutivo de la CARTERA** (puntos 14, 18, 9
+  a nivel cartera). Se dejó para después de ver la latencia de la tesis
+  individual, porque rearmar 10 activos del lado del servidor tarda.
 - **Paso 4**: 17 (expected return), 15 (catalysts), 10 (replacement quality).
 - **Paso 5**: 16 (P/E vs su historia) y 12 (correlación) — piden datos nuevos y
   tocan el bot. Ver la nota sobre bajar el histórico de una vez.
@@ -1725,6 +1727,105 @@ Build: `informe-*.js` 88,97 kB. `main-*.js` sigue con el **mismo hash**
 
 ---
 
+## ✅ PASO 3 — LA TESIS CON IA, CON DOS PROVEEDORES (26/08/2026)
+
+### La decisión, y por qué el costo no la definió
+
+Se midió el payload real sobre los datos de Marcos: **~1.250 tokens de entrada y
+~450 de salida por activo**. A ese volumen:
+
+| modelo | 1 activo | 50 tesis + 20 carteras al mes |
+|---|---|---|
+| gpt-5.6-luna | US$ 0,0008 | US$ 0,08 |
+| Claude Haiku 4.5 | US$ 0,0035 | US$ 0,38 |
+| **Claude Sonnet 5** | **US$ 0,0070** | **US$ 0,76** |
+| Claude Opus 5 | US$ 0,0175 | US$ 1,90 |
+
+Con Sonnet 5 hacen falta **489 informes de cartera para gastar US$ 10**. Elegir
+el modelo más barato para ahorrar US$ 0,40 al mes es optimizar lo que no
+importa. Se eligió **Sonnet 5** por calidad de redacción, no por precio.
+
+**Elección de Marcos**: Anthropic + Sonnet 5 como principal, adaptador para
+OpenAI + gpt-5.6-luna, y **dos botones separados**.
+
+### La regla que define todo el diseño
+
+> *"dos clicks diferentes, solo que gaste si selecciono uno, si elijo openai no
+> use tokens de anthropic o viceversa"*
+
+**NO HAY FALLBACK ENTRE PROVEEDORES.** Si elegís OpenAI y su clave no está, el
+endpoint falla diciendo eso — no se cae a Anthropic para salvar la respuesta.
+Un fallback silencioso sería exactamente gastar en un proveedor que no elegiste.
+
+El parámetro `proveedor` es **obligatorio y sin valor por defecto**: sin él no
+se llama a ningún modelo.
+
+```
+GET /api/informe?action=datos&ticker=AAPL                        CERO costo
+GET /api/informe?action=proveedores                              CERO costo
+GET /api/informe?action=tesis&ticker=AAPL&proveedor=anthropic    ← gasta
+GET /api/informe?action=tesis&ticker=AAPL&proveedor=openai       ← gasta
+```
+
+### Los frenos, uno por uno
+
+| freno | dónde |
+|---|---|
+| El informe se ve completo sin gastar | `action=datos` no llama a nadie |
+| Un clic = una llamada | sin reintentos que puedan cobrar dos veces |
+| Doble clic nervioso | los botones se bloquean mientras genera |
+| Releer no vuelve a cobrar | caché por **ticker + proveedor**, 7 días |
+| Respuesta desbocada | `MAX_TOKENS_TESIS = 900`, tope duro |
+| Sin clave, no hay botón | `action=proveedores` decide qué se muestra |
+| Ticker inexistente | se valida ANTES de llamar al modelo |
+| El anexo de cartera | `conTesis={false}`: no son N botones que gastan |
+
+**El prompt va podado a propósito**: solo el veredicto, los bloques con sus
+notas, las banderas y los múltiplos. Nada de series históricas crudas ni
+`upgrades_downgrades`. Medido: **1.486 caracteres (~424 tokens)** contra ~4.000
+del informe entero. Cada token de más se paga y el modelo no los usaba.
+
+Y la respuesta devuelve **tokens usados y costo estimado**, que el informe
+muestra abajo del texto. No para asustar —son fracciones de centavo— sino
+porque un gasto que no se ve es un gasto que no se controla.
+
+### El prompt del sistema
+
+Siete reglas, y las tres primeras son de honestidad: no inventar ni un número,
+no redondear hacia un número más lindo, y no escribir el consenso de analistas
+como si fuera proyección de la empresa. Las banderas rojas **tienen que**
+aparecer en el texto. Tres párrafos, máximo 200 palabras.
+
+### 🐛 Otro resto del pase de acentos
+
+Un detector de nombres no definidos (AST) encontró que en la rama de "acción
+desconocida" quedó `f'Accion desconocida: {acción}'` — con tilde. La variable se
+llama `accion`. Habría reventado con `NameError`, pero **solo por esa rama**,
+que ningún test ejercitaba porque todos pasan acciones válidas. Arreglado.
+
+Lección para la próxima: un reemplazo masivo sobre literales necesita, además
+del test de contrato, un barrido de nombres no definidos. El primero encontró
+las claves de diccionario; este encontró la variable dentro del f-string.
+
+### Verificación — `test/test_tesis.py`
+
+**No gasta un solo token**: se reemplaza `_post_json` por un doble que devuelve
+la forma exacta de cada API y **registra a qué URL se llamó**. Ese registro es
+lo que permite verificar lo único que de verdad importa:
+
+- con Anthropic elegido, **cero** llamadas a OpenAI, y al revés;
+- con **solo una** clave cargada, pedir el otro proveedor falla **sin llamar a
+  nadie** (no se cae al que sí tiene clave);
+- proveedor vacío, inexistente o con espacios: rechazado sin llamar a nadie;
+- ticker inexistente: no se llama al modelo;
+- el tope de salida viaja en las dos APIs;
+- el prompt no lleva series crudas y pesa menos de 4.000 caracteres;
+- el respaldo de `max_tokens` para cuentas de OpenAI con modelos viejos —
+  y el primer intento muere en un 400 **antes de generar**, así que el
+  reintento no puede cobrar dos veces.
+
+---
+
 ## 💡 CONSULTA DE MARCOS — bajar el histórico de precios de una vez
 
 Preguntó si en vez de pedirle a Twelve Data en cada corrida no se puede bajar
@@ -1770,6 +1871,20 @@ Todo esto está escrito en la carpeta y **todavía no subido**. Verificar con
 > Todo lo anterior (informe de cartera incluido) y el arreglo de Twelve Data en
 > `src/App.jsx` **ya fueron pusheados** por Marcos. Lo que sigue es la tanda del
 > **25/08/2026**: veredicto de 3 posiciones, foco en rotación y los CEDEARs.
+
+### Tanda del paso 3 (tesis con IA)
+
+```
+api/informe.py               (action=tesis y action=proveedores; arregla {acción})
+src/informe/tesis.jsx        NUEVO — los dos botones, con cache por proveedor
+src/informe/Informe.jsx      (monta la tesis; conTesis=false en el anexo)
+src/informe/Cartera.jsx      (apaga la tesis en el anexo)
+test/test_tesis.py           NUEVO — verifica que un proveedor no toque al otro
+CONTEXTO_INFORME_AVANZADO.md
+```
+
+⚠️ Después del push hay que cargar las variables de entorno en Vercel. Ver la
+guía abajo.
 
 ### Tanda del paso 2 (objetivo, horizonte, stress test)
 

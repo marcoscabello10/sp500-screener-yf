@@ -1516,14 +1516,17 @@ enchufen; dejarlo para después obliga a rehacer lo del medio.
 ### Plan en pasos
 
 - **Paso 1** ✅ **HECHO** (25/08/2026) — ver abajo.
-- **Paso 2** (input): horizonte temporal y objetivo declarado → 6, 13, y pondera
-  7 y 10. El **perfil** ya entró en el paso 1.
+- **Paso 2** ✅ **HECHO** (26/08/2026) — objetivo + horizonte + afinidad (6, 13),
+  el arreglo del dividendo (7) y el stress test (19).
 - **Paso 3** (IA): `action=tesis` recibe todo lo anterior ya calculado y escribe
   resumen ejecutivo, thesis risk y escenarios → 14, 18, 9.
-- **Paso 4**: 17 (expected return), 19 (stress test con betas), 15 (catalysts) —
-  derivables de lo que ya hay.
+  ⚠️ **Bloqueado**: falta que Marcos cree la API key de Anthropic con crédito
+  prepago y auto-recarga apagada.
+- **Paso 4**: 17 (expected return), 15 (catalysts), 10 (replacement quality).
 - **Paso 5**: 16 (P/E vs su historia) y 12 (correlación) — piden datos nuevos y
   tocan el bot. Ver la nota sobre bajar el histórico de una vez.
+- **Pendiente aparte**: botón "Ver informe" en las filas de F1/F5 — es lo único
+  que sí obliga a tocar `src/App.jsx`.
 
 ---
 
@@ -1635,6 +1638,93 @@ en el mismo documento — el bloque "recortar" y la tabla "el resto" no se pisan
 
 ---
 
+## ✅ PASO 2 — PARA QUÉ ES ESTA CARTERA (26/08/2026)
+
+### 🐛 Primero: el bloque de dividendos tenía un incentivo al revés
+
+Buscando cómo implementar el punto 7 ("no penalizar Growth por yield bajo")
+apareció que el problema no era de ponderación: era un **escalón**. El bloque
+solo puntuaba `if dy:` — o sea, si el dividendo era distinto de cero. Medido
+sobre datos reales:
+
+| | paga | bloque dividendos | **global** |
+|---|---|---|---|
+| AMZN | 0% | `None` (no promedia) | **63,5** |
+| GOOGL | 0,26% | 0/100 (sí promedia) | **47,1** |
+
+**Empezar a pagar un dividendo simbólico te hundía 16 puntos. No pagar nada te
+los dejaba intactos.** Dos empresas parecidas separadas por un dividendo que a
+ningún accionista le cambia la vida.
+
+Arreglo: `UMBRAL_DIVIDENDO_RELEVANTE = 1.0`. Debajo de 1% el dato se informa
+pero no puntúa, igual que cuando no paga nada. GOOGL pasó a **62,8**, en línea
+con AMZN.
+
+**Efecto en las 503**: compra 201 (40%) · neutral 263 (52%) · venta 39 (7,8%).
+Antes era 159/286/58. Hay más "compra" y menos "venta" porque desapareció el
+lastre que arrastraba a las que pagan poco. La contracara es que **"venta" ahora
+es más raro** (7,8% contra 11,5%): en una cartera de 10 se espera menos de uno.
+Si con carteras reales resulta demasiado permisivo, el lugar para tocarlo es
+`UMBRAL_VENTA`, no este umbral.
+
+### Objetivo y horizonte — y por qué el ajuste va en el navegador
+
+El formulario de cartera ahora pide tres cosas: **perfil** (topes de
+concentración), **objetivo** (renta / equilibrado / crecimiento) y **horizonte**
+(menos de 2 años / 2 a 5 / más de 5).
+
+**El ajuste por objetivo se hace en el navegador, no en el endpoint.** La razón
+es concreta: el informe cachea `action=datos` por ticker. Si el puntaje
+dependiera del objetivo de la cartera, el caché estaría mal cada vez que se
+abre la misma empresa con otro objetivo. Así que el endpoint sigue devolviendo
+un veredicto objetivo-agnóstico y `cartera.js` **repesa los bloques que ya
+vinieron**. Cero datos nuevos, cero llamadas extra.
+
+```
+afinidad = Σ(puntaje_bloque × peso_objetivo × ajuste_horizonte) / Σ(pesos)
+```
+
+El **puntaje fundamental no se toca**. Aparecen los dos al lado y lo que
+interesa es la diferencia: cuando son muy distintos, la empresa es buena pero
+para otra cosa. Medido en la cartera de prueba, AAPL da **41 con objetivo renta
+y 61 con objetivo crecimiento** — la misma empresa, la misma data, otra balanza.
+
+**El horizonte mueve poco a propósito.** Un modelo que cambiara mucho el puntaje
+según si mirás a 2 o a 7 años estaría fingiendo una precisión que los datos no
+dan. Lo que sí cambia de verdad es qué riesgos son relevantes: a corto plazo la
+volatilidad y el ánimo del mercado; a largo, la dilución y el crecimiento real
+(el precio objetivo de los analistas mira a 12 meses y a diez años no dice nada).
+
+### Stress test (punto 19) — con una línea que no se cruza
+
+Cuatro escenarios, y **el informe dice cuál tiene modelo y cuál es aritmética**:
+
+| escenario | cómo se calcula |
+|---|---|
+| El mercado cae 20% | beta promedio ponderado. **Es un modelo.** |
+| La posición más grande cae 30% | aritmética sobre el peso |
+| El sector más pesado cae 25% | aritmética sobre el peso |
+| Los especulativos caen 50% | aritmética sobre el peso |
+
+**El escenario de tasas NO se calcula.** Haría falta la sensibilidad de cada
+empresa a la tasa y no está en ninguna fuente que usemos. Un número inventado
+ahí se leería igual de serio que los otros cuatro, y no lo sería. El documento
+dice explícitamente que no se estima y por qué.
+
+### Verificación
+
+`prueba-pesos.jsx` sumó: que la afinidad **se mueva** entre objetivos (si no, el
+campo no sirve para nada), que nunca se salga de 0–100 en las 9 combinaciones de
+objetivo × horizonte, que objetivo u horizonte inexistentes caigan al valor por
+defecto sin romper, que ninguna caída del stress test sea positiva ni supere el
+100%, que el peor escenario quede primero, y que sin pesos no haya stress test.
+Cuatro combinaciones nuevas de render, incluida `meta` completamente vacía.
+
+Build: `informe-*.js` 88,97 kB. `main-*.js` sigue con el **mismo hash**
+(`main-wr6GwcBs.js`): el screener no se tocó.
+
+---
+
 ## 💡 CONSULTA DE MARCOS — bajar el histórico de precios de una vez
 
 Preguntó si en vez de pedirle a Twelve Data en cada corrida no se puede bajar
@@ -1680,6 +1770,16 @@ Todo esto está escrito en la carpeta y **todavía no subido**. Verificar con
 > Todo lo anterior (informe de cartera incluido) y el arreglo de Twelve Data en
 > `src/App.jsx` **ya fueron pusheados** por Marcos. Lo que sigue es la tanda del
 > **25/08/2026**: veredicto de 3 posiciones, foco en rotación y los CEDEARs.
+
+### Tanda del paso 2 (objetivo, horizonte, stress test)
+
+```
+api/informe.py               (UMBRAL_DIVIDENDO_RELEVANTE: arregla el incentivo al reves)
+src/informe/cartera.js       (OBJETIVOS, HORIZONTES, afinidad(), stressTest())
+src/informe/App.jsx          (componente Opciones + objetivo y horizonte en el form)
+src/informe/Cartera.jsx      (secciones "Que tan bien encaja" y "Que pasa si sale mal")
+CONTEXTO_INFORME_AVANZADO.md
+```
 
 ### Tanda del paso 1 (capa de cartera)
 

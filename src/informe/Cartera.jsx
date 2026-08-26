@@ -1,8 +1,9 @@
 import React from 'react'
 import Informe from './Informe.jsx'
 import { planRotacion, concentracionPorSector, SECTOR_PESADO_PCT } from './sugerencias.js'
-import { analizarCartera, CLASE_TEXTO, ESTADO_TEXTO, ACCION_PESO_TEXTO,
-         PERFIL_POR_DEFECTO } from './cartera.js'
+import { analizarCartera, stressTest, CLASE_TEXTO, ESTADO_TEXTO,
+         ACCION_PESO_TEXTO, PERFIL_POR_DEFECTO, OBJETIVO_POR_DEFECTO,
+         HORIZONTE_POR_DEFECTO } from './cartera.js'
 import { C, F, semaforo, colorSeveridad, num, pct, fecha } from './estilos.js'
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -37,7 +38,10 @@ export default function Cartera({ informes, meta, stocks, scores, conAnexo,
   // No se promedian nunca. Se cruzan en la matriz de cartera.js.
   const plan = planRotacion(validos, stocks, scores)
   const cart = analizarCartera(validos, posiciones,
-                               meta.perfil || PERFIL_POR_DEFECTO)
+                               meta.perfil || PERFIL_POR_DEFECTO,
+                               meta.objetivo || OBJETIVO_POR_DEFECTO,
+                               meta.horizonte || HORIZONTE_POR_DEFECTO)
+  const stress = stressTest(cart)
 
   const concentracion = concentracionPorSector(
     validos.map(i => ({ sector: i.sector })))
@@ -50,6 +54,8 @@ export default function Cartera({ informes, meta, stocks, scores, conAnexo,
     <div style={{ maxWidth: 940, margin: '0 auto', padding: '26px 22px 70px' }}>
       <Portada meta={meta} n={validos.length} cart={cart} />
       {cart.hayPesos && <Pesos cart={cart} />}
+      <Afinidad cart={cart} />
+      {stress && <Stress cart={cart} stress={stress} />}
       <Rotacion plan={plan} total={validos.length} cart={cart} />
       <Resumen informes={validos} plan={plan} />
       <Composicion datos={concentracion} />
@@ -242,6 +248,134 @@ function Pesos({ cart }) {
             sectoresFuera.reduce((a, s) => a + (s.excesoUSD || 0), 0), 0)}.` : ''}
         </p>
       )}
+    </Seccion>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AFINIDAD CON EL OBJETIVO (punto 13)
+//
+// Los MISMOS bloques que ya calculó el endpoint, mirados con otra balanza. No
+// hay ningún dato nuevo acá: hay una ponderación distinta y explícita.
+//
+// El puntaje fundamental NO se toca. Aparecen los dos, y lo interesante es la
+// diferencia: cuando son muy distintos, la empresa es buena pero para otra cosa.
+// ─────────────────────────────────────────────────────────────────────────────
+
+function Afinidad({ cart }) {
+  const { objetivo, horizonte, activos } = cart
+  const conAmbos = activos.filter(a => a.afinidad != null && a.puntajeFundamental != null)
+  if (!conAmbos.length) return null
+  const desalineados = conAmbos.filter(a => Math.abs(a.brechaObjetivo) >= 8)
+    .sort((a, b) => a.brechaObjetivo - b.brechaObjetivo)
+
+  return (
+    <Seccion titulo={`Qué tan bien encaja con el objetivo: ${objetivo.nombre.toLowerCase()}`}
+             nota={`${objetivo.resumen} Horizonte: ${horizonte.nombre.toLowerCase()}.
+                    ${horizonte.nota}`}>
+
+      <p style={{ fontSize: 13.5, marginTop: 0, marginBottom: 12, color: C.tenue }}>
+        La afinidad usa exactamente los mismos bloques del análisis, con otra
+        ponderación. No hay datos nuevos: hay otra balanza. Por eso el puntaje
+        fundamental no cambia — se muestran los dos al lado.
+      </p>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Activo</th><th>Clase</th>
+            <th className="n">Fundamental</th>
+            <th className="n">Afinidad</th>
+            <th className="n">Diferencia</th>
+          </tr>
+        </thead>
+        <tbody>
+          {conAmbos.slice().sort((a, b) => b.afinidad - a.afinidad).map(a => (
+            <tr key={a.ticker}>
+              <td>
+                <span style={{ fontFamily: F.num, fontWeight: 600, color: C.titulo }}>
+                  {a.ticker}
+                </span>
+              </td>
+              <td style={{ fontSize: 13, color: C.tenue }}>{CLASE_TEXTO[a.clase]}</td>
+              <td className="n">{num(a.puntajeFundamental, 0)}</td>
+              <td className="n" style={{ fontWeight: 600,
+                    color: semaforo(a.afinidad).color }}>{num(a.afinidad, 0)}</td>
+              <td className="n" style={{
+                    color: a.brechaObjetivo > 0 ? C.verde
+                         : a.brechaObjetivo < 0 ? C.rojo : C.tenue }}>
+                {pct(a.brechaObjetivo, 0, true).replace('%', '')}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      {desalineados.length > 0 && (
+        <div style={{ marginTop: 12 }}>
+          {desalineados.slice(0, 4).map(a => (
+            <p key={a.ticker} style={{ fontSize: 13.5, margin: '0 0 6px' }}>
+              <b style={{ fontFamily: F.num, color: C.titulo }}>{a.ticker}</b>{' '}
+              {a.brechaObjetivo < 0
+                ? `puntúa ${num(a.puntajeFundamental, 0)} como empresa pero ${num(a.afinidad, 0)}
+                   para una cartera de ${objetivo.nombre.toLowerCase()}: es buena, pero no para esto.`
+                : `puntúa ${num(a.puntajeFundamental, 0)} como empresa y ${num(a.afinidad, 0)}
+                   para este objetivo: encaja mejor de lo que su puntaje general sugiere.`}
+            </p>
+          ))}
+        </div>
+      )}
+    </Seccion>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// STRESS TEST (punto 19)
+// ─────────────────────────────────────────────────────────────────────────────
+
+function Stress({ cart, stress }) {
+  const peor = stress.escenarios[0]
+  return (
+    <Seccion titulo="Qué pasa si las cosas salen mal"
+             nota="Cuánto perdería la cartera en cuatro escenarios. Ninguno es una
+                   predicción: son cuentas sobre los pesos de hoy.">
+      <table>
+        <thead>
+          <tr>
+            <th>Escenario</th>
+            <th className="n">Impacto</th>
+            <th className="n">En dólares</th>
+            <th>Por qué ese número</th>
+          </tr>
+        </thead>
+        <tbody>
+          {stress.escenarios.map(e => (
+            <tr key={e.titulo}>
+              <td style={{ fontWeight: 600, color: C.titulo }}>{e.titulo}</td>
+              <td className="n" style={{ color: C.rojo, fontWeight: 600 }}>
+                {num(e.caidaPct, 1)}%
+              </td>
+              <td className="n" style={{ color: C.rojo }}>
+                US$ {num(Math.abs(e.caidaUSD), 0)}
+              </td>
+              <td style={{ fontSize: 12.5, color: C.tenue }}>
+                {e.detalle}
+                {!e.modelo && ' Es aritmética sobre los pesos, sin modelo.'}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {peor && (
+        <p style={{ fontSize: 13.5, marginTop: 10 }}>
+          El escenario más caro de los cuatro es <b>{peor.titulo.toLowerCase()}</b>:
+          {' '}US$ {num(Math.abs(peor.caidaUSD), 0)}, un {num(Math.abs(peor.caidaPct), 1)}%
+          de la cartera.
+        </p>
+      )}
+      <p style={{ fontSize: 12.5, color: C.tenue, marginTop: 8, fontStyle: 'italic' }}>
+        {stress.noCalculado}
+      </p>
     </Seccion>
   )
 }

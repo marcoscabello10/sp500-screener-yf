@@ -487,6 +487,11 @@ UMBRAL_COMPRA = 60.0
 UMBRAL_VENTA = 40.0
 PENALIZACION_GRAVE = 18.0
 
+# Debajo de este rendimiento, el dividendo no es parte de la tesis de inversión
+# y por lo tanto no puntúa. Ver el comentario largo en el bloque DIVIDENDOS: sin
+# este umbral, pagar poco puntuaba peor que no pagar nada.
+UMBRAL_DIVIDENDO_RELEVANTE = 1.0
+
 SIN_DATOS = 'sin datos suficientes'
 
 # Los bloques viajan con su identificador SIN acento ('valuacion'), porque es la
@@ -689,9 +694,25 @@ def evaluar(ticker, fund, cons, detalle, hist, sec):
                     'notas': sal_notas})
 
     # ── DIVIDENDOS ───────────────────────────────────────────────────────────
+    #
+    # ⚠️ Acá había un incentivo al revés y costó verlo. El bloque solo puntuaba
+    # si `dy` era distinto de cero; si la empresa no pagaba nada, quedaba en
+    # None y no entraba al promedio. Resultado medido sobre datos reales:
+    #
+    #     AMZN  paga 0%      -> bloque None -> global 63,5
+    #     GOOGL paga 0,26%   -> bloque 0/100 -> global 47,1
+    #
+    # O sea: empezar a pagar un dividendo simbólico te hundía el puntaje, y no
+    # pagar nada te lo dejaba intacto. Dos empresas parecidas separadas por 16
+    # puntos a causa de un dividendo que a ninguno de los dos accionistas le
+    # cambia la vida.
+    #
+    # La regla ahora es una sola y sin escalón: el bloque puntúa solo cuando el
+    # dividendo es parte de la tesis. Debajo de UMBRAL_DIVIDENDO_RELEVANTE el
+    # dato se informa pero no puntúa — igual que cuando no paga nada.
     div_notas, div_puntos = [], []
     dy, payout = cons.get('dividendYieldPct'), cons.get('payoutRatioPct')
-    if dy:
+    if dy and dy >= UMBRAL_DIVIDENDO_RELEVANTE:
         div_notas.append(f'Rinde {dy:.2f}% en dividendos.')
         hechos.append(f'dividendo {dy:.2f}%')
         p = pct('dividendYieldPct', dy)
@@ -701,8 +722,16 @@ def evaluar(ticker, fund, cons, detalle, hist, sec):
             div_notas.append(f'Reparte el {payout:.0f}% de sus ganancias: margen '
                              f'estrecho si el resultado cae.')
             div_puntos.append(30)
+    elif dy:
+        div_notas.append(
+            f'Rinde {dy:.2f}% en dividendos: por debajo del '
+            f'{UMBRAL_DIVIDENDO_RELEVANTE:.0f}% el dividendo no mueve la tesis, '
+            f'así que se informa pero no puntúa. Esta empresa se juzga por lo '
+            f'que hace con la plata que retiene, no por lo que reparte.')
     else:
-        div_notas.append('No paga dividendos.')
+        div_notas.append(
+            'No paga dividendos. No es una falta: en una empresa en crecimiento '
+            'reinvertir suele rendir más que repartir. El bloque no puntúa.')
     senales.append({'bloque': 'dividendos',
                     'titulo': BLOQUE_TEXTO['dividendos'],
                     'puntaje': round(sum(div_puntos) / len(div_puntos), 1) if div_puntos else None,

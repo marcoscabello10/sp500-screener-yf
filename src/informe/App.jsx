@@ -2,7 +2,8 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react'
 import Selector, { guardarEnHistorial } from './Selector.jsx'
 import Informe from './Informe.jsx'
 import Cartera from './Cartera.jsx'
-import { PERFILES, PERFIL_POR_DEFECTO } from './cartera.js'
+import { PERFILES, PERFIL_POR_DEFECTO, OBJETIVOS, OBJETIVO_POR_DEFECTO,
+         HORIZONTES, HORIZONTE_POR_DEFECTO } from './cartera.js'
 import { scoresPorSector } from './sugerencias.js'
 import { C, F, CSS_GLOBAL } from './estilos.js'
 
@@ -46,7 +47,8 @@ function cacheGuardar(ticker, datos) {
 }
 
 const META_VACIA = { cliente: '', comitente: '', preparadoPor: '', logo: '',
-                     titulo: 'Análisis de cartera', perfil: PERFIL_POR_DEFECTO }
+                     titulo: 'Análisis de cartera', perfil: PERFIL_POR_DEFECTO,
+                     objetivo: OBJETIVO_POR_DEFECTO, horizonte: HORIZONTE_POR_DEFECTO }
 
 function metaLeer() {
   try { return { ...META_VACIA, ...(JSON.parse(localStorage.getItem(CLAVE_META)) || {}) } }
@@ -233,6 +235,33 @@ function BarraProgreso({ progreso }) {
   )
 }
 
+function Opciones({ titulo, opciones, valor, onCambio, pie }) {
+  const elegida = opciones[valor] || Object.values(opciones)[0]
+  return (
+    <div style={{ marginBottom: 14 }}>
+      <div style={{ fontSize: 12.5, color: C.subtitulo, marginBottom: 5 }}>{titulo}</div>
+      <div style={{ display: 'flex', gap: 7 }}>
+        {Object.values(opciones).map(o => {
+          const activo = valor === o.clave
+          return (
+            <button key={o.clave} onClick={() => onCambio(o.clave)}
+              style={{ flex: 1, padding: '8px 6px', borderRadius: 7,
+                       border: `1px solid ${activo ? C.acento : C.bordeFuerte}`,
+                       background: activo ? C.acentoFondo : '#fff',
+                       color: activo ? C.acento : C.cuerpo,
+                       fontWeight: activo ? 600 : 400, fontSize: 13.5 }}>
+              {o.nombre}
+            </button>
+          )
+        })}
+      </div>
+      <div style={{ fontSize: 11.5, color: C.tenue, marginTop: 5, lineHeight: 1.5 }}>
+        {pie(elegida)}
+      </div>
+    </div>
+  )
+}
+
 function FormularioCartera({ tickers, meta, conAnexo, setMeta, setConAnexo,
                              onCancelar, onGenerar }) {
   function cargarLogo(file) {
@@ -267,34 +296,24 @@ function FormularioCartera({ tickers, meta, conAnexo, setMeta, setConAnexo,
         {campo('comitente', 'Número de comitente', 'Opcional')}
         {campo('preparadoPor', 'Preparado por', 'Tu nombre')}
 
-        {/* El perfil define los topes de concentración: cuánto puede pesar una
-            posición y cuánto un sector. No cambia el análisis de la empresa,
-            cambia qué se considera demasiado en ESTA cartera. */}
-        <div style={{ marginBottom: 14 }}>
-          <div style={{ fontSize: 12.5, color: C.subtitulo, marginBottom: 5 }}>
-            Perfil de la cartera
-          </div>
-          <div style={{ display: 'flex', gap: 7 }}>
-            {Object.values(PERFILES).map(p => {
-              const activo = (meta.perfil || PERFIL_POR_DEFECTO) === p.clave
-              return (
-                <button key={p.clave} onClick={() => setMeta({ ...meta, perfil: p.clave })}
-                  style={{ flex: 1, padding: '8px 6px', borderRadius: 7,
-                           border: `1px solid ${activo ? C.acento : C.bordeFuerte}`,
-                           background: activo ? C.acentoFondo : '#fff',
-                           color: activo ? C.acento : C.cuerpo,
-                           fontWeight: activo ? 600 : 400, fontSize: 13.5 }}>
-                  {p.nombre}
-                </button>
-              )
-            })}
-          </div>
-          <div style={{ fontSize: 11.5, color: C.tenue, marginTop: 5 }}>
-            {(PERFILES[meta.perfil] || PERFILES[PERFIL_POR_DEFECTO]).resumen}
-            {' '}Tope por posición {(PERFILES[meta.perfil] || PERFILES[PERFIL_POR_DEFECTO]).maxPosicion}%,
-            por sector {(PERFILES[meta.perfil] || PERFILES[PERFIL_POR_DEFECTO]).maxSector}%.
-          </div>
-        </div>
+        {/* Las tres preguntas que el informe no puede deducir de los datos.
+            El perfil fija los topes de concentración; el objetivo cambia con qué
+            balanza se miran los bloques; el horizonte, qué riesgos son
+            relevantes. Ninguna toca el veredicto de la empresa. */}
+        <Opciones titulo="Perfil de la cartera" opciones={PERFILES}
+                  valor={meta.perfil || PERFIL_POR_DEFECTO}
+                  onCambio={v => setMeta({ ...meta, perfil: v })}
+                  pie={o => `${o.resumen} Tope por posición ${o.maxPosicion}%, por sector ${o.maxSector}%.`} />
+
+        <Opciones titulo="Objetivo" opciones={OBJETIVOS}
+                  valor={meta.objetivo || OBJETIVO_POR_DEFECTO}
+                  onCambio={v => setMeta({ ...meta, objetivo: v })}
+                  pie={o => o.resumen} />
+
+        <Opciones titulo="Horizonte" opciones={HORIZONTES}
+                  valor={meta.horizonte || HORIZONTE_POR_DEFECTO}
+                  onCambio={v => setMeta({ ...meta, horizonte: v })}
+                  pie={o => o.nota} />
 
         <div style={{ marginBottom: 14 }}>
           <div style={{ fontSize: 12.5, color: C.subtitulo, marginBottom: 4 }}>

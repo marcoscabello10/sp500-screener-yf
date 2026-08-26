@@ -122,7 +122,8 @@ const round1 = x => (x == null ? null : Math.round(x * 10) / 10)
  * Si viene vacío devuelve `hayPesos: false` y el informe sigue funcionando
  * exactamente como antes — sin pesos, pero sin romperse.
  */
-export function analizarCartera(informes, posiciones, perfilClave) {
+export function analizarCartera(informes, posiciones, perfilClave,
+                                objetivoClave, horizonteClave) {
   const perfil = PERFILES[perfilClave] || PERFILES[PERFIL_POR_DEFECTO]
   const validos = (informes || []).filter(i => i && !i.error)
   const pos = posiciones || {}
@@ -156,8 +157,18 @@ export function analizarCartera(informes, posiciones, perfilClave) {
 
     const etiqueta = i.veredicto?.etiqueta
     const excesoPct = (peso != null && peso > topeClase) ? peso - topeClase : null
+    const fit = afinidad(i, objetivoClave, horizonteClave)
+    const base = i.veredicto?.puntaje ?? null
     return {
       ticker: i.ticker,
+      beta: i.consenso?.beta ?? null,
+      // Afinidad con el objetivo: los MISMOS bloques, otra balanza. Va al lado
+      // del puntaje fundamental, nunca en lugar de el.
+      afinidad: fit,
+      // Cuanto cambia la lectura al mirarla con el objetivo puesto. Si la
+      // diferencia es grande, el informe lo dice: significa que la empresa es
+      // buena pero para otra cosa.
+      brechaObjetivo: (fit != null && base != null) ? round1(fit - base) : null,
       nombre: i.nombre,
       sector: i.sector || null,
       clase,
@@ -218,6 +229,8 @@ export function analizarCartera(informes, posiciones, perfilClave) {
   return {
     hayPesos,
     perfil,
+    objetivo: OBJETIVOS[objetivoClave] || OBJETIVOS[OBJETIVO_POR_DEFECTO],
+    horizonte: HORIZONTES[horizonteClave] || HORIZONTES[HORIZONTE_POR_DEFECTO],
     valorTotal: hayPesos ? Math.round(valorTotal) : null,
     pesoEquiponderado: round1(pesoEquiponderado),
     topeGeneral: round1(topeGeneral),
@@ -227,5 +240,186 @@ export function analizarCartera(informes, posiciones, perfilClave) {
     sectores,
     clases,
     porTicker: Object.fromEntries(activos.map(a => [a.ticker, a])),
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PASO 2 — PARA QUÉ ES ESTA CARTERA
+//
+// El veredicto de cada empresa es el mismo para todos: no sabe si quien la
+// tiene busca renta o crecimiento. Y no debería saberlo — el endpoint cachea
+// `action=datos` por ticker, así que si el puntaje dependiera del objetivo de
+// la cartera, el caché estaría mal la mitad de las veces.
+//
+// Por eso el ajuste por objetivo se hace ACÁ, en el navegador, repesando los
+// bloques que el endpoint ya devolvió. El puntaje fundamental queda intacto y
+// al lado aparece el de afinidad. Son dos números que responden dos preguntas:
+//   "¿es buena empresa?"  y  "¿es buena PARA ESTO?"
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const OBJETIVOS = {
+  renta: {
+    clave: 'renta', nombre: 'Renta',
+    resumen: 'El objetivo es el flujo de dividendos. Pesa más lo que paga y ' +
+             'la solidez para seguir pagándolo.',
+    pesos: { valuacion: 1, crecimiento: 0.5, salud_financiera: 1.5, dividendos: 2.5, consenso: 0.75 },
+  },
+  equilibrado: {
+    clave: 'equilibrado', nombre: 'Equilibrado',
+    resumen: 'Sin preferencia declarada: todos los bloques pesan igual.',
+    pesos: { valuacion: 1, crecimiento: 1, salud_financiera: 1, dividendos: 1, consenso: 1 },
+  },
+  crecimiento: {
+    clave: 'crecimiento', nombre: 'Crecimiento',
+    resumen: 'El objetivo es que el capital crezca. El dividendo casi no ' +
+             'cuenta; el crecimiento de ingresos manda.',
+    pesos: { valuacion: 0.75, crecimiento: 2.5, salud_financiera: 0.75, dividendos: 0.25, consenso: 1 },
+  },
+}
+export const OBJETIVO_POR_DEFECTO = 'equilibrado'
+
+// El horizonte mueve poco a propósito. Un modelo que cambiara mucho el puntaje
+// según si mirás a 2 o a 7 años estaría fingiendo una precisión que los datos
+// no dan. Lo que sí cambia de verdad es QUÉ RIESGOS son relevantes: a dos años
+// la volatilidad importa; a diez, importa que el negocio crezca.
+export const HORIZONTES = {
+  corto: {
+    clave: 'corto', nombre: 'Menos de 2 años',
+    ajuste: { crecimiento: 0.7, consenso: 1.3 },
+    riesgosRelevantes: ['volatilidad', 'lejos_del_maximo', 'short_alto'],
+    nota: 'A menos de dos años, la volatilidad y el ánimo del mercado pesan ' +
+          'más que el crecimiento de largo plazo: no hay tiempo para que una ' +
+          'tesis de años se cumpla.',
+  },
+  medio: {
+    clave: 'medio', nombre: '2 a 5 años',
+    ajuste: {},
+    riesgosRelevantes: ['trampa_valor', 'dilucion_fuerte', 'volatilidad'],
+    nota: 'A cinco años hay tiempo para que el negocio se note, pero no tanto ' +
+          'como para ignorar una caída fuerte en el medio.',
+  },
+  largo: {
+    clave: 'largo', nombre: 'Más de 5 años',
+    ajuste: { crecimiento: 1.4, consenso: 0.7 },
+    riesgosRelevantes: ['trampa_valor', 'dilucion_fuerte', 'upside_sin_ganancias'],
+    nota: 'A más de cinco años el precio objetivo de los analistas —que mira a ' +
+          '12 meses— dice poco, y la dilución y el crecimiento real dicen casi ' +
+          'todo.',
+  },
+}
+export const HORIZONTE_POR_DEFECTO = 'medio'
+
+/**
+ * Afinidad con el objetivo: los MISMOS bloques que calculó el endpoint,
+ * repesados. No se inventa ningún dato nuevo — se los mira con otra balanza.
+ *
+ * Devuelve null si no hay bloques con puntaje: mejor no decir nada que dar un
+ * número construido sobre aire.
+ */
+export function afinidad(inf, objetivoClave, horizonteClave) {
+  const obj = OBJETIVOS[objetivoClave] || OBJETIVOS[OBJETIVO_POR_DEFECTO]
+  const hor = HORIZONTES[horizonteClave] || HORIZONTES[HORIZONTE_POR_DEFECTO]
+  let suma = 0, pesos = 0
+  for (const s of inf?.senales || []) {
+    if (s.puntaje == null) continue
+    const w = (obj.pesos[s.bloque] ?? 1) * (hor.ajuste[s.bloque] ?? 1)
+    if (w <= 0) continue
+    suma += s.puntaje * w
+    pesos += w
+  }
+  if (!pesos) return null
+  return Math.round((suma / pesos) * 10) / 10
+}
+
+/** Los riesgos del activo que de verdad importan para este horizonte. */
+export function riesgosDelHorizonte(inf, horizonteClave) {
+  const hor = HORIZONTES[horizonteClave] || HORIZONTES[HORIZONTE_POR_DEFECTO]
+  return (inf?.riesgos || []).filter(r =>
+    r.severidad === 'alta' || hor.riesgosRelevantes.includes(r.codigo))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// STRESS TEST (punto 19)
+//
+// Regla que se respeta acá: solo se calcula lo que los datos sostienen.
+//
+//   · "el mercado cae 20%"      -> usa beta, que está medido. Es un MODELO.
+//   · los otros tres escenarios -> aritmética directa sobre los pesos, sin
+//                                  modelo ni supuesto de correlación.
+//
+// El escenario de tasas (+100 pb) NO se calcula. Haría falta la sensibilidad de
+// cada empresa a la tasa, que no está en ninguna fuente que tengamos. Poner un
+// número inventado ahí sería peor que no ponerlo: se leería igual de serio.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function stressTest(cart) {
+  if (!cart?.hayPesos) return null
+  const { activos, valorTotal, sectores } = cart
+  const conPeso = activos.filter(a => a.peso != null)
+  if (!conPeso.length) return null
+
+  const esc = []
+
+  // 1. Mercado -20%, ponderado por beta. Único con modelo.
+  const conBeta = conPeso.filter(a => a.beta != null)
+  const pesoConBeta = conBeta.reduce((s, a) => s + a.peso, 0)
+  if (pesoConBeta > 50) {
+    const betaCartera = conBeta.reduce((s, a) => s + a.peso * a.beta, 0) / pesoConBeta
+    esc.push({
+      titulo: 'El mercado cae 20%',
+      caidaPct: Math.round(betaCartera * -20 * 10) / 10,
+      caidaUSD: Math.round(betaCartera * -0.20 * valorTotal),
+      detalle: `Beta promedio de la cartera ${Math.round(betaCartera * 100) / 100}` +
+               (betaCartera > 1.05 ? ': se mueve más que el mercado.'
+                : betaCartera < 0.95 ? ': se mueve menos que el mercado.'
+                : ': se mueve casi igual que el mercado.') +
+               (pesoConBeta < 99 ? ` Calculado sobre el ${Math.round(pesoConBeta)}% de la cartera, que es la parte con beta conocida.` : ''),
+      modelo: true,
+    })
+  }
+
+  // 2. La posición más grande cae 30%. Aritmética pura.
+  const mayor = conPeso.slice().sort((a, b) => b.peso - a.peso)[0]
+  if (mayor) {
+    esc.push({
+      titulo: `${mayor.ticker} cae 30%`,
+      caidaPct: Math.round(mayor.peso * -0.30 * 10) / 10,
+      caidaUSD: Math.round(mayor.peso / 100 * -0.30 * valorTotal),
+      detalle: `Es la posición más grande, con el ${Math.round(mayor.peso * 10) / 10}% de la cartera.`,
+      modelo: false,
+    })
+  }
+
+  // 3. El sector más pesado cae 25%.
+  const sectorTop = sectores[0]
+  if (sectorTop && sectorTop.pct > 15) {
+    esc.push({
+      titulo: `${sectorTop.sector} cae 25%`,
+      caidaPct: Math.round(sectorTop.pct * -0.25 * 10) / 10,
+      caidaUSD: Math.round(sectorTop.pct / 100 * -0.25 * valorTotal),
+      detalle: `Es el sector más pesado, con el ${sectorTop.pct}% de la cartera.`,
+      modelo: false,
+    })
+  }
+
+  // 4. Todo lo especulativo cae 50%.
+  const pesoEspec = conPeso.filter(a => a.clase === 'especulativo')
+    .reduce((s, a) => s + a.peso, 0)
+  if (pesoEspec > 0) {
+    esc.push({
+      titulo: 'Los especulativos caen 50%',
+      caidaPct: Math.round(pesoEspec * -0.50 * 10) / 10,
+      caidaUSD: Math.round(pesoEspec / 100 * -0.50 * valorTotal),
+      detalle: `Pesan ${Math.round(pesoEspec * 10) / 10}% en total.`,
+      modelo: false,
+    })
+  }
+
+  return {
+    escenarios: esc.sort((a, b) => a.caidaPct - b.caidaPct),
+    noCalculado: 'Un movimiento de tasas no se estima: haría falta la ' +
+                 'sensibilidad de cada empresa a la tasa, que ninguna de las ' +
+                 'fuentes que usa este informe provee. Un número inventado ahí ' +
+                 'se leería igual de serio que los otros, y no lo es.',
   }
 }

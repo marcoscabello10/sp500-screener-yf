@@ -2355,6 +2355,61 @@ quedan alineadas al eje, que los símbolos vacíos no se guardan, que el día
 faltante queda en `null` y no rellenado, y que los retornos se pueden calcular
 salteando nulls. Más `--solo`, `--sin-cedears` y `--anios`.
 
+### ✅ Primera corrida real (27/08/2026)
+
+```
+python fetch_historico.py --solo AAPL MSFT KO XOM JPM
+-> 6 simbolos x 1672 fechas, 0,1 MB, 3 segundos
+```
+
+**Tres segundos.** Twelve Data, para los mismos seis, serían dos lotes y ~2
+minutos de espera forzada.
+
+(1672 fechas y no 1512: `desde` es el 1 de enero de *año − 6*, así que desde
+enero de 2020 hasta hoy son 6,65 años, no 6. Es correcto.)
+
+#### Métricas calculadas con el snapshot nuevo
+
+Replicando exactamente `calcRisk()` de `App.jsx`:
+
+| | días | ret. anual | volatilidad | beta | maxDD |
+|---|---|---|---|---|---|
+| SPY | 1671 | 15,53% | 20,15% | **1,000** | 33,7% |
+| AAPL | 1671 | 24,85% | 31,38% | 1,178 | 33,4% |
+| MSFT | 1671 | 19,89% | 30,44% | 1,137 | 37,1% |
+| KO | 1671 | 10,90% | 20,29% | 0,508 | 37,0% |
+| XOM | 1671 | 17,97% | 32,43% | 0,730 | 55,0% |
+| JPM | 1671 | 18,08% | 30,66% | 1,059 | 43,6% |
+
+Los controles de sanidad dan bien: **el beta de SPY contra sí mismo es
+exactamente 1,000**; el maxDD de SPY de 33,7% es el desplome de marzo 2020; el
+55% de XOM es el derrumbe del petróleo del mismo año; y KO con beta 0,5 y baja
+volatilidad es lo que se espera de una defensiva.
+
+Correlaciones: AAPL–MSFT **0,64** (la más alta, las dos tecnológicas) y
+MSFT–XOM **0,19** (la más baja, tecnología contra energía). Ordenadas como
+deben estar.
+
+#### Predicción falsable para comparar contra F2
+
+Si la **única** diferencia entre las fuentes es el ajuste por dividendos, F2
+tiene que mostrar hoy el retorno anual menos el dividend yield:
+
+| | yfinance ajustado | F2 debería dar |
+|---|---|---|
+| SPY | 15,53% | **14,79%** |
+| AAPL | 24,85% | **24,50%** |
+| MSFT | 19,89% | **19,14%** |
+| KO | 10,90% | **8,57%** |
+| XOM | 17,97% | **15,47%** |
+| JPM | 18,08% | **16,37%** |
+
+**Y la volatilidad y el beta casi no deberían moverse**: los dividendos son
+chicos y trimestrales, no cambian la forma de la serie. Si el retorno se mueve
+como dice la tabla pero la volatilidad y el beta se mantienen, la fuente nueva
+está bien y se puede avanzar con B2. Si la volatilidad o el beta se mueven
+mucho, hay otra cosa y **no se cambia la fuente hasta entender qué**.
+
 ### Lo que falta (fase B2, con riesgo real)
 
 Que F2/F3/F4 lean el snapshot. Toca `App.jsx` y mueve los números. Va después

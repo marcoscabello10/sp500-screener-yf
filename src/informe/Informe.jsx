@@ -231,11 +231,26 @@ function BloqueSenal({ s }) {
         <span style={{ fontWeight: 600, color: C.titulo, fontSize: 15.5 }}>
           {ETIQUETA_BLOQUE[s.bloque] || s.bloque}
         </span>
+        {/* Si un bloque no pesa lo mismo que los demas, el informe lo dice.
+            Un puntaje ponderado que no muestra sus pesos es una caja negra. */}
+        {s.peso != null && s.peso !== 1 && s.puntaje != null && (
+          <span style={{ fontSize: 11.5, color: C.tenue, border: `1px solid ${C.borde}`,
+                         borderRadius: 4, padding: '1px 6px' }}>
+            pesa ×{s.peso}
+          </span>
+        )}
         <span style={{ marginLeft: 'auto', fontFamily: F.num, fontSize: 14,
                        color: sem.color }}>
           {s.puntaje != null ? `${num(s.puntaje, 0)}/100` : 'sin datos'}
         </span>
       </div>
+      {s.bloque === 'dividendos' && s.peso === 0.5 && s.puntaje != null && (
+        <p style={{ fontSize: 12.5, color: C.tenue, margin: '7px 0 0' }}>
+          Repartir o reinvertir es una decisión de política, no una medida de qué
+          tan bueno es el negocio, así que este bloque vale la mitad. Si buscás
+          renta, el objetivo de la cartera le devuelve el peso completo.
+        </p>
+      )}
       {s.notas?.length > 0 && (
         <ul style={{ margin: '9px 0 0', paddingLeft: 20, fontSize: 14 }}>
           {s.notas.map((n, i) => (

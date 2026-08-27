@@ -36,7 +36,7 @@ RAIZ = {'ticker', 'nombre', 'sector', 'nivel', 'enSp500', 'hasCedear',
         'sentimiento', 'consenso_forward', 'descargo', 'generado_en'}
 VEREDICTO = {'puntaje', 'etiqueta', 'porque', 'accion', 'limitado_por_bandera',
              'aclaracion'}
-SENAL = {'bloque', 'titulo', 'puntaje', 'notas'}
+SENAL = {'bloque', 'titulo', 'peso', 'puntaje', 'notas'}
 BLOQUES = ['valuacion', 'crecimiento', 'salud_financiera', 'dividendos', 'consenso']
 ETIQUETAS = {'compra', 'neutral', 'venta', 'sin datos suficientes'}
 ACCIONES = {'reforzar', 'mantener', 'sacar', 'revisar a mano'}
@@ -68,6 +68,19 @@ for t in ('AAPL', 'MSFT', 'JPM', 'VICI', 'XOM', 'RGTI', 'HIMS', 'MO', 'NVDA'):
     for r in d['riesgos']:
         chequear({'codigo', 'severidad', 'texto'} <= set(r),
                  f'{t}: riesgo con claves faltantes -> {sorted(r)}')
+    # El peso de cada bloque tiene que coincidir con la tabla, y el veredicto
+    # tiene que ser el promedio PONDERADO de los bloques con dato. Si alguien
+    # vuelve a poner un promedio simple, esto falla.
+    for s in d['senales']:
+        chequear(s['peso'] == I.PESO_BLOQUE[s['bloque']],
+                 f'{t}/{s["bloque"]}: peso {s["peso"]} != {I.PESO_BLOQUE[s["bloque"]]}')
+    con = [(s['puntaje'], s['peso']) for s in d['senales'] if s['puntaje'] is not None]
+    graves = len([r for r in d['riesgos'] if r['severidad'] == 'alta'])
+    if con:
+        esperado = sum(v * w for v, w in con) / sum(w for _, w in con)
+        esperado = round(max(0.0, esperado - 18.0 * graves), 1) if graves else round(esperado, 1)
+        chequear(abs(d['veredicto']['puntaje'] - esperado) < 0.15,
+                 f'{t}: veredicto {d["veredicto"]["puntaje"]} != ponderado {esperado}')
 
 # Ninguna CLAVE puede llevar tilde: el front las escribe sin acento.
 def claves(o, ruta='raiz'):

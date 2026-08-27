@@ -498,6 +498,47 @@ PENALIZACION_GRAVE = 18.0
 # este umbral, pagar poco puntuaba peor que no pagar nada.
 UMBRAL_DIVIDENDO_RELEVANTE = 1.0
 
+# ─── Cuánto pesa cada bloque en el veredicto ────────────────────────────────
+#
+# Hasta el 26/08/2026 los cinco bloques promediaban parejo. Marcos notó que el
+# dividendo pesaba demasiado en empresas con buenos fundamentales, y medido
+# sobre las 503 tenía razón: **30 empresas cambiaban de veredicto solo por el
+# dividendo**. Once llegaban a COMPRA empujadas por él (ITW, TROW, VZ, MDT), y
+# diecinueve dejaban de serlo por pagar poco:
+#
+#     EQT  74,3 sin dividendos  ->  57,9 con el bloque puesto  (bloque 9/100)
+#     PCG  68,8                 ->  53,3                       (bloque 7/100)
+#     KO                        ->  37,5 = VENTA               (bloque 19/100)
+#
+# Coca-Cola marcada VENTA por repartir poco *para Consumer Staples* muestra el
+# problema de fondo: el percentil de dividendo mide "paga más que sus pares",
+# que es una POLÍTICA DE REPARTO, no una medida de la calidad del negocio. Una
+# empresa que no reparte no es peor: es distinta.
+#
+# Por eso el dividendo pesa la mitad que los bloques que sí miden el negocio.
+# No cero: un dividendo sostenido en el tiempo es evidencia real de generación
+# de caja y de disciplina. Pero no puede valer lo mismo que la valuación.
+#
+# Y esto NO le quita importancia al dividendo para quien la busca: el objetivo
+# de la cartera (cartera.js) multiplica este peso por 2,5 en "renta" y por 0,25
+# en "crecimiento". La preferencia del cliente se expresa ahí, que es donde
+# corresponde, y no metida dentro del puntaje de la empresa.
+#
+# Efecto medido con peso 0,5: cambian 22 de 503 (4,4%). Es una corrección
+# quirúrgica, no una barajada de nuevo.
+PESO_BLOQUE = {
+    'valuacion': 1.0,
+    'crecimiento': 1.0,
+    'salud_financiera': 1.0,
+    'consenso': 1.0,
+    'dividendos': 0.5,
+}
+
+NOTA_PESO_DIVIDENDO = (
+    'El dividendo pesa la mitad que los demás bloques: repartir o reinvertir es '
+    'una decisión de política, no una medida de qué tan bueno es el negocio. Si '
+    'buscás renta, el objetivo de la cartera le devuelve el peso completo.')
+
 SIN_DATOS = 'sin datos suficientes'
 
 # Los bloques viajan con su identificador SIN acento ('valuacion'), porque es la
@@ -604,6 +645,7 @@ def evaluar(ticker, fund, cons, detalle, hist, sec):
             val_puntos.append(p)
     senales.append({'bloque': 'valuacion',
                     'titulo': BLOQUE_TEXTO['valuacion'],
+                    'peso': PESO_BLOQUE['valuacion'],
                     'puntaje': round(sum(val_puntos) / len(val_puntos), 1) if val_puntos else None,
                     'notas': val_notas})
 
@@ -653,6 +695,7 @@ def evaluar(ticker, fund, cons, detalle, hist, sec):
             hechos.append(f'dilución {a5:+.1f}%/año')
     senales.append({'bloque': 'crecimiento',
                     'titulo': BLOQUE_TEXTO['crecimiento'],
+                    'peso': PESO_BLOQUE['crecimiento'],
                     'puntaje': round(sum(cre_puntos) / len(cre_puntos), 1) if cre_puntos else None,
                     'notas': cre_notas})
 
@@ -696,6 +739,7 @@ def evaluar(ticker, fund, cons, detalle, hist, sec):
             hechos.append(f'margen bruto {mb[ks[0]]:.1f}% -> {mb[ks[-1]]:.1f}%')
     senales.append({'bloque': 'salud_financiera',
                     'titulo': BLOQUE_TEXTO['salud_financiera'],
+                    'peso': PESO_BLOQUE['salud_financiera'],
                     'puntaje': round(sum(sal_puntos) / len(sal_puntos), 1) if sal_puntos else None,
                     'notas': sal_notas})
 
@@ -740,6 +784,7 @@ def evaluar(ticker, fund, cons, detalle, hist, sec):
             'reinvertir suele rendir más que repartir. El bloque no puntúa.')
     senales.append({'bloque': 'dividendos',
                     'titulo': BLOQUE_TEXTO['dividendos'],
+                    'peso': PESO_BLOQUE['dividendos'],
                     'puntaje': round(sum(div_puntos) / len(div_puntos), 1) if div_puntos else None,
                     'notas': div_notas})
 
@@ -774,6 +819,7 @@ def evaluar(ticker, fund, cons, detalle, hist, sec):
                          f'pesa poco.')
     senales.append({'bloque': 'consenso',
                     'titulo': BLOQUE_TEXTO['consenso'],
+                    'peso': PESO_BLOQUE['consenso'],
                     'puntaje': round(sum(con_puntos) / len(con_puntos), 1) if con_puntos else None,
                     'notas': con_notas, 'recomendacion': rec})
 
@@ -816,8 +862,13 @@ def evaluar(ticker, fund, cons, detalle, hist, sec):
                             'texto': s})
 
     # ── VEREDICTO ────────────────────────────────────────────────────────────
-    puntajes = [s['puntaje'] for s in senales if s['puntaje'] is not None]
-    global_ = round(sum(puntajes) / len(puntajes), 1) if puntajes else None
+    # Promedio PONDERADO (ver PESO_BLOQUE). Antes era un promedio simple y eso
+    # le daba al dividendo el mismo peso que a la valuación.
+    con_dato = [(s['puntaje'], PESO_BLOQUE.get(s['bloque'], 1.0))
+                for s in senales if s['puntaje'] is not None]
+    total_peso = sum(w for _, w in con_dato)
+    global_ = (round(sum(v * w for v, w in con_dato) / total_peso, 1)
+               if total_peso else None)
     graves = [r for r in riesgos if r['severidad'] == 'alta']
     # Las banderas rojas DESCUENTAN del puntaje, no solo cambian la etiqueta.
     if global_ is not None and graves:
@@ -833,6 +884,8 @@ def evaluar(ticker, fund, cons, detalle, hist, sec):
     if cap:
         porque.append('con una bandera roja abierta no puede quedar en COMPRA, '
                       'por bueno que sea el puntaje')
+    if any(s['bloque'] == 'dividendos' and s['puntaje'] is not None for s in senales):
+        porque.append('el bloque de dividendos pesa la mitad')
 
     return {
         'senales': senales,

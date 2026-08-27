@@ -1536,6 +1536,21 @@ enchufen; dejarlo para después obliga a rehacer lo del medio.
     base / bear), 9 (que aporta que no tengo). Es lo que falta del paso 3.
 - **Paso 5**: 16 (P/E vs su historia) y 12 (correlación) — piden datos nuevos y
   tocan el bot. Ver la nota sobre bajar el histórico de una vez.
+
+### ⚠️ REORDENAMIENTO PROPUESTO (26/08/2026): el 5 antes que el 4
+
+El *expected return* (punto 17, el plato fuerte del paso 4) se arma con tres
+piezas: crecimiento de EPS esperado + **cambio de múltiplo** + dividendo. La
+segunda necesita saber si el múltiplo de hoy está caro o barato **contra la
+propia historia de la empresa** — que es exactamente el punto 16, del paso 5.
+
+Sin eso, el "cambio de múltiplo" sale de suponer que converge a la mediana del
+sector, que es un supuesto arbitrario metido dentro de un número que el cliente
+va a leer como una proyección. Hacer el 5 primero convierte esa suposición en
+un dato.
+
+Además el snapshot de precios del paso 5 **arregla de raíz el límite de Twelve
+Data en F2/F3/F4**, que hoy sigue siendo el bug más molesto del screener.
 - **Pendiente aparte**: botón "Ver informe" en las filas de F1/F5 — es lo único
   que sí obliga a tocar `src/App.jsx`.
 
@@ -1869,6 +1884,87 @@ lo que permite verificar lo único que de verdad importa:
 
 ---
 
+## ⚖️ EL DIVIDENDO PESABA DEMASIADO — medido y corregido (26/08/2026)
+
+Marcos: *"el dividendo está pesando bastante en el score de las empresas
+atractivas o con buenos fundamentals"*. Se midió sobre las 503 antes de tocar
+nada, y tenía razón.
+
+### El diagnóstico
+
+Los cinco bloques promediaban parejo, así que para una empresa que paga
+dividendo el bloque valía **~25% de su puntaje**. Resultado: **30 empresas
+cambiaban de veredicto solo por el dividendo.**
+
+**Once llegaban a COMPRA empujadas por él:**
+
+| | con dividendo | sin el bloque | bloque |
+|---|---|---|---|
+| TROW | 67,5 | 57,1 | 98/100 |
+| VZ | 67,9 | 59,2 | 94/100 |
+| MDT | 67,2 | 58,8 | 92/100 |
+| ITW | 61,2 | 51,7 | 90/100 |
+
+**Diecinueve dejaban de serlo por pagar poco:**
+
+| | con dividendo | sin el bloque | bloque |
+|---|---|---|---|
+| EQT | 57,9 | **74,3** | 9/100 |
+| PCG | 53,3 | **68,8** | 7/100 |
+| RL | 55,3 | 66,4 | 22/100 |
+| KO | **37,5 = VENTA** | — | 19/100 |
+
+**Coca-Cola marcada VENTA por repartir poco.** Ahí está el problema de fondo: el
+percentil de dividendo se calcula *dentro del sector*, así que mide **"paga más
+que sus pares"** — una política de reparto, no la calidad del negocio. KO paga
+2,33% y eso es poco *para Consumer Staples*, donde todos pagan más.
+
+### La corrección
+
+```python
+PESO_BLOQUE = {'valuacion': 1.0, 'crecimiento': 1.0, 'salud_financiera': 1.0,
+               'consenso': 1.0, 'dividendos': 0.5}
+```
+
+El promedio pasó de simple a **ponderado**. El dividendo pesa la mitad que los
+bloques que miden el negocio.
+
+**Por qué 0,5 y no 0.** Un dividendo sostenido es evidencia real de generación de
+caja y de disciplina; eso sí dice algo de la empresa. Lo que no puede es valer
+lo mismo que la valuación.
+
+**Y esto no le quita importancia al dividendo para quien lo busca**: el objetivo
+de la cartera multiplica este peso por **2,5 en "renta"** (queda en 1,25, más
+que cualquier otro bloque) y por **0,25 en "crecimiento"** (queda en 0,125, casi
+nada). La preferencia del cliente se expresa ahí, que es su lugar, y no metida
+dentro del puntaje de la empresa.
+
+### Efecto medido
+
+| peso | compra | neutral | venta | cambian de veredicto |
+|---|---|---|---|---|
+| 1,0 (antes) | 201 | 263 | 39 | — |
+| 0,75 | 204 | 263 | 36 | 10 |
+| **0,5 (elegido)** | **207** | **261** | **35** | **22** |
+| 0,25 | 207 | 260 | 36 | 33 |
+| 0,0 | 209 | 256 | 38 | 49 |
+
+**22 de 503 (4,4%)**: una corrección quirúrgica, no una barajada. Los casos que
+motivaron el cambio quedaron bien: EQT 57,9 → **64,9 compra**, PCG 53,3 →
+**60,0 compra**, KO 37,5 venta → **40,2 neutral**. ITW cayó de compra a neutral,
+que era lo correcto: se apoyaba en un dividendo de 90/100.
+
+### El puntaje muestra sus pesos
+
+Cada señal viaja con su `peso` y el informe lo dibuja (`pesa ×0.5`), con una
+línea que explica por qué. **Un puntaje ponderado que no muestra sus pesos es
+una caja negra**, y el `porque` del veredicto ahora lo dice también.
+
+El test de contrato **recalcula el promedio ponderado y lo compara** con el
+veredicto: si alguien vuelve a poner un promedio simple, falla ahí.
+
+---
+
 ## 💡 CONSULTA DE MARCOS — bajar el histórico de precios de una vez
 
 Preguntó si en vez de pedirle a Twelve Data en cada corrida no se puede bajar
@@ -1906,6 +2002,44 @@ cuando coinciden se saca el camino viejo.
 
 ---
 
+## 🔒 REGLA OPERATIVA: no correr git desde el puente de Claude
+
+Pasó dos veces (25 y 27/08/2026). Cuando Claude corre `git status` sobre la
+carpeta montada, git crea `.git/index.lock` y **no puede borrarlo**: el puente
+no tiene permiso de eliminar archivos. Queda un lock huérfano y **todos los
+comandos git de Marcos fallan** con:
+
+```
+fatal: Unable to create '.../.git/index.lock': File exists.
+```
+
+La primera vez le costó tres comandos seguidos fallando sin entender por qué.
+
+**Regla**: Claude no corre `git status`, `git diff` ni nada que toque el índice
+sobre la carpeta de Marcos. Para verificar qué llegó, usa `grep`, `ls`, `sed` y
+`python`, que no tocan `.git/`. Si igual hace falta mirar el historial,
+`git log` es seguro (no escribe el índice).
+
+**Si aparece el lock**: Marcos lo borra a mano antes de cualquier git.
+```
+del .git\index.lock
+```
+
+---
+
+## 🔁 `src/main.jsx` vuelve a aparecer modificado
+
+Reaparece cada tanto y **siempre es lo mismo**: solo saltos de línea (LF ↔ CRLF),
+cero contenido. Verificado con `git diff --ignore-cr-at-eol`, que sale vacío.
+Algo del entorno de Windows lo reescribe al abrirlo.
+
+Descartarlo con `git checkout --` funciona pero vuelve. **Lo más práctico es
+commitearlo una vez** con un mensaje que diga que son saltos de línea: a partir
+de ahí lo que está en git coincide con lo que produce su máquina y deja de
+ensuciar el `git status`. Es del screener, así que va en su propio commit.
+
+---
+
 ## 📦 PENDIENTE DE PUSH — lista acumulada
 
 Todo esto está escrito en la carpeta y **todavía no subido**. Verificar con
@@ -1914,6 +2048,14 @@ Todo esto está escrito en la carpeta y **todavía no subido**. Verificar con
 > Todo lo anterior (informe de cartera incluido) y el arreglo de Twelve Data en
 > `src/App.jsx` **ya fueron pusheados** por Marcos. Lo que sigue es la tanda del
 > **25/08/2026**: veredicto de 3 posiciones, foco en rotación y los CEDEARs.
+
+### Tanda del peso del dividendo (26/08)
+
+```
+api/informe.py               (PESO_BLOQUE: promedio ponderado, dividendos 0,5)
+src/informe/Informe.jsx      (muestra "pesa x0.5" y explica por que)
+test/test_contrato.py        (recalcula el ponderado y lo compara)
+```
 
 ### Tanda del paso 3 (tesis con IA)
 

@@ -2189,6 +2189,179 @@ reintroduciendo el bug a propósito: lo agarra y sale con código 1.
 
 ---
 
+## 🔍 AUDITORÍA DE LOS DATOS EN VIVO DEL SCREENER (27/08/2026)
+
+Marcos pidió analizar todo lo que se le pide a Twelve Data y ver si se puede
+bajar a la PC y cachear. La auditoría encontró tres cosas, y **la más grave no
+tiene nada que ver con Twelve Data**.
+
+### El mapa: qué usa qué
+
+`api/data.py` tiene cinco acciones. **Solo UNA usa Twelve Data.**
+
+| acción | fuente | quién la llama | problema |
+|---|---|---|---|
+| `sp500` | Wikipedia | F1 | ninguno |
+| `quote` | **yfinance desde Vercel** | F1/F5, solo los que NO están en el snapshot | ⚠️ Yahoo bloquea IPs de datacenter |
+| `profile` | **yfinance desde Vercel** | ídem | ⚠️ ídem |
+| `ratios` | **yfinance desde Vercel** | ídem | ⚠️ ídem |
+| `history` | **Twelve Data** | F2/F3/F4 | 8 créditos/minuto |
+
+O sea: lo que "no da toda la información" son `quote`/`profile`/`ratios`, que
+salen a Yahoo **desde Vercel** — exactamente el camino que la regla de oro #4
+del proyecto dice que está bloqueado. Twelve Data es el que tarda, no el que
+falta.
+
+### 🐛 El caché de histórico NUNCA se guarda
+
+`histCacheSave()` existe y tiene 7 días de vida. Pero `lsSet()` es esto:
+
+```js
+function lsSet(key, value) {
+  try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
+}
+```
+
+**El `catch {}` vacío se traga el error de cuota.** Y la cuota se supera casi
+siempre, porque el caché guarda **siete campos por día** cuando el screener usa
+exactamente dos:
+
+```js
+function toDailyRet(prices) { ... prices[i].close ... }   // solo .close y .date
+```
+
+`open`, `high`, `low`, `volume` y `adjClose` **no se usan en ningún cálculo**.
+Verificado por grep sobre todo `App.jsx`.
+
+| símbolos, 6 años | como se guarda hoy | solo cierres |
+|---|---|---|
+| 20 | 3,5 MB | 0,9 MB |
+| 40 | **7,0 MB** | 1,8 MB |
+| 80 | **14,0 MB** | 3,5 MB |
+| 150 | **26,3 MB** | 6,6 MB |
+
+localStorage da ~5 MB por origen — **y el informe comparte ese mismo origen**.
+Con más de ~30 activos el caché falla en silencio y **cada corrida vuelve a
+bajar todo de Twelve Data**. Ahí está la lentitud.
+
+### Twelve Data no ajusta por dividendos
+
+En `parse_td`, `adjClose` se escribe igual a `close`. O sea que los retornos que
+hoy alimentan volatilidad, beta y correlación **ignoran los dividendos**. Pasar
+a yfinance con `auto_adjust=True` va a **mover los números** — hacia mejor, pero
+se van a mover. Hay que compararlos antes de cambiar la fuente, no después.
+
+### Cuánto pesa y cuánto tarda cada camino
+
+| | tiempo | tamaño |
+|---|---|---|
+| Twelve Data, 505 símbolos, 6 años | **88 minutos** (85 lotes × 62 s) | — |
+| yfinance desde la PC, 634 símbolos | **minutos** (7-13 llamadas) | — |
+| snapshot compacto, solo cierres diarios | | 7,7 MB |
+| snapshot compacto, cierres **semanales** | | **1,6 MB** |
+
+### El plan, en fases separadas
+
+**Fase A — adelgazar el caché.** Guardar `{date, close}` en vez de siete campos.
+Tres líneas en `App.jsx`, sin fuente nueva, sin bot. Hace que el caché de 7 días
+**funcione por primera vez**. Es el mejor retorno por línea tocada de todo el
+proyecto.
+
+**Fase B — snapshot de precios desde la PC.** `local_bot/fetch_historico.py` con
+yfinance, archivo **aparte** de `informe_detalle.json` para no engordarlo.
+F2/F3/F4 lo leen; Twelve Data queda de respaldo para lo que falte.
+
+**Fase C — matar `quote`/`profile`/`ratios` en vivo.** Los 129 CEDEARs nuevos ya
+están en `informe_detalle.json` con `price`, `sector`, `pe`, `pb`, `roe`, `de`,
+`evEbitda`, `netMargin`, `roa`, `revGrowth`, `priceToSales` — **los mismos
+campos que esas tres acciones devuelven**. No hay que bajar un dato nuevo:
+hay que leer del archivo que ya existe.
+
+**Fase D — el paso 5 original.** P/E contra su propia historia y correlaciones
+en el informe. Sale casi gratis una vez que existe el snapshot de la fase B.
+
+### ⚠️ El paso 5 y esto son el MISMO trabajo
+
+El paso 5 necesitaba un snapshot de precios históricos. La fase B **es ese
+snapshot**. No hay que elegir entre uno y otro: hacer esto primero es hacer el
+paso 5, y de paso arreglar el screener.
+
+---
+
+## ✅ FASE A — el caché de histórico ahora entra (27/08/2026)
+
+`adelgazarHist()` deja de cada día **solo `date` y `close`**, que es lo único
+que usa `toDailyRet()`. Medido con un localStorage simulado **con cuota** (con
+uno infinito el bug es invisible):
+
+| símbolos, 6 años | antes | ahora |
+|---|---|---|
+| 20 | 3,8 MB (entraba) | **1,2 MB** |
+| 40 | 7,5 MB (**no entraba**) | **2,4 MB** |
+| 80 | 14,8 MB (**no entraba**) | **4,7 MB** |
+| 150 | 27,6 MB (**no entraba**) | 8,8 MB (sigue sin entrar) |
+
+Y `histCacheSave` **ya no usa `lsSet`**: su `catch {}` vacío era exactamente lo
+que escondía el problema. Ahora atrapa el error de cuota, avisa por consola con
+el tamaño y la cantidad de símbolos, y devuelve `false`.
+
+Verificado que **los retornos salen idénticos** a los del histórico completo —
+byte por byte sobre la serie de `toDailyRet`. Adelgazar el caché no cambia un
+solo número.
+
+Los 150 símbolos siguen sin entrar, y está bien que así sea: para eso está la
+fase B, donde el límite no es localStorage.
+
+## ✅ FASE B1 — `local_bot/fetch_historico.py` (27/08/2026)
+
+Baja el histórico con yfinance desde la PC y lo guarda en
+`public/data/historico_precios.json`. **Todavía no lo lee nadie**: el screener
+sigue con Twelve Data. Es a propósito.
+
+**Formato con eje de fechas compartido.** Repetir la fecha en cada punto de cada
+símbolo triplica el archivo:
+
+```json
+{"fechas": ["2020-01-02", ...],
+ "series": {"AAPL": [72.88, null, ...]},
+ "cobertura": {"AAPL": {"desde": 0, "puntos": 1512}}}
+```
+
+**`null` = ese día el papel no cotizaba.** Quien lo consuma tiene que
+saltearlos, **no rellenarlos**: rellenar inventa un retorno de 0% que baja la
+volatilidad artificialmente. Está escrito dentro del propio JSON
+(`_nota_nulos`) para que no se pierda.
+
+**El eje sale de SPY**, que cotiza todos los días hábiles y es el calendario
+correcto. Si SPY no baja, el bot **aborta sin escribir**: sin benchmark el
+snapshot no le sirve a F2/F3/F4. Verificado que no pisa el archivo bueno.
+
+### ⚠️ Los números VAN a moverse
+
+`auto_adjust=True` → precios ajustados por dividendos y splits. Twelve Data
+devuelve el cierre crudo (`adjClose = close` en `api/data.py`). Las
+volatilidades, betas y correlaciones **no van a coincidir** con las de hoy. Van
+a estar mejor, pero distintas.
+
+Por eso B1 no reemplaza nada. El camino es: generar el snapshot, correr las dos
+fuentes sobre los mismos tickers, comparar, y **recién ahí** sacar el viejo.
+
+### Verificación offline
+
+yfinance falso que reproduce la forma real (`MultiIndex` con varios símbolos,
+columnas planas con uno solo) y los casos feos: papel sin datos, IPO reciente
+(nulls al principio), día faltante en el medio. Se comprueba que las series
+quedan alineadas al eje, que los símbolos vacíos no se guardan, que el día
+faltante queda en `null` y no rellenado, y que los retornos se pueden calcular
+salteando nulls. Más `--solo`, `--sin-cedears` y `--anios`.
+
+### Lo que falta (fase B2, con riesgo real)
+
+Que F2/F3/F4 lean el snapshot. Toca `App.jsx` y mueve los números. Va después
+de comparar.
+
+---
+
 ## 📦 PENDIENTE DE PUSH — lista acumulada
 
 Todo esto está escrito en la carpeta y **todavía no subido**. Verificar con
@@ -2197,6 +2370,17 @@ Todo esto está escrito en la carpeta y **todavía no subido**. Verificar con
 > Todo lo anterior (informe de cartera incluido) y el arreglo de Twelve Data en
 > `src/App.jsx` **ya fueron pusheados** por Marcos. Lo que sigue es la tanda del
 > **25/08/2026**: veredicto de 3 posiciones, foco en rotación y los CEDEARs.
+
+### Tanda de las fases A y B1 (27/08)
+
+```
+src/App.jsx                  ⚠️ SCREENER — adelgazarHist + histCacheSave sin lsSet
+local_bot/fetch_historico.py NUEVO — snapshot de precios con yfinance
+```
+
+⚠️ **Esta tanda SÍ toca `src/App.jsx`**, por primera vez desde el arreglo de
+Twelve Data. Son 43 líneas agregadas, todas dentro del caché de histórico: no
+se tocó ningún cálculo, ninguna pantalla ni la exportación.
 
 ### Tanda del resto de la cartera (27/08)
 

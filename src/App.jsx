@@ -147,6 +147,33 @@ function histCacheLoad(fromRequired) {
   if (d.from > fromRequired) return null;
   return d;
 }
+// Deja de cada día SOLO lo que el screener usa: la fecha y el cierre.
+//
+// ⚠️ Esto arregla un bug silencioso. El histórico llega con siete campos por día
+// (date, close, adjClose, open, high, low, volume) y el screener usa DOS:
+// `toDailyRet()` lee `.close` y `.date`, y nada más en toda la app toca los
+// otros cinco. Guardar los siete hacía que el caché pesara:
+//
+//     20 símbolos x 6 años ->  3,5 MB        80 símbolos -> 14,0 MB
+//     40 símbolos          ->  7,0 MB       150 símbolos -> 26,3 MB
+//
+// localStorage da ~5 MB por origen —y /informe comparte ese mismo origen—, así
+// que con más de ~30 activos `setItem` tiraba QuotaExceededError. Y `lsSet` lo
+// atrapaba con un `catch {}` vacío: el caché NUNCA se guardaba, sin un solo
+// mensaje, y cada corrida de F2/F3/F4 volvía a bajar todo de Twelve Data.
+// Ahí estaba la lentitud.
+//
+// Con solo fecha y cierre, los mismos 150 símbolos pasan de 26,3 MB a 6,6 MB, y
+// una cartera normal entra con muchísimo margen.
+function adelgazarHist(hist) {
+  const out = {};
+  for (const [sym, serie] of Object.entries(hist || {})) {
+    if (!Array.isArray(serie)) continue;
+    out[sym] = serie.map(d => ({ date: d.date, close: d.close }));
+  }
+  return out;
+}
+
 function histCacheSave(hist, spyPrices, from, expectedCount) {
   // No cachear resultados incompletos — si faltó más del 15% de los símbolos
   // esperados, es mejor reintentar la próxima vez que guardar un caché roto
@@ -154,9 +181,25 @@ function histCacheSave(hist, spyPrices, from, expectedCount) {
   const gotCount = Object.keys(hist).length;
   if (expectedCount && gotCount < expectedCount * 0.85) {
     console.warn(`Histórico incompleto (${gotCount}/${expectedCount}) — no se cachea, para reintentar la próxima corrida.`);
-    return;
+    return false;
   }
-  lsSet(HIST_CACHE_KEY, { hist, spyPrices, from, timestamp: Date.now() });
+  const payload = {
+    hist: adelgazarHist(hist),
+    spyPrices: (spyPrices || []).map(d => ({ date: d.date, close: d.close })),
+    from, timestamp: Date.now(),
+  };
+  // Acá NO se usa lsSet: su `catch {}` vacío es justamente lo que escondía el
+  // problema durante meses. Si el caché no entra, tiene que decirlo.
+  try {
+    localStorage.setItem(HIST_CACHE_KEY, JSON.stringify(payload));
+    return true;
+  } catch (e) {
+    const mb = (JSON.stringify(payload).length / 1e6).toFixed(1);
+    console.warn(`No se pudo guardar el caché de histórico (${mb} MB, ${gotCount} símbolos): ` +
+                 `${e && e.name}. La próxima corrida va a volver a descargar. ` +
+                 `Si se repite, achicá el período o la cantidad de activos.`);
+    return false;
+  }
 }
 function histCacheClear() {
   lsDel(HIST_CACHE_KEY);

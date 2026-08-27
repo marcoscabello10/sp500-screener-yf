@@ -2069,6 +2069,126 @@ falsa**.
 
 ---
 
+## 🚨 LOS PESOS ESTÁN MAL CUANDO LA CARTERA SUBIDA ES PARCIAL (27/08/2026)
+
+Marcos lo vio antes de que pasara: *"si te subo 5 acciones, puede que sumen un
+50%, porque el resto va a estar en acciones argentinas o en renta fija"*.
+
+**Es un bug vivo hoy.** `analizarCartera()` calcula:
+
+```js
+peso = valorActual / (suma de los activos analizados) * 100
+```
+
+Si esos 5 CEDEARs son la mitad de la cartera real, **cada peso sale al doble** y
+las alertas de sobrepeso se disparan de más. El informe dice "AAPL pesa 22%"
+cuando en la cartera del cliente pesa 11%. No hay ningún aviso: los porcentajes
+suman 100 y parecen correctos.
+
+### La pieza que ya está y no se usa
+
+F5 **ya parsea una columna `% Posición`** (`colPct`, busca "posicion",
+"porcentaje", "tenencia" o "%") y la guarda como `pctExcel`. `leerCarterasF5()`
+**ya la trae** hasta el informe. `analizarCartera()` la **ignora** y recalcula
+sobre el subconjunto.
+
+Arreglo mínimo: si viene `pctExcel`, ese es el peso real; si no, se recalcula
+sobre lo analizado **y el informe lo dice con todas las letras** en vez de
+presentar un 100% que no es el 100% de nada.
+
+### Lo que falta para la rotación entre clases de activo
+
+Saber que los CEDEARs son el 48% arregla los pesos, pero no contesta lo que
+Marcos quiere: **cuánto rotar de cada cosa**. Para eso hace falta saber qué es
+el otro 52% — renta fija, acciones locales, efectivo. Eso no está en ninguna
+fuente y no se puede deducir: es input.
+
+Propuesta: tres campos en el formulario del informe de cartera (valor de renta
+fija, de acciones locales, de efectivo). Con eso el informe puede:
+
+- calcular los pesos reales sobre el total;
+- mostrar la composición completa, no solo la parte que sabe analizar;
+- decir si la exposición a renta variable encaja con el perfil elegido, y
+  cuánto habría que mover para que encaje.
+
+### ⚠️ Límite honesto que hay que escribir en el documento
+
+Acciones argentinas y renta fija local **no tienen datos** en las fuentes del
+informe. Se pueden **dimensionar** (cuánto pesan) pero **no analizar**. El
+documento tiene que decirlo, no hacer como si esa parte de la cartera no
+existiera.
+
+### Plantilla de carga
+
+Se entregó `plantilla_cartera.xlsx`, verificada simulando el parser real de F5.
+El detalle que la hace funcionar: **los encabezados van en la FILA 1**. F5 hace
+`sheet_to_json(ws)` y toma la primera fila como encabezado; con un título
+arriba, no encuentra la columna Ticker, cae al modo viejo y **pierde cantidad y
+precio**. Las instrucciones van en una hoja aparte porque F5 solo lee la
+primera.
+
+Otro límite del parser: el ticker debe ser **1 a 5 letras, sin puntos ni
+números**. `BRK.B` y `SMSN.IL` no entran por esta vía.
+
+---
+
+## ✅ RESUELTO: los pesos ahora salen sobre la cartera COMPLETA (27/08/2026)
+
+Tres fuentes, en orden de precedencia. La primera que esté disponible manda:
+
+| # | fuente | por qué en ese orden |
+|---|---|---|
+| 1 | columna **`% Posición`** del Excel | viene del reporte del broker, ya está sobre la cartera completa y **no envejece con el precio** |
+| 2 | **montos** del resto (renta fija / acciones locales / efectivo) | exactos, pero si una posición se movió el total deja de cerrar |
+| 3 | **porcentajes** del resto | menos precisos que los montos y más estables — es el motivo por el que Marcos pidió los dos |
+| 4 | nada | reparte 100% entre lo analizado **y el documento lo dice** |
+
+`analizarCartera()` recibe `otros = {modo: 'monto'|'pct', rentaFija, accionesLocales,
+efectivo}` y devuelve `cobertura`, `origenPesos` y `valorTotalCartera`.
+
+**Ojo con `pctActual`**: F5 lo calcula dividiendo por la suma de lo que se subió,
+así que ya viene con el mismo error que estamos corrigiendo. El que sirve es
+`pctExcel`, que es lo que se escribió en el Excel.
+
+### El ancla equiponderada también se escala
+
+`pesoEquiponderado = cobertura / n`. Si 5 posiciones son el 48% de la cartera,
+equiponderado es 9,6% cada una, no 20%. Sin esta corrección los topes quedaban
+al doble y no marcaban nada. Lo mismo con los sectores, que ahora se suman
+sobre el total.
+
+### Nueva sección: "Cómo está repartida la cartera"
+
+Composición completa —acciones del exterior, renta fija, acciones locales,
+efectivo— y la comparación contra el tope de renta variable del perfil
+(conservador 50% · moderado 70% · agresivo 90%), con **el monto a mover**.
+Eso es lo que contesta "cuánto rotar de cada cosa".
+
+También cubre el caso inverso: un perfil agresivo con 30% en acciones no está
+siendo prudente, está desalineado con lo que el cliente pidió.
+
+**Límite declarado en el documento**: acciones argentinas y renta fija local se
+pueden **dimensionar** pero no **analizar**. No hay datos de fundamentales para
+ellas en las fuentes del informe. El documento lo dice en vez de hacer como si
+esa parte de la cartera no existiera.
+
+### 🐛 Shadowing, la misma clase de bug por segunda vez
+
+Dentro del `.map` de `analizarCartera` ya existía `const base = i.veredicto?.puntaje`,
+que **tapaba al `base` de afuera** (el que resuelve el denominador de los pesos)
+durante todo el callback — incluida una línea *anterior* a su propia
+declaración. Resultado: `Cannot access 'base' before initialization`.
+
+Es exactamente lo que pasó en `probe_edgar.py`, donde `base` era la carpeta del
+script y el bucle de márgenes la reasignaba a un float. **Una variable de nombre
+corto reusada en dos alcances anidados, dos veces en el mismo proyecto.**
+
+Por eso ahora hay **`detector-shadow.cjs`**, que recorre `src/informe/` buscando
+declaraciones que reusen un nombre de un alcance exterior. Verificado
+reintroduciendo el bug a propósito: lo agarra y sale con código 1.
+
+---
+
 ## 📦 PENDIENTE DE PUSH — lista acumulada
 
 Todo esto está escrito en la carpeta y **todavía no subido**. Verificar con
@@ -2077,6 +2197,16 @@ Todo esto está escrito en la carpeta y **todavía no subido**. Verificar con
 > Todo lo anterior (informe de cartera incluido) y el arreglo de Twelve Data en
 > `src/App.jsx` **ya fueron pusheados** por Marcos. Lo que sigue es la tanda del
 > **25/08/2026**: veredicto de 3 posiciones, foco en rotación y los CEDEARs.
+
+### Tanda del resto de la cartera (27/08)
+
+```
+src/informe/cartera.js       (resolverBase, exposicion, CLASES_RESTO, TOPE_RENTA_VARIABLE)
+src/informe/App.jsx          (formulario RestoDeCartera: montos y %)
+src/informe/Cartera.jsx      (seccion "Como esta repartida la cartera" + aviso de parcial)
+detector-shadow.cjs          NUEVO — detector de shadowing en src/informe/
+plantilla_cartera.xlsx       NUEVO — plantilla de carga verificada contra el parser de F5
+```
 
 ### Tanda del peso del dividendo (26/08)
 

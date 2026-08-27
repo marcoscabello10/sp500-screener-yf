@@ -3,7 +3,7 @@ import Selector, { guardarEnHistorial } from './Selector.jsx'
 import Informe from './Informe.jsx'
 import Cartera from './Cartera.jsx'
 import { PERFILES, PERFIL_POR_DEFECTO, OBJETIVOS, OBJETIVO_POR_DEFECTO,
-         HORIZONTES, HORIZONTE_POR_DEFECTO } from './cartera.js'
+         HORIZONTES, HORIZONTE_POR_DEFECTO, CLASES_RESTO } from './cartera.js'
 import { scoresPorSector } from './sugerencias.js'
 import { C, F, CSS_GLOBAL } from './estilos.js'
 
@@ -194,7 +194,8 @@ export default function App() {
           <BarraAcciones etiqueta={`Cartera · ${cartera.length} activos`}
                          onVolver={volver} />
           <Cartera informes={cartera} meta={meta} stocks={stocks} scores={scores}
-                   conAnexo={conAnexo} posiciones={posiciones} />
+                   conAnexo={conAnexo} posiciones={posiciones}
+                   otros={meta.otros} />
         </>
       ) : datos ? (
         <>
@@ -262,6 +263,86 @@ function Opciones({ titulo, opciones, valor, onCambio, pie }) {
   )
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// El resto de la cartera: lo que NO se sube al informe.
+//
+// Sin esto, los pesos salen sobre la suma de lo analizado. Con 5 CEDEARs que
+// son la mitad de la cartera, cada peso sale al doble.
+//
+// Se aceptan montos Y porcentajes porque sirven para cosas distintas: los
+// montos son exactos pero envejecen (si una posicion se movio, el total ya no
+// cierra), y los porcentajes aguantan mejor el paso del tiempo. Marcos pidio
+// las dos por ese motivo.
+// ─────────────────────────────────────────────────────────────────────────────
+
+function RestoDeCartera({ meta, setMeta }) {
+  const otros = meta.otros || { modo: 'pct' }
+  const set = (k, v) => setMeta({ ...meta, otros: { ...otros, [k]: v } })
+  const esPct = (otros.modo || 'pct') === 'pct'
+  const suma = CLASES_RESTO.reduce((a, c) => a + (Number(otros[c.clave]) || 0), 0)
+  const sumaMal = esPct && suma >= 100
+
+  return (
+    <div style={{ marginBottom: 14, border: `1px solid ${C.borde}`,
+                  borderRadius: 8, padding: '11px 13px' }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 10,
+                    marginBottom: 4, flexWrap: 'wrap' }}>
+        <div style={{ fontSize: 12.5, color: C.subtitulo }}>
+          El resto de la cartera <span style={{ color: C.tenue }}>(opcional)</span>
+        </div>
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: 4 }}>
+          {[['pct', '%'], ['monto', 'US$']].map(([m, txt]) => (
+            <button key={m} onClick={() => set('modo', m)}
+              style={{ padding: '3px 10px', borderRadius: 5, fontSize: 12.5,
+                       border: `1px solid ${esPct === (m === 'pct') ? C.acento : C.bordeFuerte}`,
+                       background: esPct === (m === 'pct') ? C.acentoFondo : '#fff',
+                       color: esPct === (m === 'pct') ? C.acento : C.cuerpo }}>
+              {txt}
+            </button>
+          ))}
+        </div>
+      </div>
+      <p style={{ fontSize: 11.5, color: C.tenue, margin: '0 0 8px', lineHeight: 1.5 }}>
+        Lo que el cliente tiene y no entra en este informe. Sin esto, los pesos se
+        calculan sobre los activos analizados y salen inflados.
+      </p>
+      <div style={{ display: 'flex', gap: 8 }}>
+        {CLASES_RESTO.map(c => (
+          <label key={c.clave} style={{ flex: 1 }}>
+            <div style={{ fontSize: 11.5, color: C.tenue, marginBottom: 2 }}>
+              {c.nombre}
+            </div>
+            <input type="number" min="0" inputMode="decimal"
+              value={otros[c.clave] ?? ''} placeholder={esPct ? '%' : 'US$'}
+              onChange={e => set(c.clave, e.target.value === '' ? undefined
+                                                               : Number(e.target.value))}
+              style={{ width: '100%', padding: '7px 9px', borderRadius: 6,
+                       border: `1px solid ${sumaMal ? C.rojo : C.bordeFuerte}`,
+                       outline: 'none', color: C.cuerpo, fontSize: 13.5 }} />
+          </label>
+        ))}
+      </div>
+      {sumaMal && (
+        <p style={{ fontSize: 11.5, color: C.rojo, margin: '6px 0 0' }}>
+          Los porcentajes suman {Math.round(suma)}%. Tiene que quedar lugar para
+          los activos de este informe.
+        </p>
+      )}
+      {!sumaMal && suma > 0 && (
+        <p style={{ fontSize: 11.5, color: C.tenue, margin: '6px 0 0' }}>
+          {esPct
+            ? `Los activos de este informe serían el ${Math.round((100 - suma) * 10) / 10}% de la cartera.`
+            : `Se suman US$ ${Math.round(suma).toLocaleString('es-AR')} al total para calcular los pesos.`}
+        </p>
+      )}
+      <p style={{ fontSize: 11.5, color: C.tenue, margin: '6px 0 0' }}>
+        Si el Excel trae la columna <b>% Posición</b>, se usa esa y estos campos
+        no hacen falta.
+      </p>
+    </div>
+  )
+}
+
 function FormularioCartera({ tickers, meta, conAnexo, setMeta, setConAnexo,
                              onCancelar, onGenerar }) {
   function cargarLogo(file) {
@@ -314,6 +395,8 @@ function FormularioCartera({ tickers, meta, conAnexo, setMeta, setConAnexo,
                   valor={meta.horizonte || HORIZONTE_POR_DEFECTO}
                   onCambio={v => setMeta({ ...meta, horizonte: v })}
                   pie={o => o.nota} />
+
+        <RestoDeCartera meta={meta} setMeta={setMeta} />
 
         <div style={{ marginBottom: 14 }}>
           <div style={{ fontSize: 12.5, color: C.subtitulo, marginBottom: 4 }}>

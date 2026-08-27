@@ -122,8 +122,158 @@ const round1 = x => (x == null ? null : Math.round(x * 10) / 10)
  * Si viene vacío devuelve `hayPesos: false` y el informe sigue funcionando
  * exactamente como antes — sin pesos, pero sin romperse.
  */
+// ─────────────────────────────────────────────────────────────────────────────
+// EL RESTO DE LA CARTERA — lo que el informe no puede analizar pero sí pesar
+//
+// El problema, que Marcos vio antes de que pasara: si sube 5 CEDEARs que son la
+// mitad de la cartera del cliente, y el peso se calcula dividiendo por la suma
+// de esos 5, **cada peso sale al doble**. El informe dice "AAPL pesa 22%" y en
+// la cartera real pesa 11%. Nada avisa: los porcentajes suman 100 y parecen
+// correctos.
+//
+// Hay tres formas de saber cuánto pesa de verdad, y se prueban en este orden:
+//
+//   1. `% Posición` del Excel (`pctExcel`). Es la mejor: viene del reporte del
+//      broker, ya está calculada sobre la cartera completa y no se desactualiza
+//      con el precio. F5 ya la parsea y ya llegaba hasta acá sin usarse.
+//   2. Los montos del resto (renta fija, acciones locales, efectivo). Precisos,
+//      pero envejecen: si una posición se movió, el total ya no cierra.
+//   3. Los porcentajes del resto. Menos exactos que los montos pero más
+//      estables, que es justo lo que Marcos señaló.
+//
+// Si no hay ninguna, se reparte el 100% entre lo analizado **y el documento lo
+// dice**. Un porcentaje sin denominador declarado no es un dato, es una trampa.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const CLASES_RESTO = [
+  { clave: 'rentaFija', nombre: 'Renta fija', riesgo: 'bajo' },
+  { clave: 'accionesLocales', nombre: 'Acciones argentinas', riesgo: 'alto' },
+  { clave: 'efectivo', nombre: 'Efectivo', riesgo: 'nulo' },
+]
+
+// Cuánta renta variable tolera cada perfil, sobre la cartera COMPLETA.
+// Acciones del exterior + acciones locales. La renta fija y el efectivo no
+// cuentan.
+export const TOPE_RENTA_VARIABLE = {
+  conservador: 50, moderado: 70, agresivo: 90,
+}
+
+export const ORIGEN_PESOS = {
+  excel: 'la columna "% Posición" del Excel',
+  montos: 'los montos del resto de la cartera',
+  porcentajes: 'los porcentajes del resto de la cartera',
+  parcial: 'solo los activos analizados',
+}
+
+/**
+ * Resuelve el denominador de los pesos y cuánto de la cartera cubre el informe.
+ *
+ * Devuelve { origen, cobertura, pesoDe(ticker, valor), resto: [...] }
+ * donde `cobertura` es el % de la cartera que representan los activos
+ * analizados. 100 significa "esto es toda la cartera".
+ */
+function resolverBase(posiciones, valorAnalizado, otros) {
+  const pos = posiciones || {}
+  // Ojo: NO se mira `pctActual`. Ese lo calcula F5 dividiendo por la suma de lo
+  // que subiste, o sea que ya viene con el mismo error que estamos corrigiendo.
+  // El que sirve es `pctExcel`, que es lo que escribiste vos en el Excel.
+  const conPct = Object.values(pos).filter(
+    p => p && Number.isFinite(p.pctExcel) && p.pctExcel > 0)
+  const pctExcelTotal = conPct.reduce((a, p) => a + p.pctExcel, 0)
+  const conValor = Object.values(pos).filter(p => p && p.valorActual > 0).length
+
+  // 1. La columna del Excel, si cubre a la mayoría de las posiciones.
+  if (conPct.length && conPct.length >= conValor * 0.6 && pctExcelTotal > 0
+      && pctExcelTotal <= 100.5) {
+    return {
+      origen: 'excel',
+      cobertura: Math.min(100, Math.round(pctExcelTotal * 10) / 10),
+      pesoDe: (t, v) => (Number.isFinite(pos[t]?.pctExcel) ? pos[t].pctExcel : null),
+      resto: [],
+    }
+  }
+
+  const o = otros || {}
+  const clavesConDato = CLASES_RESTO.filter(c => Number.isFinite(o[c.clave]) && o[c.clave] > 0)
+
+  // 2. Montos del resto.
+  if (o.modo === 'monto' && clavesConDato.length && valorAnalizado > 0) {
+    const sumaResto = clavesConDato.reduce((a, c) => a + o[c.clave], 0)
+    const total = valorAnalizado + sumaResto
+    return {
+      origen: 'montos',
+      cobertura: Math.round(valorAnalizado / total * 1000) / 10,
+      valorTotalCartera: Math.round(total),
+      pesoDe: (t, v) => (v > 0 ? v / total * 100 : null),
+      resto: clavesConDato.map(c => ({
+        ...c, monto: Math.round(o[c.clave]),
+        pct: Math.round(o[c.clave] / total * 1000) / 10,
+      })),
+    }
+  }
+
+  // 3. Porcentajes del resto.
+  if (o.modo === 'pct' && clavesConDato.length && valorAnalizado > 0) {
+    const sumaResto = clavesConDato.reduce((a, c) => a + o[c.clave], 0)
+    if (sumaResto < 100) {
+      const cobertura = Math.round((100 - sumaResto) * 10) / 10
+      return {
+        origen: 'porcentajes',
+        cobertura,
+        // El total implícito: si lo analizado vale X y es el `cobertura`%,
+        // la cartera entera vale X / (cobertura/100).
+        valorTotalCartera: Math.round(valorAnalizado / (cobertura / 100)),
+        pesoDe: (t, v) => (v > 0 ? v / valorAnalizado * cobertura : null),
+        resto: clavesConDato.map(c => ({
+          ...c, pct: Math.round(o[c.clave] * 10) / 10,
+          monto: Math.round(o[c.clave] / 100 * (valorAnalizado / (cobertura / 100))),
+        })),
+      }
+    }
+  }
+
+  // 4. Sin nada: se reparte entre lo analizado, y se avisa.
+  return {
+    origen: 'parcial',
+    cobertura: 100,
+    pesoDe: (t, v) => (v > 0 && valorAnalizado > 0 ? v / valorAnalizado * 100 : null),
+    resto: [],
+  }
+}
+
+/**
+ * Exposición por clase de activo y cuánto habría que mover para encajar con el
+ * perfil. Es la respuesta a "cuánto rotar de cada cosa".
+ */
+export function exposicion(cart) {
+  const { base, perfil, activos, valorTotalCartera } = cart
+  if (!base || base.origen === 'parcial') return null
+
+  const exterior = activos.reduce((a, x) => a + (x.peso || 0), 0)
+  const locales = (base.resto.find(r => r.clave === 'accionesLocales') || {}).pct || 0
+  const variable = Math.round((exterior + locales) * 10) / 10
+  const tope = TOPE_RENTA_VARIABLE[perfil.clave] ?? 70
+  const exceso = Math.round((variable - tope) * 10) / 10
+
+  return {
+    exterior: Math.round(exterior * 10) / 10,
+    locales: Math.round(locales * 10) / 10,
+    variable,
+    tope,
+    excede: variable > tope,
+    excesoPct: exceso > 0 ? exceso : null,
+    excesoUSD: (exceso > 0 && valorTotalCartera)
+      ? Math.round(exceso / 100 * valorTotalCartera) : null,
+    // El caso contrario también importa: un perfil agresivo con 30% en acciones
+    // no está "seguro", está desalineado con lo que el cliente pidió.
+    corto: variable < tope * 0.6,
+    faltaUSD: (variable < tope * 0.6 && valorTotalCartera)
+      ? Math.round((tope * 0.6 - variable) / 100 * valorTotalCartera) : null,
+  }
+}
+
 export function analizarCartera(informes, posiciones, perfilClave,
-                                objetivoClave, horizonteClave) {
+                                objetivoClave, horizonteClave, otros) {
   const perfil = PERFILES[perfilClave] || PERFILES[PERFIL_POR_DEFECTO]
   const validos = (informes || []).filter(i => i && !i.error)
   const pos = posiciones || {}
@@ -132,8 +282,15 @@ export function analizarCartera(informes, posiciones, perfilClave,
   const valorTotal = conValor.reduce((a, i) => a + pos[i.ticker].valorActual, 0)
   const hayPesos = conValor.length > 0 && valorTotal > 0
 
+  // De acá sale el DENOMINADOR de los pesos. Sin esto, dividir por la suma de
+  // lo analizado convierte una cartera parcial en una cartera entera.
+  const base = resolverBase(pos, valorTotal, otros)
+
   const n = validos.length || 1
-  const pesoEquiponderado = 100 / n
+  // El ancla equiponderada se escala por la cobertura: si 5 posiciones son el
+  // 48% de la cartera, equiponderado es 9,6% cada una, no 20%. Sin esta
+  // corrección los topes quedarian al doble y no marcarian nada.
+  const pesoEquiponderado = base.cobertura / n
   const topeGeneral = Math.max(perfil.maxPosicion,
                                perfil.factorEquiponderado * pesoEquiponderado)
 
@@ -144,8 +301,7 @@ export function analizarCartera(informes, posiciones, perfilClave,
     // El peso se recalcula sobre el total de lo que efectivamente tiene valuación,
     // no se confía en el pctActual guardado: si la cartera se generó con más
     // activos de los que entraron al informe, ese porcentaje no cierra a 100.
-    const peso = hayPesos && p.valorActual > 0
-      ? (p.valorActual / valorTotal) * 100 : null
+    const peso = hayPesos ? base.pesoDe(i.ticker, p.valorActual) : null
 
     let estado = null
     if (peso != null) {
@@ -158,7 +314,12 @@ export function analizarCartera(informes, posiciones, perfilClave,
     const etiqueta = i.veredicto?.etiqueta
     const excesoPct = (peso != null && peso > topeClase) ? peso - topeClase : null
     const fit = afinidad(i, objetivoClave, horizonteClave)
-    const base = i.veredicto?.puntaje ?? null
+    // ⚠️ Se llamaba `base` y TAPABA al `base` de afuera (el que resuelve el
+    // denominador de los pesos) durante todo el callback — incluida la linea
+    // de arriba, que quedaba leyendo una constante todavia sin inicializar.
+    // Es el MISMO bug de shadowing que ya paso en probe_edgar.py: una variable
+    // corta reusada en dos alcances anidados.
+    const puntajeBase = i.veredicto?.puntaje ?? null
     return {
       ticker: i.ticker,
       beta: i.consenso?.beta ?? null,
@@ -168,7 +329,8 @@ export function analizarCartera(informes, posiciones, perfilClave,
       // Cuanto cambia la lectura al mirarla con el objetivo puesto. Si la
       // diferencia es grande, el informe lo dice: significa que la empresa es
       // buena pero para otra cosa.
-      brechaObjetivo: (fit != null && base != null) ? round1(fit - base) : null,
+      brechaObjetivo: (fit != null && puntajeBase != null)
+        ? round1(fit - puntajeBase) : null,
       nombre: i.nombre,
       sector: i.sector || null,
       clase,
@@ -208,7 +370,13 @@ export function analizarCartera(informes, posiciones, perfilClave,
   const nSectores = Object.keys(porSector).length || 1
   const topeSector = Math.max(perfil.maxSector, 1.3 * (100 / nSectores))
   const sectores = Object.values(porSector).map(s => {
-    const pct = hayPesos ? (s.valor / valorTotal) * 100 : (s.n / activos.length) * 100
+    // Sobre la cartera COMPLETA, igual que los pesos por posición: un sector
+    // que es el 40% de lo analizado pero el 19% de la cartera no es un problema
+    // de concentración.
+    const pct = hayPesos
+      ? activos.filter(a => (a.sector || 'Sin sector') === s.sector)
+               .reduce((acc, a) => acc + (a.peso || 0), 0)
+      : (s.n / activos.length) * 100
     return {
       ...s, pct: round1(pct), tope: round1(topeSector),
       excede: pct > topeSector,
@@ -228,6 +396,16 @@ export function analizarCartera(informes, posiciones, perfilClave,
 
   return {
     hayPesos,
+    base,
+    cobertura: base.cobertura,
+    origenPesos: base.origen,
+    // Cuando la cartera esta cubierta solo en parte, el documento tiene que
+    // decirlo: si no, muestra porcentajes que suman 100 sobre un universo que
+    // no es la cartera del cliente.
+    parcial: base.origen === 'parcial' ? null : base.cobertura < 99.5,
+    valorTotalCartera: base.valorTotalCartera
+      ?? (hayPesos && base.cobertura > 0
+          ? Math.round(valorTotal / (base.cobertura / 100)) : null),
     perfil,
     objetivo: OBJETIVOS[objetivoClave] || OBJETIVOS[OBJETIVO_POR_DEFECTO],
     horizonte: HORIZONTES[horizonteClave] || HORIZONTES[HORIZONTE_POR_DEFECTO],

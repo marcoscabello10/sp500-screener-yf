@@ -1,9 +1,9 @@
 import React from 'react'
 import Informe from './Informe.jsx'
 import { planRotacion, concentracionPorSector, SECTOR_PESADO_PCT } from './sugerencias.js'
-import { analizarCartera, stressTest, CLASE_TEXTO, ESTADO_TEXTO,
-         ACCION_PESO_TEXTO, PERFIL_POR_DEFECTO, OBJETIVO_POR_DEFECTO,
-         HORIZONTE_POR_DEFECTO } from './cartera.js'
+import { analizarCartera, stressTest, exposicion, CLASE_TEXTO, ESTADO_TEXTO,
+         ACCION_PESO_TEXTO, ORIGEN_PESOS, PERFIL_POR_DEFECTO,
+         OBJETIVO_POR_DEFECTO, HORIZONTE_POR_DEFECTO } from './cartera.js'
 import { C, F, semaforo, colorSeveridad, num, pct, fecha } from './estilos.js'
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -29,7 +29,7 @@ import { C, F, semaforo, colorSeveridad, num, pct, fecha } from './estilos.js'
 // ─────────────────────────────────────────────────────────────────────────────
 
 export default function Cartera({ informes, meta, stocks, scores, conAnexo,
-                                 posiciones }) {
+                                 posiciones, otros }) {
   const validos = informes.filter(i => i && !i.error)
 
   // Los dos puntajes, calculados por separado y a proposito:
@@ -40,8 +40,10 @@ export default function Cartera({ informes, meta, stocks, scores, conAnexo,
   const cart = analizarCartera(validos, posiciones,
                                meta.perfil || PERFIL_POR_DEFECTO,
                                meta.objetivo || OBJETIVO_POR_DEFECTO,
-                               meta.horizonte || HORIZONTE_POR_DEFECTO)
+                               meta.horizonte || HORIZONTE_POR_DEFECTO,
+                               otros)
   const stress = stressTest(cart)
+  const expo = exposicion(cart)
 
   const concentracion = concentracionPorSector(
     validos.map(i => ({ sector: i.sector })))
@@ -53,6 +55,7 @@ export default function Cartera({ informes, meta, stocks, scores, conAnexo,
   return (
     <div style={{ maxWidth: 940, margin: '0 auto', padding: '26px 22px 70px' }}>
       <Portada meta={meta} n={validos.length} cart={cart} />
+      {cart.hayPesos && expo && <Exposicion cart={cart} expo={expo} />}
       {cart.hayPesos && <Pesos cart={cart} />}
       <Afinidad cart={cart} />
       {stress && <Stress cart={cart} stress={stress} />}
@@ -157,6 +160,107 @@ const COLOR_ESTADO = {
   critico: C.rojo, sobre: C.ambar, banda: C.verde, sub: C.tenue,
 }
 
+
+// ─────────────────────────────────────────────────────────────────────────────
+// EXPOSICIÓN POR CLASE DE ACTIVO
+//
+// Es lo que contesta "cuánto rotar de cada cosa". Solo aparece cuando se sabe
+// qué hay fuera del informe — si no, no habría contra qué comparar.
+//
+// Límite que el documento declara en vez de esconder: acciones argentinas y
+// renta fija local no tienen datos en las fuentes de este informe. Se pueden
+// DIMENSIONAR pero no ANALIZAR.
+// ─────────────────────────────────────────────────────────────────────────────
+
+function Exposicion({ cart, expo }) {
+  const { base, perfil, valorTotalCartera, cobertura } = cart
+  const franjas = [
+    { nombre: 'Acciones del exterior', pct: expo.exterior, color: C.acento,
+      nota: 'analizadas en este informe' },
+    ...base.resto.map(r => ({
+      nombre: r.nombre, pct: r.pct, monto: r.monto,
+      color: r.clave === 'accionesLocales' ? C.subtitulo
+           : r.clave === 'rentaFija' ? C.verde : C.tenue,
+      nota: r.clave === 'efectivo' ? null : 'sin datos para analizar',
+    })),
+  ].filter(f => f.pct > 0)
+
+  return (
+    <Seccion titulo="Cómo está repartida la cartera"
+             nota={`Los pesos de todo este informe salen de ${ORIGEN_PESOS[cart.origenPesos]}.
+                    Los activos analizados son el ${num(cobertura, 1)}% de la cartera.`}>
+
+      <div className="evitar-corte" style={{ display: 'flex', height: 28,
+        borderRadius: 6, overflow: 'hidden', marginBottom: 10 }}>
+        {franjas.map(f => (
+          <div key={f.nombre} title={`${f.nombre}: ${f.pct}%`}
+               style={{ width: `${f.pct}%`, background: f.color }} />
+        ))}
+      </div>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Clase de activo</th><th className="n">Peso</th>
+            <th className="n">Valor</th><th>Alcance del informe</th>
+          </tr>
+        </thead>
+        <tbody>
+          {franjas.map(f => (
+            <tr key={f.nombre}>
+              <td>
+                <span style={{ display: 'inline-block', width: 9, height: 9,
+                               borderRadius: 2, background: f.color, marginRight: 7 }} />
+                {f.nombre}
+              </td>
+              <td className="n" style={{ fontWeight: 600 }}>{num(f.pct, 1)}%</td>
+              <td className="n" style={{ color: C.tenue }}>
+                {f.monto != null ? `US$ ${num(f.monto, 0)}`
+                  : valorTotalCartera ? `US$ ${num(Math.round(f.pct / 100 * valorTotalCartera), 0)}` : '—'}
+              </td>
+              <td style={{ fontSize: 12.5, color: C.tenue }}>{f.nota || '—'}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      <div className="evitar-corte" style={{
+        marginTop: 14, background: expo.excede ? C.ambarFondo : C.panel,
+        borderRadius: 8, padding: '12px 15px' }}>
+        <div style={{ fontSize: 15, fontWeight: 600,
+                      color: expo.excede ? C.ambar : C.titulo, marginBottom: 5 }}>
+          Renta variable: {num(expo.variable, 1)}% · tope del perfil {perfil.nombre.toLowerCase()}: {expo.tope}%
+        </div>
+        <p style={{ fontSize: 13.5, margin: 0 }}>
+          {expo.excede ? (
+            <>Está <b>{num(expo.excesoPct, 1)} puntos por encima</b> del tope.
+            {expo.excesoUSD ? <> Volver al tope implica mover unos <b>US$ {num(expo.excesoUSD, 0)}</b> de
+            acciones hacia renta fija o efectivo.</> : null}
+            {' '}Cuánto sacar de cada papel sale de la sección de rotación: primero
+            los que ya están marcados para salir o recortar.</>
+          ) : expo.corto ? (
+            <>Está bastante por debajo del tope. Para un perfil {perfil.nombre.toLowerCase()} eso
+            no es prudencia, es desalineación con lo que el cliente pidió: hay
+            {expo.faltaUSD ? <> unos <b>US$ {num(expo.faltaUSD, 0)}</b></> : ' capital'} sin
+            trabajar en renta variable.</>
+          ) : (
+            <>Está dentro del tope del perfil. Las rotaciones que propone este
+            informe son entre acciones, no entre clases de activo.</>
+          )}
+        </p>
+        {expo.locales > 0 && (
+          <p style={{ fontSize: 12.5, color: C.tenue, margin: '8px 0 0' }}>
+            De esa renta variable, {num(expo.locales, 1)} puntos son acciones
+            argentinas. Este informe no las analiza —no hay datos de fundamentales
+            para ellas en sus fuentes— así que las cuenta para el riesgo pero no
+            opina sobre cuáles conviene tener.
+          </p>
+        )}
+      </div>
+    </Seccion>
+  )
+}
+
 function Pesos({ cart }) {
   const { perfil, activos, sectores, clases, valorTotal, sinPeso } = cart
   const fuera = activos.filter(a => a.estado === 'critico' || a.estado === 'sobre')
@@ -170,6 +274,17 @@ function Pesos({ cart }) {
                     El tope no es fijo: es el mayor entre el del perfil y un múltiplo del peso
                     equiponderado (${num(cart.pesoEquiponderado, 1)}%), para no marcar sobrepeso
                     solo por tener pocas posiciones.`}>
+
+      {cart.parcial === null && (
+        <p style={{ fontSize: 13.5, color: C.ambar, marginTop: 0,
+                    background: C.ambarFondo, borderRadius: 7, padding: '9px 12px' }}>
+          <b>Estos porcentajes son sobre los activos de este informe, no sobre la
+          cartera del cliente.</b> Si además tiene renta fija o acciones locales,
+          los pesos reales son menores. Para que salgan bien, cargá la columna
+          «% Posición» en el Excel o completá el resto de la cartera al generar
+          el informe.
+        </p>
+      )}
 
       {sinPeso > 0 && (
         <p style={{ fontSize: 13.5, color: C.ambar, marginTop: 0 }}>

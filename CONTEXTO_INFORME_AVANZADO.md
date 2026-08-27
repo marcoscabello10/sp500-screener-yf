@@ -2027,16 +2027,45 @@ del .git\index.lock
 
 ---
 
-## 🔁 `src/main.jsx` vuelve a aparecer modificado
+## ✋ `src/main.jsx`: el "modificado" era MÍO, no de Marcos
 
-Reaparece cada tanto y **siempre es lo mismo**: solo saltos de línea (LF ↔ CRLF),
-cero contenido. Verificado con `git diff --ignore-cr-at-eol`, que sale vacío.
-Algo del entorno de Windows lo reescribe al abrirlo.
+Corregido el 27/08/2026. Durante varias sesiones se le dijo a Marcos que
+`src/main.jsx` figuraba modificado y que lo descartara o lo commiteara. **Su git
+nunca lo vio modificado.** Al intentar commitearlo:
 
-Descartarlo con `git checkout --` funciona pero vuelve. **Lo más práctico es
-commitearlo una vez** con un mensaje que diga que son saltos de línea: a partir
-de ahí lo que está en git coincide con lo que produce su máquina y deja de
-ensuciar el `git status`. Es del screener, así que va en su propio commit.
+```
+nothing to commit, working tree clean
+```
+
+### Por qué
+
+Hay **dos gits mirando la misma carpeta**:
+
+| | ve el archivo | `core.autocrlf` |
+|---|---|---|
+| Git de Windows (el de Marcos, el que commitea) | normalizado a LF | `true`, lo pone el instalador |
+| Git del Linux del puente (el que usa Claude) | con CRLF crudo | sin definir |
+
+El archivo en disco tiene CRLF (220 bytes) y en el commit está con LF (212).
+El git de Windows normaliza al leer, así que para él **no hay ningún cambio**.
+El git del Linux del puente no normaliza, así que ve el archivo distinto y lo
+reporta modificado.
+
+Y el `git config core.autocrlf` que se consultó para descartar esta hipótesis
+**se corrió desde el Linux del puente**, no desde Windows. Leyó la config
+equivocada y devolvió vacío, lo que pareció confirmar que no había
+normalización. Es el mismo error de vantage point dos veces.
+
+### Regla
+
+**El git de Marcos es la autoridad sobre el estado del repo, no el del puente.**
+Si el puente dice que algo está modificado y `git status` de Marcos dice que no,
+gana Marcos. Nunca más mandarlo a "arreglar" un archivo por lo que se ve desde
+acá.
+
+Esto refuerza la regla de arriba: Claude no corre git sobre la carpeta montada.
+No solo por el lock — también porque **la respuesta puede ser directamente
+falsa**.
 
 ---
 

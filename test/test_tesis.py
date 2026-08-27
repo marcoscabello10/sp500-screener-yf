@@ -183,3 +183,74 @@ if fallos:
 print('  Los dos proveedores andan y NINGUNO toca al otro. El tope de salida')
 print('  viaja siempre, el prompt va limpio, y nada gasta antes de tener datos.')
 print('  OK')
+
+# ── 10. do_GET, la capa que los tests anteriores NO tocaban ────────────────
+#
+# Todo lo de arriba llama a generar_tesis() directo. El 26/08/2026 eso dejo
+# pasar un bug que solo se veia en produccion: `action=proveedores` sin ticker
+# devolvia 400 porque el guardia de ticker no lo tenia exceptuado. Resultado:
+# el front preguntaba que claves habia, recibia un error, y NO MOSTRABA NINGUN
+# BOTON aunque las claves estuvieran perfectas.
+#
+# Estos casos entran por el mismo camino que un navegador.
+print()
+RESPUESTAS = []
+
+class HandlerFalso(I.handler):
+    def __init__(self, path):
+        self.path = path                      # sin llamar al __init__ real
+    def _responder(self, codigo, cuerpo):
+        RESPUESTAS.append((codigo, cuerpo))
+
+def pedir(path):
+    RESPUESTAS.clear()
+    LLAMADAS.clear()          # si no, cada caso hereda las llamadas del anterior
+    HandlerFalso(path).do_GET()
+    return RESPUESTAS[-1]
+
+limpiar(ANTHROPIC_API_KEY='sk-ant-x')
+
+cod, cuerpo = pedir('/api/informe?action=proveedores')
+chequear(cod == 200, f'action=proveedores sin ticker deberia dar 200, dio {cod}')
+chequear(cuerpo.get('proveedores', {}).get('anthropic', {}).get('disponible') is True,
+         'deberia informar que anthropic esta disponible')
+chequear(not LLAMADAS, 'action=proveedores no puede llamar a ningun modelo')
+print(f'  GET proveedores     -> {cod}, anthropic disponible, 0 llamadas')
+
+cod, cuerpo = pedir('/api/informe?action=datos&ticker=AAPL')
+chequear(cod == 200 and cuerpo.get('ticker') == 'AAPL', f'action=datos dio {cod}')
+chequear(not LLAMADAS, 'action=datos NO puede llamar al modelo')
+print(f'  GET datos           -> {cod}, sin llamar a ningun modelo')
+
+cod, cuerpo = pedir('/api/informe?action=tesis&ticker=AAPL')
+chequear(cod == 400 and 'proveedor' in cuerpo.get('error', ''),
+         f'tesis sin proveedor deberia dar 400 pidiendo el proveedor, dio {cod}')
+chequear(not LLAMADAS, 'tesis sin proveedor NO puede llamar a nadie')
+print(f'  GET tesis sin prov. -> {cod}, no se llamo a nadie')
+
+cod, cuerpo = pedir('/api/informe?action=tesis&ticker=AAPL&proveedor=anthropic')
+chequear(cod == 200 and cuerpo.get('texto'), f'tesis con proveedor dio {cod}: {cuerpo}')
+chequear(all('anthropic' in c['url'] for c in LLAMADAS), 'llamo a quien no debia')
+print(f'  GET tesis anthropic -> {cod}, {len(LLAMADAS)} llamada a anthropic')
+
+cod, cuerpo = pedir('/api/informe?action=tesis&ticker=AAPL&proveedor=openai')
+chequear(cod == 400, f'sin clave de openai deberia dar 400, dio {cod}')
+chequear(not LLAMADAS, 'SE CAYO AL OTRO PROVEEDOR DESDE do_GET')
+print(f'  GET tesis openai    -> {cod} (sin clave), no se llamo a nadie')
+
+cod, cuerpo = pedir('/api/informe?action=inventada&ticker=AAPL')
+chequear(cod == 400 and 'inventada' in cuerpo.get('error', ''),
+         f'accion desconocida deberia nombrarla: {cuerpo}')
+print(f'  GET accion inventada-> {cod}, {cuerpo.get("error")}')
+
+cod, cuerpo = pedir('/api/informe?action=datos')
+chequear(cod == 400 and 'ticker' in cuerpo.get('error', ''), 'datos sin ticker deberia pedir el ticker')
+print(f'  GET datos sin ticker-> {cod}, pide el ticker')
+
+if fallos:
+    for f in fallos:
+        print('  ✗', f)
+    print(f'\n{len(fallos)} FALLOS')
+    sys.exit(1)
+print('\n  do_GET tambien: ninguna accion gratuita gasta, y ninguna eleccion')
+print('  de proveedor toca al otro.')

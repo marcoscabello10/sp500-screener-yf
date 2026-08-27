@@ -1524,7 +1524,16 @@ enchufen; dejarlo para después obliga a rehacer lo del medio.
   Pendiente del paso 3: el **resumen ejecutivo de la CARTERA** (puntos 14, 18, 9
   a nivel cartera). Se dejó para después de ver la latencia de la tesis
   individual, porque rearmar 10 activos del lado del servidor tarda.
-- **Paso 4**: 17 (expected return), 15 (catalysts), 10 (replacement quality).
+- **Paso 4** (sin bloqueos, lo que sigue):
+  - **17 Expected return** — EPS esperado + cambio de multiplo + dividendo. Se
+    deriva de lo que ya hay. ⚠️ Es el numero mas facil de leer como promesa:
+    hay que mostrarlo con los supuestos a la vista o no ponerlo.
+  - **15 Catalysts** — `upgrades_downgrades` ya esta en el snapshot y hoy no se
+    usa para nada. Falta la fecha del proximo balance.
+  - **10 Replacement quality** — hoy el reemplazo se elige por puntaje. Deberia
+    exigir un margen minimo sobre el que sale y mostrar SU veredicto.
+  - **Resumen ejecutivo de la CARTERA con IA** — 14 (thesis risk), 18 (bull /
+    base / bear), 9 (que aporta que no tengo). Es lo que falta del paso 3.
 - **Paso 5**: 16 (P/E vs su historia) y 12 (correlación) — piden datos nuevos y
   tocan el bot. Ver la nota sobre bajar el histórico de una vez.
 - **Pendiente aparte**: botón "Ver informe" en las filas de F1/F5 — es lo único
@@ -1807,6 +1816,40 @@ Lección para la próxima: un reemplazo masivo sobre literales necesita, además
 del test de contrato, un barrido de nombres no definidos. El primero encontró
 las claves de diccionario; este encontró la variable dentro del f-string.
 
+### 🐛 `action=proveedores` devolvía 400 en producción
+
+Apenas Marcos cargó las claves y pusheó, se consultó el endpoint real:
+
+```
+GET /api/informe?action=proveedores  ->  400
+```
+
+El guardia de arriba de `do_GET` decía `if not ticker and accion != 'diag'`.
+`proveedores` no estaba exceptuado, así que **una acción que por diseño no
+necesita ticker moría antes de ejecutarse**. Lo grave no era el 400: el front
+preguntaba qué claves había, recibía un error, y **no mostraba ningún botón de
+tesis aunque las claves estuvieran perfectamente cargadas**. Todo el paso 3
+habría parecido no funcionar, sin un solo error visible.
+
+**Los tests no lo agarraron y vale entender por qué**: todos llamaban a
+`generar_tesis()` directo. Nadie entraba por `do_GET`, que es el único camino
+que usa un navegador. Se corrigió la lista (`SIN_TICKER = ('diag',
+'proveedores')`) y se agregó una **batería que entra por `do_GET`**, con un
+handler falso que no llama al `__init__` real:
+
+| pedido | esperado |
+|---|---|
+| `action=proveedores` sin ticker | 200, y cero llamadas a modelos |
+| `action=datos&ticker=AAPL` | 200, y cero llamadas a modelos |
+| `action=tesis` sin `proveedor` | 400 pidiendo el proveedor, sin llamar a nadie |
+| `action=tesis&proveedor=anthropic` | 200, una sola llamada, a Anthropic |
+| `action=tesis&proveedor=openai` sin su clave | 400, **sin caer a Anthropic** |
+| `action=inventada` | 400 nombrando la acción (la rama del `{acción}`) |
+| `action=datos` sin ticker | 400 pidiendo el ticker |
+
+Lección: probar la función no es probar el endpoint. Todo lo que el navegador
+toca tiene que tener al menos un caso que entre por la misma puerta.
+
 ### Verificación — `test/test_tesis.py`
 
 **No gasta un solo token**: se reemplaza `_post_json` por un doble que devuelve
@@ -1883,8 +1926,15 @@ test/test_tesis.py           NUEVO — verifica que un proveedor no toque al otr
 CONTEXTO_INFORME_AVANZADO.md
 ```
 
-⚠️ Después del push hay que cargar las variables de entorno en Vercel. Ver la
-guía abajo.
+**Segunda tanda del paso 3 (26/08, despues del push):** arreglo de
+`action=proveedores` que devolvia 400, y la bateria de tests por `do_GET`.
+
+```
+api/informe.py               (SIN_TICKER: proveedores no necesita ticker)
+test/test_tesis.py           (+7 casos que entran por do_GET)
+```
+
+✅ Claves ya cargadas en Vercel por Marcos (26/08/2026).
 
 ### Tanda del paso 2 (objetivo, horizonte, stress test)
 

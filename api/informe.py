@@ -1274,8 +1274,16 @@ class handler(BaseHTTPRequestHandler):
             accion = (q.get('action') or ['datos'])[0]
             ticker = (q.get('ticker') or [''])[0].strip().upper()
 
-            if not ticker and accion != 'diag':
-                return self._responder(400, {'error': 'Falta el parametro ticker.'})
+            # Acciones que NO necesitan ticker. `proveedores` faltaba en esta
+            # lista y devolvia 400 en produccion: el front preguntaba que claves
+            # hay, recibia un error, y por lo tanto NO MOSTRABA NINGUN BOTON de
+            # tesis aunque las claves estuvieran bien cargadas. Se encontro
+            # consultando el endpoint real, no en los tests: los tests llaman a
+            # generar_tesis() directo y nunca pasan por do_GET.
+            SIN_TICKER = ('diag', 'proveedores')
+            if not ticker and accion not in SIN_TICKER:
+                return self._responder(400, {
+                    'error': f'Falta el parametro ticker para action={accion}.'})
 
             if accion == 'diag':
                 return self._responder(200, diagnostico())

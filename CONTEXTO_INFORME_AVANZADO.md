@@ -2901,6 +2901,93 @@ se captura para poder decidir con datos reales, no con una clasificación a mano
 - **Energy**: `SECTOR_AJUSTE` ya avisa que un P/E bajo en el pico del ciclo es
   la trampa de valor clásica.
 
+### 📊 El reparto REAL por `industry` (28/08/2026, corrida del bot)
+
+Con el campo capturado, este es el reparto de Financials — ya no una
+clasificación a mano:
+
+| n | industry | quiénes |
+|---|---|---|
+| 13 | Asset Management | AMP APO ARES BEN BLK BX IVZ KKR NTRS PFG RJF STT TROW |
+| 9 | Financial Data & Stock Exchanges | CBOE CME COIN FDS ICE MCO MSCI NDAQ SPGI |
+| 9 | Banks - Regional | CFG FITB HBAN KEY MTB PNC RF TFC USB |
+| 8 | Insurance - Property & Casualty | AIZ ALL CB CINF L PGR TRV WRB |
+| 6 | Insurance Brokers | AJG AON BRO ERIE MRSH WTW |
+| 5 | Banks - Diversified | BAC BNY C JPM WFC |
+| 5 | Capital Markets | GS HOOD IBKR MS SCHW |
+| 4 | Insurance - Life | AFL GL MET PRU |
+| 4 | Insurance - Diversified | ACGL AIG BRK-B HIG |
+| 3 | Credit Services | AXP COF SYF |
+| 1 | Insurance - Reinsurance | EG |
+
+**Agrupación propuesta** (ninguna industria sola alcanza; agrupadas sí):
+
+| grupo | n | de qué industrias |
+|---|---|---|
+| **Bancos** | **17** | Banks-Diversified + Banks-Regional + Credit Services |
+| Mercados y gestión | 27 | Asset Management + Capital Markets + Financial Data |
+| Seguros | 23 | todas las Insurance-* + Insurance Brokers |
+
+AXP, COF y SYF van con Bancos a propósito: **son bank holding companies** y
+reportan CET1 igual que JPM.
+
+### ⛔ Agrupar por industria en TODOS los sectores: NO
+
+El mismo dato lo desaconseja fuera de Financials:
+
+| sector | empresas | industrias | con n≥8 | cubren |
+|---|---|---|---|---|
+| **Consumer Discretionary** | 47 | 17 | **0** | 0/47 |
+| **Real Estate** | 30 | 9 | **0** | 0/30 |
+| **Consumer Staples** | 34 | 12 | **0** | 0/34 |
+| Industrials | 84 | 26 | 2 | 26/84 |
+| Financials | 67 | 11 | 4 | 39/67 |
+| Technology | 75 | 16 | 4 | 47/75 |
+
+Consumer Discretionary se parte en **17 industrias y ninguna llega a 8**. Un
+percentil sobre 2 o 3 empresas no es un percentil. **Financials es el único
+sector donde la separación se sostiene con los datos**, y por eso se hace solo
+ahí.
+
+### 🔬 SONDA `local_bot/probe_bancos.py` — pendiente de correr
+
+CET1 y NIM **no están en yfinance**. Antes de escribir código de producción hay
+que comprobar que los datos existen. La sonda prueba, para los 17 bancos:
+
+- **NIM**: 3 rutas por yfinance (fila neta anual → ingreso menos egreso →
+  TTM de 4 trimestres), sobre `Total Assets` del balance.
+- **CET1**: 5 etiquetas XBRL candidatas contra la API de la SEC.
+
+**No escribe nada en `public/data/`.** Solo mide y reporta cobertura.
+
+> ⚠️ **El NIM va a ser un PROXY.** El NIM real usa activos **rentables**
+> promedio (sin goodwill ni inmuebles); la sonda usa activos **totales**, que
+> son ~10-15% más. El número va a salir más bajo que el que publica el banco.
+> Para **ordenar** entre bancos sirve; para **citar el número** no. Si se
+> muestra en pantalla hay que aclararlo.
+
+> ⚠️ **Sospecha sobre CET1**: probablemente no tenga etiqueta us-gaap estándar
+> y cada banco lo publique como extensión propia. Si la sonda lo confirma,
+> automatizarlo requeriría parsear el texto del 10-Q banco por banco, que se
+> rompe cada vez que uno cambia el formato. **Ese sería el motivo para NO
+> hacerlo**, no la falta de ganas.
+
+> 📌 **Por qué una sonda y no código directo:** la integración de la tesis con
+> IA se escribió sin haber llamado nunca a la API de verdad y **sigue sin
+> verificar**. Esta sonda existe para no repetirlo.
+
+#### Medición de la separación, ya hecha
+
+Con los 17 bancos puntuados entre sí en vez de contra los 67:
+
+- **El orden entre bancos casi no cambia** — SYF #1 en los dos, y TFC, RF, MTB,
+  USB quedan en el mismo vecindario. Los bancos ya se estaban comparando con las
+  mismas métricas.
+- **Lo que sí cambia es el Top 5 de Financials**: hoy SYF(82) CINF(80) ACGL(79)
+  ALL(79) TROW(75); separado sería TROW(84) ALL(83) CINF(81) SYF(81) ACGL(80).
+- **El valor real de separar no es reordenar bancos**: es dejar de comparar el
+  P/B de **MSCI** —empresa de datos con patrimonio negativo— contra el de JPM.
+
 ### 🚩 FISV: el único caso que el arreglo NO cubre
 
 Fiserv aparece con **2 de 6 métricas** (solo P/E 10,07 y P/B 1,04; el resto

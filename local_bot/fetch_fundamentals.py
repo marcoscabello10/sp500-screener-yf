@@ -578,6 +578,17 @@ def fetch_one(sym, sector=None):
             'roa':          roa * 100 if roa is not None else None,
             'revGrowth':    rev_g * 100 if rev_g is not None else None,
             'priceToSales': info.get('priceToSalesTrailing12Months'),
+            # Sub-sector de Yahoo. CUESTA CERO: ya viene en el mismo `info` que
+            # se pide arriba, no agrega ni una llamada. Todavia NO lo usa nadie
+            # -- se captura para poder DECIDIR con datos si conviene comparar
+            # por industria en vez de por sector.
+            #
+            # El motivo: "Financials" son 67 empresas y solo 18 son bancos. Las
+            # otras 49 son aseguradoras (19), pagos y datos (10, incluyendo V,
+            # MA, SPGI, ICE, MSCI), gestoras (9) y 11 sin clasificar. Hoy el
+            # percentil compara el P/B de MSCI -- una empresa de datos con
+            # patrimonio negativo -- contra el de JPM, y eso no significa nada.
+            'industry':     info.get('industry'),
             'hasCedear':    has_cedear,
         }
     except Exception as e:

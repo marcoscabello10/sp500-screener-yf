@@ -2836,6 +2836,71 @@ los pools no se mezclen, que un negativo en "mayor es mejor" **sí** puntúe (un
 margen de −5% es un dato real), y que los 75 scores de Technology coincidan con
 el promedio ponderado recalculado a mano.
 
+### 🏦 CET1 y NIM para bancos: analizado, NO se hace (por ahora) — 28/08/2026
+
+Marcos preguntó si para Financials conviene medir con métricas propias del
+sector: **ROE, ROA, CET1, NIM**. La idea es la correcta; el problema es otro.
+
+#### Los datos no están
+
+| métrica | ¿está? | qué costaría |
+|---|---|---|
+| ROE, ROA | ✅ ya están | — |
+| **NIM** | ❌ | EDGAR: `InterestIncomeExpenseNet` / `Assets`. Es un *proxy* — el NIM real usa activos **rentables** promedio (sin goodwill ni inmuebles), ~10-15% menos que activos totales. Para un ranking **relativo** dentro del grupo ordena casi igual. Factible. |
+| **CET1** | ❌ | EDGAR, pero el etiquetado XBRL es inconsistente entre bancos. Frágil. |
+
+Los dos existen **solo para bancos de verdad**.
+
+#### El problema de fondo: "Financials" no son bancos
+
+| tipo | cuántas |
+|---|---|
+| Aseguradoras | 19 |
+| **Bancos** | **18** |
+| Sin clasificar (ARES, COIN, HOOD, IBKR, FDS, PFG…) | 11 |
+| Pagos y datos (V, MA, SPGI, ICE, CME, MSCI, COF, SYF…) | 10 |
+| Gestoras de activos (BLK, BX, KKR, APO, TROW…) | 9 |
+| **total** | **67** |
+
+**Solo 18 de 67 son bancos.** Agregar CET1 al *sector* dejaría a 49 en null:
+peor que ahora.
+
+Y el problema ya existe sin CET1: hoy el percentil compara el P/B de **MSCI**
+—empresa de datos, patrimonio negativo, vende suscripciones— contra el de
+**JPM** —banco a 2,6x libros—. Esa comparación no significa nada. El percentil
+ya es relativo al sector; **lo que falla es que el sector es demasiado
+heterogéneo**, y métricas bancarias nuevas no lo arreglan.
+
+#### Lo que sí se hizo: capturar `industry` (gratis)
+
+`local_bot/fetch_fundamentals.py` ahora guarda `info.get('industry')`. **Cuesta
+cero**: ya viene en el mismo `info` que se pide. **Todavía no lo usa nadie** —
+se captura para poder decidir con datos reales, no con una clasificación a mano.
+
+#### Decisión pendiente, en este orden
+
+1. **Correr el bot y mirar el reparto real por `industry`.** Recién ahí se sabe
+   si los grupos dan para un percentil (informe.py exige n ≥ 5; con 18 bancos
+   alcanza, con 3 exchanges no).
+2. **Si dan: comparar por industria con caída a sector** cuando el grupo sea
+   chico. ⚠️ Esto movería los rankings de **todos** los sectores, no solo
+   Financials — es un cambio bastante más grande que el del patrimonio negativo,
+   y hay que medirlo igual que se midió aquel.
+3. **Recién después, y solo si hace falta, CET1/NIM.** Si agrupar por industria
+   ya deja a los 18 bancos juntos, el ROE y el P/B —que son los múltiplos que
+   mandan en bancos, como dice `SECTOR_AJUSTE` en informe.py— pueden alcanzar.
+
+> 📌 **El orden importa:** primero agrupar bien, después agregar métricas. Al
+> revés se agregan métricas para tapar un problema de agrupación.
+
+#### Otros sectores con el mismo síntoma
+
+- **Real Estate**: el múltiplo correcto para un REIT es **FFO**, no el P/E — la
+  depreciación contable distorsiona la ganancia. `SECTOR_AJUSTE['Real Estate']`
+  en informe.py ya lo dice por escrito, pero nadie lo calcula.
+- **Energy**: `SECTOR_AJUSTE` ya avisa que un P/E bajo en el pico del ciclo es
+  la trampa de valor clásica.
+
 ### 🚩 FISV: el único caso que el arreglo NO cubre
 
 Fiserv aparece con **2 de 6 métricas** (solo P/E 10,07 y P/B 1,04; el resto
@@ -2875,7 +2940,7 @@ Todo esto está escrito en la carpeta y **todavía no subido**. Verificar con
 ```
 public/data/historico_precios.json   9,3 MB — snapshot de precios (ya en el index)
 src/App.jsx                          ⚠️ SCREENER — arreglo del patrimonio negativo
-local_bot/fetch_fundamentals.py      anula roe/de con patrimonio<0, saca el abs(), agrega ndEbitda
+local_bot/fetch_fundamentals.py      anula roe/de con patrimonio<0, saca el abs(), agrega ndEbitda + industry
 test/prueba-metricas.cjs             NUEVO — 27 comprobaciones
 CONTEXTO_INFORME_AVANZADO.md
 ```

@@ -431,6 +431,12 @@ function FormularioCartera({ tickers, meta, conAnexo, setMeta, setConAnexo,
               documento pasa de ~{Math.max(3, Math.ceil(tickers.length * 0.7))} a
               ~{Math.ceil(tickers.length * 4)} páginas.
             </div>
+            {/* Sin esta línea el botón de tesis era INENCONTRABLE en la vista de
+                cartera: vive dentro del anexo, y el anexo arranca apagado. */}
+            <div style={{ color: C.acento, fontSize: 12.5, marginTop: 3 }}>
+              También habilita el botón de tesis con IA en cada activo. Los
+              botones no gastan solos: solo cuando hacés clic en uno.
+            </div>
           </span>
         </label>
 

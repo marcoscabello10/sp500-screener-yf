@@ -2560,6 +2560,65 @@ También pasó: `esbuild --bundle` (sintaxis) y `detector-shadow.cjs`
 (8 shadowings vs 7 antes; el nuevo es un `let i` de un `for`, igual que los 6
 que ya había).
 
+#### 📸 El snapshot completo, corrido el 28/08/2026
+
+```
+633 símbolos x 1673 fechas · 9,3 MB · 79 segundos
+```
+
+**79 segundos contra los ~88 minutos de Twelve Data.** Cobertura del S&P:
+**504/504 = 100%**, SPY incluido → el interruptor pasa sin problema.
+
+13 papeles con menos de la mitad del historial, todos IPOs recientes y por eso
+correcto:
+
+| | puntos | años | |
+|---|---|---|---|
+| HONA | 53 | 0,2 | ⚠️ **por debajo de los 60 que pide el screener** → F2 lo muestra sin métricas y F3/F4 lo saltean. Es lo correcto, y es lo mismo que hacía Twelve Data. |
+| FDXF | 66 | 0,3 | pasa apenas el umbral: F2 va a calcular un "3Y" con 66 días. **No es culpa de B2** (con Twelve Data pasaba igual), pero conviene poner un mínimo de puntos por ventana algún día. |
+| Q, SNDK, NBIS | 211–465 | 0,8–1,8 | |
+| GEV, SOLV, RDDT, ALAB | ~610 | 2,4 | |
+| VLTO, LAC, ARM, KVUE | 728–833 | 2,9–3,3 | |
+
+#### ⚖️ Cadencia: SEMANAL, no diaria — el archivo pesa
+
+| | |
+|---|---|
+| crudo | 9,33 MB |
+| gzip (así lo sirve Vercel) | **3,53 MB** |
+| zlib, que es lo que guarda git | **~3,5 MB por versión** |
+
+Servirlo no es problema: el browser baja 3,5 MB una vez y después lo cachea por
+HTTP. **El problema es el historial de git**: cada versión commiteada suma
+~3,5 MB *para siempre*. Diario serían **~1,3 GB al año** en un repo que hoy
+pesa poco.
+
+Y no hace falta. Este archivo alimenta retornos, volatilidad, beta y
+correlaciones sobre ventanas de **3 a 6 años**: una semana de datos nuevos mueve
+un retorno 3Y en centésimas. **Semanal alcanza de sobra**, y el interruptor de
+45 días es la red de seguridad si se pasa un par de semanas.
+
+> ❌ **No redondear para achicarlo.** Se probó: a 2 decimales baja a 7,7 MB,
+> pero el precio ajustado más bajo del archivo es **KEEL a 0,22** (y BIOX 0,323,
+> ONDS 0,336). Redondear a 2 decimales sobre 0,22 es un escalón del **2,3%**,
+> que destroza los retornos diarios de esos CEDEARs. Los 4 decimales actuales
+> son un escalón del 0,023%. **Se quedan los 4 decimales.**
+
+#### 🪤 Trampa de git a tener presente
+
+`git add public/data/historico_precios.json` **falla si se corre desde
+`local_bot/`** — git resuelve la ruta desde el directorio actual, así que busca
+`local_bot/public/data/`:
+
+```
+warning: could not open directory 'local_bot/public/data/'
+fatal: pathspec '...' did not match any files
+```
+
+Como el bot se corre desde `local_bot/`, es el error natural. Se arregla con
+`cd ..` primero. Y ojo: **`git add` no imprime nada cuando funciona** — el
+silencio es el éxito, no un segundo fallo.
+
 #### Lo que Marcos va a ver
 
 - **F2/F3/F4 dejan de tardar ~88 minutos** y pasan a leer un archivo local.
@@ -2585,18 +2644,16 @@ Todo esto está escrito en la carpeta y **todavía no subido**. Verificar con
 > `src/App.jsx` **ya fueron pusheados** por Marcos. Lo que sigue es la tanda del
 > **25/08/2026**: veredicto de 3 posiciones, foco en rotación y los CEDEARs.
 
-### Tanda de la FASE B2 (28/08) — ⚠️ TOCA EL SCREENER
+### Tanda de la FASE B2 (28/08)
+
+✅ **Código ya pusheado** en `689463f` (App.jsx, prueba-snapshot.cjs, contexto).
+
+Falta commitear el dato, que ya está en el index:
 
 ```
-src/App.jsx                  ⚠️ SCREENER — F2/F3/F4 leen el snapshot; +184/−14
-test/prueba-snapshot.cjs     NUEVO — 41 comprobaciones del lector
-CONTEXTO_INFORME_AVANZADO.md (comparación contra F2 + esta fase)
+public/data/historico_precios.json   9,3 MB — 633 simbolos x 1673 fechas
+CONTEXTO_INFORME_AVANZADO.md         (resultado de la corrida + cadencia)
 ```
-
-**El orden importa:** primero `git push`, después correr
-`fetch_historico.py` completo, y recién ahí abrir el screener. Si se corre al
-revés no rompe nada (el interruptor cae a Twelve Data), pero la primera corrida
-tarda lo de siempre.
 
 Todo lo de abajo ya está pusheado.
 

@@ -265,6 +265,76 @@ chequear(len(d['posiciones']) <= I.MAX_POSICIONES_CARTERA,
 print(f'  cartera grande      -> 60 posiciones se recortan a '
       f'{len(d["posiciones"])}')
 
+# ── 9. 15 posiciones tienen que ENTRAR en los 60s de Vercel ────────────────
+# Es el caso que pidio Marcos explicitamente. Con la seccion 3 en prosa no
+# entraba ni con 10.
+e15 = I.estimar_cartera(15, 'anthropic', 'rapido')
+chequear(e15['entra_en_el_limite'],
+         f'15 posiciones en modo rapido NO entran: {e15["segundos_estimados"]}s')
+chequear(e15['segundos_estimados'] < I.TIMEOUT_CARTERA,
+         f'{e15["segundos_estimados"]}s contra un timeout de {I.TIMEOUT_CARTERA}s')
+print(f'  15 posiciones       -> {e15["segundos_estimados"]}s en modo rapido '
+      f'(limite {I.TIMEOUT_CARTERA}s)')
+
+# El estimador NO puede gastar: es aritmetica, no una llamada.
+LLAMADAS.clear()
+for n in (1, 15, 40):
+    for m in ('rapido', 'profundo'):
+        I.estimar_cartera(n, 'anthropic', m)
+chequear(not LLAMADAS, 'EL ESTIMADOR LLAMO A LA RED: tiene que ser gratis')
+print(f'  estimador           -> {len(LLAMADAS)} llamadas a la red (tiene que ser 0)')
+
+# Y tiene que decir la verdad cuando NO entra.
+malo = I.estimar_cartera(40, 'anthropic', 'profundo')
+chequear(not malo['entra_en_el_limite'],
+         'con 40 posiciones en modo profundo deberia avisar que no entra')
+
+# ── 10. El modo cambia el modelo, y el rapido es mas barato ────────────────
+r = I.estimar_cartera(15, 'anthropic', 'rapido')
+pf = I.estimar_cartera(15, 'anthropic', 'profundo')
+chequear(r['modelo'] != pf['modelo'], 'los dos modos usan el mismo modelo')
+chequear(r['costo_estimado_usd'] < pf['costo_estimado_usd'],
+         f'el modo rapido tendria que ser mas barato: {r["costo_estimado_usd"]} '
+         f'vs {pf["costo_estimado_usd"]}')
+limpiar(ANTHROPIC_API_KEY='sk-ant-x')
+I.generar_tesis_cartera(cartera(3), 'anthropic', 'profundo')
+chequear(LLAMADAS[-1]['cuerpo']['model'] == pf['modelo'],
+         f'el modo profundo no uso el modelo que dice el estimador')
+limpiar(ANTHROPIC_API_KEY='sk-ant-x')
+I.generar_tesis_cartera(cartera(3), 'anthropic')
+chequear(LLAMADAS[-1]['cuerpo']['model'] == r['modelo'],
+         'el default tendria que ser el modo rapido')
+limpiar(ANTHROPIC_API_KEY='sk-ant-x')
+res, err = I.generar_tesis_cartera(cartera(3), 'anthropic', 'inventado')
+chequear(res is None and not LLAMADAS, 'un modo invalido NO deberia gastar')
+print(f'  modos               -> rapido USD {r["costo_estimado_usd"]} · '
+      f'profundo USD {pf["costo_estimado_usd"]} (default: rapido)')
+
+# ── 11. El filtro de candidatos ────────────────────────────────────────────
+# Los candidatos eran el 45% del payload y se pagaban en cada llamada.
+muchos = dict(cartera(6))
+muchos['candidatos'] = [
+    {'ticker': f'C{i}', 'nombre': f'Candidato numero {i} Corp.',
+     'sector': ['Technology', 'Materials', 'Energy', 'Utilities'][i % 4],
+     'puntaje': 80, 'metricas': '6/6', 'reemplazos': []} for i in range(49)]
+muchos['sectores'] = [
+    {'sector': 'Technology', 'pct': 41.2, 'tope': 35, 'excede': True},
+    {'sector': 'Materials', 'pct': 8, 'tope': 35, 'excede': False},
+    {'sector': 'Energy', 'pct': 6, 'tope': 35, 'excede': False}]
+d = I._resumen_cartera(muchos)
+chequear(len(d['candidatos']) < 49,
+         f'no filtro nada: quedaron {len(d["candidatos"])} de 49')
+chequear(all('nombre' not in c for c in d['candidatos']),
+         'los candidatos siguen mandando el nombre largo')
+tech = [c for c in d['candidatos'] if c['sector'] == 'Technology']
+chequear(len(tech) <= 2,
+         f'Technology excede su tope: no puede aportar {len(tech)} candidatos '
+         f'como destino de plata nueva')
+chequear(all(k not in (d['posiciones'][0] or {})
+             for k in ('precio_compra', 'cantidad', 'valor_actual')),
+         'las posiciones siguen mandando campos que no cambian una decision')
+print(f'  filtro de candidatos-> 49 -> {len(d["candidatos"])}, sin nombres largos')
+
 print('=' * 74)
 if fallos:
     print(f'  {len(fallos)} FALLAS:')

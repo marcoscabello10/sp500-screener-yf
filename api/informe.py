@@ -1462,20 +1462,29 @@ def diagnostico():
 # La tesis individual usa 2000 y alcanza. Esta NO: tiene cinco secciones y una
 # de ellas es posicion por posicion, asi que crece con la cartera.
 #
-# Presupuesto medido por seccion (10 posiciones):
+# ⚠️ EL TOPE NO ES EL PROBLEMA — EL TIEMPO SI
+# Subir el tope no cuesta plata (se paga lo escrito, no lo permitido), pero cada
+# token escrito TARDA. Con la seccion 3 en prosa (~120 tokens por posicion) el
+# calculo daba:
+#
+#     posiciones   salida necesaria   + razonamiento   segundos @60 tok/s
+#          5             1.650             ~1.500            52s
+#         10             2.250             ~1.500            62s  ← NO ENTRA
+#         15             2.850             ~1.500            72s  ← NO ENTRA
+#
+# O sea que ni 10 posiciones entraban en los 60s de Vercel. Por eso la seccion 3
+# pasa a UNA LINEA por posicion (~50 tokens) y solo se amplia lo que tiene una
+# accion distinta de "mantener". No es una concesion: quince parrafos que dicen
+# "posicion correcta, sin cambios" tampoco le servian a nadie.
+#
+# Presupuesto con el formato nuevo (15 posiciones):
 #     1. Que hacer                ~250
 #     2. Como esta la cartera     ~250
-#     3. Posicion por posicion    ~120 x N
+#     3. Posicion por posicion    ~50 x N  (detalle solo en las accionables)
 #     4. Rotaciones               ~300
 #     5. Para el cliente          ~250
 #                                 ────────
-#     total 10 posiciones        ~2.250   ← 2000 ya se quedaba corto
-#
-# Mas el bloque de razonamiento, que es lo que dejo sin texto a la primera
-# llamada real. Por eso la base es holgada y ademas escala.
-#
-# ⚠️ Subir el tope NO sube el costo por si solo: se paga lo que el modelo
-# escribe, no lo que se le permite escribir. El tope solo evita que se corte.
+#     total 15 posiciones        ~1.800  ->  ~55s en Sonnet, ~22s en Haiku
 # ⚠️ RESTRICCION DURA: `vercel.json` le da 60 segundos a api/informe.py. Una
 # respuesta de ~4.000 tokens tarda 50-80s segun el modelo, asi que una cartera
 # grande PUEDE pasarse. El timeout propio se pone en 55 para que la funcion
@@ -1483,9 +1492,9 @@ def diagnostico():
 # vea un 504 despues de haber pagado la llamada.
 TIMEOUT_CARTERA = 55
 
-MAX_TOKENS_CARTERA_BASE = 3000
-MAX_TOKENS_CARTERA_POR_POSICION = 250
-MAX_TOKENS_CARTERA_TOPE = 16000
+MAX_TOKENS_CARTERA_BASE = 2600
+MAX_TOKENS_CARTERA_POR_POSICION = 120
+MAX_TOKENS_CARTERA_TOPE = 8000
 
 # Mas de esto no entra en un documento que alguien vaya a leer, y el costo
 # empieza a crecer sin que mejore la decision.
@@ -1618,12 +1627,65 @@ Esto es un insumo de análisis para que decida una persona, no una recomendació
 de inversión cerrada. No prometas rendimientos."""
 
 
+# Campos de una posicion que NO cambian ninguna decision y por lo tanto no se
+# mandan. Medido: sacarlos baja el bloque de posiciones un ~15%.
+#   precio_compra  -> ya viene `ganancia_pct`, que es lo que importa
+#   brecha_objetivo-> es la resta de dos numeros que ya van
+_POS_FUERA = ('precio_compra', 'brecha_objetivo', 'cantidad', 'valor_actual')
+
+# Los candidatos son lo que MAS pesa del payload despues de las posiciones:
+# medido, 49 candidatos son 1.318 tokens = el 45% del bloque de datos, y eso se
+# paga en CADA llamada.
+#
+# Pero no hacen falta todos. La rotacion sirve para dos cosas:
+#   - reemplazar lo que se recorta  -> hacen falta candidatos de ESE sector
+#   - poner la plata en otro lado   -> hacen falta de sectores que NO esten al tope
+# Un candidato de un sector que ya excede su tope no se puede recomendar: seria
+# cambiar una concentracion por otra, que es justo lo que el prompt prohibe.
+CANDIDATOS_POR_SECTOR_ENVIADOS = 4
+
+
+def _filtrar_candidatos(candidatos, posiciones, sectores):
+    """Deja solo los candidatos que podrian llegar a recomendarse."""
+    if not candidatos:
+        return []
+    saliendo = {p.get('sector') for p in posiciones
+                if p.get('estado') in ('sobre', 'critico')
+                or p.get('accion_calculada') in ('sacar', 'recortar')}
+    al_tope = {s.get('sector') for s in (sectores or []) if s.get('excede')}
+    # Sectores donde SI se puede poner plata: los que no estan al tope.
+    con_lugar = {s.get('sector') for s in (sectores or []) if not s.get('excede')}
+    utiles = (saliendo | con_lugar) - set()
+    if not utiles:                       # cartera sin nada que tocar
+        utiles = {c.get('sector') for c in candidatos}
+
+    por_sector, out = {}, []
+    for c in candidatos:
+        sec = c.get('sector')
+        if sec not in utiles:
+            continue
+        # Un sector que ya excede solo puede aportar REEMPLAZO de si mismo, no
+        # destino de plata nueva: entra igual pero con menos cupo.
+        cupo = 2 if sec in al_tope else CANDIDATOS_POR_SECTOR_ENVIADOS
+        if por_sector.get(sec, 0) >= cupo:
+            continue
+        por_sector[sec] = por_sector.get(sec, 0) + 1
+        # Sin `nombre`: para elegir un reemplazo alcanza el ticker y el sector,
+        # y los nombres largos son puro peso.
+        out.append({'ticker': c.get('ticker'), 'sector': sec,
+                    'puntaje': c.get('puntaje'),
+                    'metricas': c.get('metricas')})
+    return out
+
+
 def _resumen_cartera(c):
     """El bloque de datos, achicado a lo que el modelo necesita.
 
     Se manda SOLO lo que cambia una decision. Cada campo de mas se paga en cada
     llamada, y ademas le da al modelo mas superficie para contradecirse."""
-    pos = (c.get('posiciones') or [])[:MAX_POSICIONES_CARTERA]
+    pos = [{k: v for k, v in (p or {}).items() if k not in _POS_FUERA}
+           for p in (c.get('posiciones') or [])[:MAX_POSICIONES_CARTERA]]
+    sectores = c.get('sectores') or []
     return {
         'perfil': c.get('perfil'),
         'objetivo': c.get('objetivo'),
@@ -1631,9 +1693,69 @@ def _resumen_cartera(c):
         'cartera': c.get('cartera') or {},
         'topes': c.get('topes') or {},
         'estres': c.get('estres') or {},
-        'sectores': c.get('sectores') or [],
+        'sectores': sectores,
         'posiciones': pos,
-        'candidatos': (c.get('candidatos') or [])[:80],
+        'candidatos': _filtrar_candidatos(c.get('candidatos') or [], pos, sectores),
+    }
+
+
+# La tesis de cartera acepta DOS modelos, y el default es el rapido.
+#
+# Por que: en esta llamada el modelo NO decide numeros —los recibe calculados—
+# sino que explica, ordena y redacta. Para eso el modelo chico alcanza, y la
+# diferencia no es menor:
+#
+#              precio in/out      velocidad aprox   15 posiciones
+#   rapido     1,00 / 5,00 USD/M      ~150 tok/s        ~22s   ~USD 0,011
+#   profundo   2,00 / 10,00           ~60 tok/s         ~55s   ~USD 0,022
+#
+# O sea: la mitad de precio y bien adentro de los 60s de Vercel. `profundo`
+# queda disponible para cuando la cartera sea rara y valga la pena.
+MODELOS_CARTERA = {
+    'rapido':   {'anthropic': 'claude-haiku-4-5', 'openai': 'gpt-5.6-luna'},
+    'profundo': {'anthropic': 'claude-sonnet-5',  'openai': 'gpt-5.6-terra'},
+}
+MODO_CARTERA_POR_DEFECTO = 'rapido'
+
+
+def modelo_cartera(proveedor, modo):
+    """El modelo a usar. Una variable de entorno lo pisa, igual que en la tesis
+    individual, para poder cambiarlo sin tocar codigo."""
+    forzado = os.environ.get(PROVEEDORES[proveedor]['env_modelo'] + '_CARTERA')
+    if forzado:
+        return forzado
+    tabla = MODELOS_CARTERA.get(modo) or MODELOS_CARTERA[MODO_CARTERA_POR_DEFECTO]
+    return tabla[proveedor]
+
+
+def estimar_cartera(n_posiciones, proveedor='anthropic', modo=None):
+    """Cuanto va a costar y tardar ANTES de gastar. NO llama a nadie.
+
+    Existe para que el boton pueda decir el numero antes de que lo aprieten: la
+    regla del proyecto es gastar solo cuando se lo pide, y para pedirlo con
+    criterio hay que saber cuanto sale."""
+    modo = modo or MODO_CARTERA_POR_DEFECTO
+    modelo = modelo_cartera(proveedor, modo)
+    n = max(0, int(n_posiciones or 0))
+    # Medido sobre payloads reales: ~85 tokens por posicion + ~35 por candidato
+    # + el resto del encabezado.
+    entrada = 120 + 85 * n + 35 * min(n * 2, 24)
+    salida = 1050 + 50 * n
+    pe, ps = PRECIOS.get(modelo, (None, None))
+    costo = (round(entrada * pe / 1e6 + salida * ps / 1e6, 4)
+             if pe is not None else None)
+    # La primera llamada paga las reglas completas; de ahi en mas salen del
+    # cache a 0,1x.
+    costo_primera = (round(costo + 1249 * pe / 1e6, 4)
+                     if costo is not None else None)
+    velocidad = 150 if 'haiku' in modelo or 'luna' in modelo else 60
+    return {
+        'modo': modo, 'modelo': modelo, 'n_posiciones': n,
+        'tokens_estimados': {'entrada': entrada, 'salida': salida},
+        'costo_estimado_usd': costo,
+        'costo_primera_vez_usd': costo_primera,
+        'segundos_estimados': round((salida + 1500) / velocidad),
+        'entra_en_el_limite': (salida + 1500) / velocidad < TIMEOUT_CARTERA,
     }
 
 
@@ -1779,7 +1901,7 @@ def validar_respuesta_cartera(texto, datos):
     return avisos
 
 
-def generar_tesis_cartera(cuerpo, proveedor):
+def generar_tesis_cartera(cuerpo, proveedor, modo=None):
     """Devuelve (resultado, error). Es el UNICO camino que gasta ademas de
     `action=tesis`."""
     p = PROVEEDORES.get(proveedor)
@@ -1796,7 +1918,11 @@ def generar_tesis_cartera(cuerpo, proveedor):
     if not pos:
         return None, ('La cartera llego sin posiciones. No se llamo a nadie.')
 
-    modelo = os.environ.get(p['env_modelo'], p['modelo_default'])
+    modo = (modo or MODO_CARTERA_POR_DEFECTO).strip().lower()
+    if modo not in MODELOS_CARTERA:
+        return None, (f'Modo {modo!r} desconocido. Los validos son: '
+                      f'{", ".join(MODELOS_CARTERA)}. No se llamo a nadie.')
+    modelo = modelo_cartera(proveedor, modo)
     t0 = time.time()
     try:
         texto, t_ent, t_sal, diag, t_cache, tope = _llamar_cartera(
@@ -1826,7 +1952,9 @@ def generar_tesis_cartera(cuerpo, proveedor):
         'proveedor': proveedor,
         'proveedor_nombre': p['nombre'],
         'modelo': modelo,
+        'modo': modo,
         'n_posiciones': len(pos),
+        'n_candidatos': len(datos.get('candidatos') or []),
         'tokens': {'entrada': t_ent, 'salida': t_sal, 'desde_cache': t_cache,
                    'tope_de_salida': tope},
         'costo_estimado_usd': costo,
@@ -1888,7 +2016,8 @@ class handler(BaseHTTPRequestHandler):
                              f'No se llamo a nadie.',
                     'sin_costo': True})
 
-            res, err = generar_tesis_cartera(cuerpo, proveedor)
+            modo = (q.get('modo') or [''])[0].strip().lower() or None
+            res, err = generar_tesis_cartera(cuerpo, proveedor, modo)
             if err:
                 # `sin_costo` solo si es seguro que no se llamo. Si el error
                 # viene de la respuesta del modelo, la llamada YA se cobro y
@@ -1924,7 +2053,7 @@ class handler(BaseHTTPRequestHandler):
             # tesis aunque las claves estuvieran bien cargadas. Se encontro
             # consultando el endpoint real, no en los tests: los tests llaman a
             # generar_tesis() directo y nunca pasan por do_GET.
-            SIN_TICKER = ('diag', 'proveedores')
+            SIN_TICKER = ('diag', 'proveedores', 'estimar_cartera')
             if not ticker and accion not in SIN_TICKER:
                 return self._responder(400, {
                     'error': f'Falta el parametro ticker para action={accion}.'})
@@ -1943,6 +2072,22 @@ class handler(BaseHTTPRequestHandler):
             # botones mostrar.
             if accion == 'proveedores':
                 return self._responder(200, {'proveedores': proveedores_disponibles()})
+
+            # Cuanto sale la tesis de cartera ANTES de pedirla. NO gasta un solo
+            # token: es aritmetica sobre la cantidad de posiciones. El boton lo
+            # usa para mostrar el numero antes de que lo aprieten.
+            if accion == 'estimar_cartera':
+                try:
+                    n_pos = int((q.get('posiciones') or ['0'])[0])
+                except ValueError:
+                    return self._responder(400, {
+                        'error': 'posiciones tiene que ser un numero.'})
+                prov = (q.get('proveedor') or ['anthropic'])[0].strip().lower()
+                if prov not in PROVEEDORES:
+                    return self._responder(400, {
+                        'error': f'Proveedor {prov!r} desconocido.'})
+                return self._responder(200, {
+                    m: estimar_cartera(n_pos, prov, m) for m in MODELOS_CARTERA})
 
             if accion == 'tesis':
                 # EL ÚNICO camino que consume tokens en todo el proyecto.

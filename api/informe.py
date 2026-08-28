@@ -1005,7 +1005,15 @@ def evaluar(ticker, fund, cons, detalle, hist, sec):
 # proveedor que no elegiste.
 # ─────────────────────────────────────────────────────────────────────────────
 
-MAX_TOKENS_TESIS = 900        # tope duro de salida
+# Tope duro de salida. Estaba en 900 y la PRIMERA llamada real a Anthropic
+# (MSFT, 28/08/2026) volvio sin texto habiendo cobrado igual: con los modelos
+# que razonan antes de responder, el presupuesto se puede consumir entero en el
+# bloque de razonamiento y no queda nada para el texto.
+#
+# Subir el tope NO sube el costo por si solo -- se paga lo que el modelo
+# escribe, no lo que se le permite escribir. Lo unico que hace es que no se
+# corte antes de empezar.
+MAX_TOKENS_TESIS = 2000
 TIMEOUT_LLM = 45
 
 # Precios por millón de tokens, para estimar el costo de cada tesis y
@@ -1098,10 +1106,22 @@ def _llamar_anthropic(clave, modelo, prompt):
         'system': SISTEMA,
         'messages': [{'role': 'user', 'content': prompt}],
     })
-    texto = ''.join(b.get('text', '') for b in (r.get('content') or [])
-                    if b.get('type') == 'text')
+    bloques = r.get('content') or []
+    texto = ''.join(b.get('text', '') for b in bloques if b.get('type') == 'text')
     u = r.get('usage') or {}
-    return texto.strip(), u.get('input_tokens'), u.get('output_tokens')
+    # Si no vino texto hay que saber POR QUE sin gastar otra llamada a ciegas.
+    # La version anterior devolvia solo "respondio vacio" y tiraba el
+    # stop_reason, los tipos de bloque y el uso -- justo lo unico que explica
+    # que paso. Es el mismo error que el `catch {}` vacio del cache: el dato
+    # estaba y se descartaba.
+    diag = None
+    if not texto.strip():
+        diag = {'stop_reason': r.get('stop_reason'),
+                'tipos_de_bloque': [b.get('type') for b in bloques],
+                'n_bloques': len(bloques),
+                'modelo_que_respondio': r.get('model'),
+                'tokens_salida': u.get('output_tokens')}
+    return texto.strip(), u.get('input_tokens'), u.get('output_tokens'), diag
 
 
 def _llamar_openai(clave, modelo, prompt):
@@ -1129,9 +1149,15 @@ def _llamar_openai(clave, modelo, prompt):
     else:
         raise RuntimeError('OpenAI rechazo el tope de tokens con los dos nombres.')
 
-    texto = (((r.get('choices') or [{}])[0].get('message') or {}).get('content') or '')
+    ch = (r.get('choices') or [{}])[0]
+    texto = ((ch.get('message') or {}).get('content') or '')
+    diag = None
+    if not texto.strip():
+        diag = {'finish_reason': ch.get('finish_reason'),
+                'modelo_que_respondio': r.get('model'),
+                'claves_del_message': sorted((ch.get('message') or {}).keys())}
     u = r.get('usage') or {}
-    return texto.strip(), u.get('prompt_tokens'), u.get('completion_tokens')
+    return texto.strip(), u.get('prompt_tokens'), u.get('completion_tokens'), diag
 
 
 def proveedores_disponibles():
@@ -1175,7 +1201,7 @@ def generar_tesis(ticker, proveedor):
     t0 = time.time()
     try:
         fn = _llamar_anthropic if proveedor == 'anthropic' else _llamar_openai
-        texto, t_ent, t_sal = fn(clave, modelo, prompt)
+        texto, t_ent, t_sal, diag = fn(clave, modelo, prompt)
     except urllib.error.HTTPError as e:
         cuerpo = e.read().decode('utf-8', 'replace')[:300]
         return None, (f'{p["nombre"]} devolvio {e.code}. {cuerpo} '
@@ -1189,8 +1215,20 @@ def generar_tesis(ticker, proveedor):
         return None, f'No pude hablar con {p["nombre"]}: {type(e).__name__}: {e}'
 
     if not texto:
-        return None, (f'{p["nombre"]} respondio vacio. No se genero la tesis '
-                      f'(igual puede haberse cobrado la llamada).')
+        # El mensaje tiene que traer el diagnostico: la llamada YA se cobro, asi
+        # que repetirla a ciegas cuesta plata y no aporta nada nuevo.
+        d = diag or {}
+        motivo = ''
+        if d.get('stop_reason') == 'max_tokens' or d.get('finish_reason') == 'length':
+            motivo = (f' Se corto por el tope de salida ({MAX_TOKENS_TESIS} tokens): '
+                      f'el modelo gasto el presupuesto antes de escribir texto. '
+                      f'Subir MAX_TOKENS_TESIS.')
+        elif d.get('tipos_de_bloque') and 'text' not in d['tipos_de_bloque']:
+            motivo = (f' Devolvio bloques de tipo {d["tipos_de_bloque"]} y ninguno '
+                      f'de texto.')
+        return None, (f'{p["nombre"]} respondio sin texto. No se genero la tesis '
+                      f'(la llamada igual se cobro).{motivo} '
+                      f'Detalle: {json.dumps(d, ensure_ascii=False)}')
 
     pe, ps = PRECIOS.get(modelo, (None, None))
     costo = (round((t_ent or 0) * pe / 1e6 + (t_sal or 0) * ps / 1e6, 5)

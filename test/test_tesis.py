@@ -39,9 +39,22 @@ TEXTO = ('Apple diseña y vende hardware y servicios. El veredicto es neutral '
          'El argumento a favor es el flujo libre. La tesis falla si el margen cae.')
 
 
+# Permite simular la respuesta SIN TEXTO que devolvio la primera llamada real.
+RESPUESTA = {'modo': 'normal'}
+
+
 def falso_post(url, headers, cuerpo, timeout=None):
     LLAMADAS.append({'url': url, 'headers': dict(headers), 'cuerpo': cuerpo})
     if 'anthropic' in url:
+        if RESPUESTA['modo'] == 'sin_texto':
+            # Lo que paso de verdad el 28/08 con MSFT: el modelo consumio todo
+            # el presupuesto razonando y no llego a escribir texto. Cobro igual.
+            return {'content': [{'type': 'thinking', 'thinking': '...'}],
+                    'stop_reason': 'max_tokens', 'model': 'claude-sonnet-5',
+                    'usage': {'input_tokens': 1240, 'output_tokens': 900}}
+        if RESPUESTA['modo'] == 'sin_bloques':
+            return {'content': [], 'stop_reason': 'end_turn',
+                    'usage': {'input_tokens': 1240, 'output_tokens': 0}}
         return {'content': [{'type': 'text', 'text': TEXTO}],
                 'usage': {'input_tokens': 1240, 'output_tokens': 310}}
     if MODO_OPENAI['viejo'] and 'max_completion_tokens' in cuerpo:
@@ -257,5 +270,37 @@ if fallos:
         print('  ✗', f)
     print(f'\n{len(fallos)} FALLOS')
     sys.exit(1)
+# ── La respuesta SIN TEXTO: el error tiene que DIAGNOSTICAR ──────────────────
+# Antes decia solo "respondio vacio" y tiraba el stop_reason, los tipos de
+# bloque y el uso. Como la llamada YA se cobro, repetirla a ciegas cuesta plata
+# y no aporta nada: el mensaje tiene que explicar que paso a la primera.
+limpiar(ANTHROPIC_API_KEY='sk-ant-x')
+RESPUESTA['modo'] = 'sin_texto'
+res, err = I.generar_tesis('MSFT', 'anthropic')
+chequear(res is None, 'sin texto no deberia devolver tesis')
+chequear(err and 'max_tokens' in err.lower() or 'tope de salida' in (err or ''),
+         f'el error deberia nombrar el tope de salida -> {err!r}')
+chequear('thinking' in (err or ''),
+         f'el error deberia decir que tipo de bloque vino -> {err!r}')
+chequear('cobro' in (err or '').lower(),
+         f'el error deberia avisar que la llamada se cobro -> {err!r}')
+print(f'  respuesta sin texto -> el error explica por que ({len(err)} chars)')
+
+RESPUESTA['modo'] = 'sin_bloques'
+limpiar(ANTHROPIC_API_KEY='sk-ant-x')
+res2, err2 = I.generar_tesis('MSFT', 'anthropic')
+chequear(res2 is None and err2, 'sin bloques tampoco deberia devolver tesis')
+chequear('end_turn' in (err2 or ''), f'deberia traer el stop_reason -> {err2!r}')
+print('  respuesta sin bloques -> tambien trae el detalle')
+
+RESPUESTA['modo'] = 'normal'
+
+# El tope de salida tiene que ser suficiente para que el modelo escriba algo
+# despues de razonar. 900 no alcanzaba.
+chequear(I.MAX_TOKENS_TESIS >= 1500,
+         f'MAX_TOKENS_TESIS={I.MAX_TOKENS_TESIS} es muy bajo: con 900 la primera '
+         f'llamada real volvio sin texto')
+print(f'  tope de salida      -> {I.MAX_TOKENS_TESIS} tokens')
+
 print('\n  do_GET tambien: ninguna accion gratuita gasta, y ninguna eleccion')
 print('  de proveedor toca al otro.')

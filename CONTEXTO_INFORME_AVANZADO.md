@@ -3302,6 +3302,78 @@ lo que hay.
 
 ---
 
+## 🔴 PRIMERA LLAMADA REAL A ANTHROPIC — falló, y el error no servía (28/08/2026)
+
+**MSFT, tesis individual. Resultado:** *"Anthropic respondio vacio. No se genero
+la tesis (igual puede haberse cobrado la llamada)."* Y **cobró USD 0,01**.
+
+O sea: la llamada salió, consumió tokens, el modelo respondió — y el parseo no
+encontró texto.
+
+### Lo primero que había que arreglar no era la causa, era el mensaje
+
+`_llamar_anthropic()` devolvía solo `(texto, tokens_entrada, tokens_salida)` y
+**tiraba todo lo demás**: el `stop_reason`, los tipos de bloque que vinieron, el
+modelo que contestó. Justo lo único que explica qué pasó.
+
+> ⚠️ **Y esto es peor que un error silencioso normal: la llamada YA se cobró.**
+> Repetirla a ciegas cuesta plata otra vez y no aporta nada nuevo. El mensaje
+> tiene que diagnosticar **a la primera**.
+
+Es el mismo patrón que el `catch {}` vacío del caché de histórico: el dato
+estaba ahí y se descartaba.
+
+### La hipótesis: 900 tokens no alcanzaban
+
+`MAX_TOKENS_TESIS` estaba en **900**. Con los modelos que razonan antes de
+responder, ese presupuesto se puede consumir **entero en el bloque de
+razonamiento**, y no queda nada para el texto. El `content` vuelve con un bloque
+que no es de tipo `text`, el filtro no encuentra nada, y el resultado es
+exactamente lo que se vio: cobro sin texto.
+
+Encaja con el costo: USD 0,01 significa que **sí hubo tokens de salida**.
+
+**Subido a 2000.** Y esto es importante: **subir el tope NO sube el costo por sí
+solo** — se paga lo que el modelo escribe, no lo que se le permite escribir. Lo
+único que hace es que no se corte antes de empezar.
+
+### Lo que devuelve ahora si vuelve a fallar
+
+```
+Anthropic respondio sin texto. No se genero la tesis (la llamada igual se
+cobro). Se corto por el tope de salida (2000 tokens): el modelo gasto el
+presupuesto antes de escribir texto. Subir MAX_TOKENS_TESIS.
+Detalle: {"stop_reason": "max_tokens", "tipos_de_bloque": ["thinking"],
+          "n_bloques": 1, "modelo_que_respondio": "claude-sonnet-5",
+          "tokens_salida": 900}
+```
+
+Los dos proveedores devuelven ahora un cuarto valor `diag`, con la misma forma,
+para que el caller no tenga dos caminos.
+
+### El caso no estaba en los tests — ahora sí
+
+`test_tesis.py` probaba el camino feliz y la separación de proveedores, pero
+**nunca** una respuesta sin texto. Se agregaron:
+
+- respuesta con solo un bloque `thinking` y `stop_reason: max_tokens` → el error
+  tiene que nombrar el tope, el tipo de bloque, y avisar que se cobró
+- respuesta con `content: []` → tiene que traer el `stop_reason` igual
+- `MAX_TOKENS_TESIS >= 1500`, para que nadie lo baje sin darse cuenta
+
+> 📌 **Lección:** una integración con un servicio externo necesita una prueba de
+> **la respuesta rara**, no solo de la buena. La respuesta buena la escribimos
+> nosotros en el doble; la rara es la que manda el mundo real.
+
+### ⚠️ Sigue sin verificarse de punta a punta
+
+La hipótesis del tope es **la más probable, pero es una hipótesis**. Hasta que
+una corrida devuelva texto de verdad, la integración con IA **sigue sin estar
+verificada** — es la deuda más vieja del proyecto. Si el segundo intento vuelve
+a fallar, el mensaje ahora dice exactamente por qué.
+
+---
+
 ## 📦 PENDIENTE DE PUSH — lista acumulada
 
 Todo esto está escrito en la carpeta y **todavía no subido**. Verificar con
@@ -3310,6 +3382,14 @@ Todo esto está escrito en la carpeta y **todavía no subido**. Verificar con
 > Todo lo anterior (informe de cartera incluido) y el arreglo de Twelve Data en
 > `src/App.jsx` **ya fueron pusheados** por Marcos. Lo que sigue es la tanda del
 > **25/08/2026**: veredicto de 3 posiciones, foco en rotación y los CEDEARs.
+
+### Tanda de ahora (28/08) — cuarta parte
+
+```
+api/informe.py        MAX_TOKENS_TESIS 900->2000 + diagnostico en la respuesta vacia
+test/test_tesis.py    +5 casos: respuesta sin texto, sin bloques, y el tope minimo
+src/informe/App.jsx   la casilla del anexo avisa que habilita la tesis
+```
 
 ### Tanda de ahora (28/08) — tercera parte
 

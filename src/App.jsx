@@ -97,14 +97,100 @@ const fmtP   = v => v==null ? "—" : `$${Number(v).toFixed(2)}`;
 const fmtCap = v => { if(!v||v<=0) return"—"; if(v>=1e12) return`$${(v/1e12).toFixed(2)}T`; if(v>=1e9) return`$${(v/1e9).toFixed(1)}B`; return`$${(v/1e6).toFixed(0)}M`; };
 const fmtPct = (v,d=1) => v==null||!isFinite(v) ? "—" : `${Number(v).toFixed(d)}%`;
 
+// ── Métricas fundamentales, con reemplazo cuando la principal no aplica ─────
+//
+// ⚠️ EL BUG QUE ESTO ARREGLA (28/08/2026)
+// 33 empresas del S&P tienen PATRIMONIO NETO NEGATIVO — MCD, BKNG, MAR, MO, PM,
+// SBUX, ABBV y 26 más — por décadas de recompras y dividendos con deuda. Con el
+// equity abajo de cero, P/B, ROE y D/E dejan de significar algo.
+//
+// El problema no era que faltaran: era que los que había puntuaban PERFECTO.
+// `norm()` ordena de menor a mayor, y para "menor es mejor" el más chico gana:
+// el P/B de −187,38 de MCD era el número más bajo del sector → percentil 0 →
+// puntaje 1,0, el máximo. Y como el ROE y el D/E se caían por falta de dato, el
+// divisor bajaba de 1,00 a 0,65 y ese P/B roto pasaba a pesar 23% en vez de 15%.
+// Resultado: tener el patrimonio negativo era lo que MÁS subía el score.
+//
+// Del otro lado pasaba lo mismo al revés: MAS informaba un ROE de 5862% (ingreso
+// dividido por un equity casi cero) y se llevaba el máximo en una métrica que
+// pesa 22%.
+//
+// Este arreglo ya existía en `api/informe.py::percentil()` desde que RGTI
+// puntuaba 100/100 en valuación. Nunca se había traído al screener.
+//
+// Los reemplazos (`alt`) NO son un parche: son el múltiplo que los analistas
+// usan justamente cuando no hay patrimonio contra qué medir.
 const FUND_METRICS = [
-  { key:"pe",        label:"P/E",       hb:false, w:0.20, tip:"Price/Earnings"   },
-  { key:"pb",        label:"P/B",       hb:false, w:0.15, tip:"Price/Book"       },
-  { key:"roe",       label:"ROE %",     hb:true,  w:0.22, tip:"Return on Equity" },
-  { key:"de",        label:"D/E",       hb:false, w:0.13, tip:"Debt/Equity"      },
-  { key:"evEbitda",  label:"EV/EBITDA", hb:false, w:0.15, tip:"EV/EBITDA"        },
-  { key:"netMargin", label:"Margen %",  hb:true,  w:0.15, tip:"Margen Neto"      },
+  { key:"pe",        label:"P/E",       hb:false, w:0.20, tip:"Price/Earnings" },
+  { key:"pb",        label:"P/B",       hb:false, w:0.15, tip:"Price/Book",
+    alt:"priceToSales", altLabel:"P/S",
+    altTip:"Patrimonio neto negativo: el P/B no aplica. Se usa Price/Sales, que no depende del patrimonio." },
+  { key:"roe",       label:"ROE %",     hb:true,  w:0.22, tip:"Return on Equity",
+    alt:"roa", altLabel:"ROA %",
+    altTip:"Patrimonio neto negativo: el ROE no aplica. Se usa ROA (sobre activos), que no depende del patrimonio." },
+  { key:"de",        label:"D/E",       hb:false, w:0.13, tip:"Debt/Equity",
+    alt:"ndEbitda", altLabel:"DN/EBITDA",
+    altTip:"Patrimonio neto negativo: el D/E no aplica. Se usa Deuda Neta / EBITDA, el estándar en estos casos." },
+  { key:"evEbitda",  label:"EV/EBITDA", hb:false, w:0.15, tip:"EV/EBITDA" },
+  { key:"netMargin", label:"Margen %",  hb:true,  w:0.15, tip:"Margen Neto" },
 ];
+
+// Métricas que NO APLICAN a un sector — distinto de "falta el dato".
+// Portado de `SECTOR_OCULTAR` en api/informe.py: un banco no tiene EBITDA con
+// sentido porque la deuda es su materia prima, no su financiamiento; y su
+// "caja" incluye depósitos (la deuda neta de JPM da −183.000 millones).
+// Antes la columna quedaba vacía y parecía un dato que se perdió.
+// ⚠️ Solo `evEbitda`, igual que informe.py. El D/E NO va acá: el percentil es
+// relativo al sector, así que el D/E de un banco se compara contra el de otros
+// bancos, que es exactamente la comparación correcta. (Primer intento incluía
+// `de` y dejaba a COIN, IVZ y MSCI con una métrica menos por las dudas.)
+const SECTOR_NO_APLICA = {
+  Financials: new Set(["evEbitda"]),
+};
+
+// ¿Qué se usa realmente para esta métrica en este papel?
+// Devuelve {campo, valor, alt, noAplica}. `campo` es la clave con la que hay
+// que armar el pool de comparación: un ROA NO se compara contra ROEs — son
+// escalas distintas (el ROA siempre da más bajo porque no lleva apalancamiento).
+function metricaEfectiva(stk, m, sector) {
+  if (SECTOR_NO_APLICA[sector]?.has(m.key))
+    return { campo:null, valor:null, alt:false, noAplica:true };
+  // Para "menor es mejor", un valor <= 0 no es barato: es que la métrica no
+  // existe. Un P/E negativo significa que la empresa pierde plata.
+  const sirve = (v) => v != null && isFinite(v) && (m.hb || v > 0);
+  const v = stk[m.key];
+  if (sirve(v)) return { campo:m.key, valor:v, alt:false, noAplica:false };
+  if (m.alt && sirve(stk[m.alt]))
+    return { campo:m.alt, valor:stk[m.alt], alt:true, noAplica:false };
+  return { campo:null, valor:null, alt:false, noAplica:false };
+}
+
+// El score de F1, en UN solo lugar. Antes esta misma cuenta estaba escrita tres
+// veces (F1, el recálculo de F1 y el marketScore de las sugerencias) y las tres
+// habrían necesitado el mismo arreglo por separado.
+function puntuarGrupo(pool, sector, norm) {
+  const aplicables = FUND_METRICS.filter(m => !SECTOR_NO_APLICA[sector]?.has(m.key));
+  // Se resuelve una vez por papel y métrica: sin esto sería O(n²) resolviendo
+  // el pool entero adentro del bucle de cada papel.
+  const resueltas = new Map(
+    FUND_METRICS.map(m => [m.key, pool.map(s => metricaEfectiva(s, m, sector))]));
+  return pool.map((stk, i) => {
+    let score = 0, tw = 0, nUsed = 0, nAlt = 0;
+    const usando = {};
+    for (const m of aplicables) {
+      const e = resueltas.get(m.key)[i];
+      if (e.campo == null) continue;
+      const vals = resueltas.get(m.key).map(x => x.campo === e.campo ? x.valor : null);
+      const n = norm(vals, e.valor, m.hb);
+      if (n != null) {
+        score += n * m.w; tw += m.w; nUsed++;
+        if (e.alt) { nAlt++; usando[m.key] = e.campo; }
+      }
+    }
+    return { ...stk, score: tw > 0 ? (score / tw) * 100 : 0,
+             nUsed, nAlt, usando, nTotal: aplicables.length };
+  });
+}
 
 // ── Cache helpers (localStorage — funciona en browser estándar y Vercel) ──────
 // v2: el v1 podía tener series de Twelve Data (cierre CRUDO). Ahora la fuente
@@ -1470,8 +1556,16 @@ export default function App() {
 
       setLp({step:"Calculando scores...",pct:70,phase:1});
       await delay(100);
+      // Para "menor es mejor" se descartan los valores <= 0, del pool Y del
+      // propio. Portado de api/informe.py::percentil(). Sin esto, un P/B de
+      // −187 era el número más chico del sector y se llevaba el puntaje
+      // máximo por tener el patrimonio en rojo.
       const norm=(vals,val,hb)=>{
-        const cl=vals.filter(v=>v!=null&&isFinite(v));
+        let cl=vals.filter(v=>v!=null&&isFinite(v));
+        if (!hb) {
+          cl = cl.filter(v=>v>0);
+          if (val!=null && val<=0) return null;
+        }
         if (cl.length<2||val==null||!isFinite(val)) return null;
         const rank=[...cl].sort((a,b)=>a-b).filter(v=>v<val).length;
         const p=rank/(cl.length-1);
@@ -1481,14 +1575,7 @@ export default function App() {
       const results={};
       for (const [sector,cs] of Object.entries(cands)) {
         const enriched = cs.map(s=>({...s, changePercent:s.changePercent}));
-        const scored=enriched.map(stk=>{
-          let score=0,tw=0,nUsed=0;
-          for (const m of FUND_METRICS) {
-            const n=norm(enriched.map(s=>s[m.key]),stk[m.key],m.hb);
-            if (n!=null){score+=n*m.w;tw+=m.w;nUsed++;}
-          }
-          return {...stk, score:tw>0?(score/tw)*100:0, nUsed, nTotal:FUND_METRICS.length};
-        });
+        const scored=puntuarGrupo(enriched, sector, norm);
         results[sector]=scored.sort((a,b)=>b.score-a.score).slice(0,5);
       }
 
@@ -1660,8 +1747,15 @@ export default function App() {
         bySector[sector].push({ sym, q:quotes[sym], p:profiles[sym], r:ratios[sym]||{} });
       }
 
+      // ⚠️ SEGUNDA COPIA de `norm` — la otra está en runP1. Son idénticas y hay
+      // que arreglar las dos: esta se escapó del primer intento por estar
+      // escrita con otro espaciado. Mismo criterio que api/informe.py::percentil.
       const norm = (vals,val,hb) => {
-        const cl=vals.filter(v=>v!=null&&isFinite(v));
+        let cl=vals.filter(v=>v!=null&&isFinite(v));
+        if (!hb) {
+          cl = cl.filter(v=>v>0);
+          if (val!=null && val<=0) return null;
+        }
         if (cl.length<2||val==null||!isFinite(val)) return null;
         const rank=[...cl].sort((a,b)=>a-b).filter(v=>v<val).length;
         const p=rank/(cl.length-1);
@@ -1685,14 +1779,7 @@ export default function App() {
           hasCedear: cedearMap[sym],
           ...(valuations[sym]||{}),
         }));
-        const scored = enriched.map(stk=>{
-          let score=0, tw=0, nUsed=0;
-          for (const m of FUND_METRICS) {
-            const n=norm(enriched.map(s=>s[m.key]),stk[m.key],m.hb);
-            if (n!=null){score+=n*m.w;tw+=m.w;nUsed++;}
-          }
-          return {...stk, score:tw>0?(score/tw)*100:0, nUsed, nTotal:FUND_METRICS.length};
-        });
+        const scored = puntuarGrupo(enriched, sector, norm);
         // Client mode: show ALL tickers sorted by score (no top-5 cap)
         results[sector] = scored.sort((a,b)=>b.score-a.score);
       }
@@ -1712,13 +1799,10 @@ export default function App() {
       });
       const marketScore = {}; // symbol -> score 0-100 (percentil dentro de su sector)
       for (const [sector, pool] of Object.entries(bySectorSnap)) {
-        pool.forEach(stk=>{
-          let score=0, tw=0;
-          for (const m of FUND_METRICS) {
-            const n = norm(pool.map(s=>s[m.key]), stk[m.key], m.hb);
-            if (n!=null){score+=n*m.w;tw+=m.w;}
-          }
-          marketScore[stk.symbol] = tw>0 ? (score/tw)*100 : 0;
+        // Mismo cálculo que F1 — antes estaba duplicado y habría quedado con
+        // el bug del patrimonio negativo aunque F1 estuviera arreglado.
+        puntuarGrupo(pool, sector, norm).forEach(s2=>{
+          marketScore[s2.symbol] = s2.score;
         });
       }
       const suggestReplacement = (heldSym, heldSector) => {
@@ -2993,15 +3077,32 @@ export default function App() {
                         {(stk.changePercent||0)>=0?"▲":"▼"}{Math.abs(stk.changePercent||0).toFixed(2)}%
                       </div>
                     </td>
-                    {!isRisk&&FUND_METRICS.map(m=>(
-                      <td key={m.key} style={{...TD,textAlign:"right",fontFamily:"monospace"}}>
-                        {stk[m.key]==null||!isFinite(stk[m.key])
-                          ?<span style={{color:"#1e293b"}}>—</span>
-                          :(m.key==="roe"||m.key==="netMargin")
-                            ?<span style={{color:stk[m.key]>=0?"#e2e8f0":"#f87171"}}>{stk[m.key].toFixed(1)}%</span>
-                            :<span style={{color:"#e2e8f0"}}>{stk[m.key].toFixed(1)}x</span>}
-                      </td>
-                    ))}
+                    {!isRisk&&FUND_METRICS.map(m=>{
+                      // Se muestra LO QUE SE PUNTUÓ, no el campo crudo. Antes la
+                      // celda decía "−187.4x" para el P/B de MCD, que se lee como
+                      // "baratísimo" cuando en realidad significa que la métrica
+                      // no existe (patrimonio negativo).
+                      const e = metricaEfectiva(stk, m, stk.sector);
+                      if (e.noAplica) return (
+                        <td key={m.key} style={{...TD,textAlign:"right",fontFamily:"monospace"}}
+                            title={`No aplica a ${stk.sector}: un banco no tiene EBITDA con sentido (la deuda es su materia prima) y su caja incluye depósitos.`}>
+                          <span style={{color:"#334155",fontSize:10}}>n/a</span>
+                        </td>);
+                      if (e.campo == null) return (
+                        <td key={m.key} style={{...TD,textAlign:"right",fontFamily:"monospace"}}
+                            title="Sin dato en la fuente.">
+                          <span style={{color:"#1e293b"}}>—</span>
+                        </td>);
+                      const esPct = e.campo==="roe" || e.campo==="netMargin" || e.campo==="roa";
+                      return (
+                        <td key={m.key} style={{...TD,textAlign:"right",fontFamily:"monospace"}}
+                            title={e.alt ? m.altTip : m.tip}>
+                          <span style={{color:esPct&&e.valor<0?"#f87171":"#e2e8f0"}}>
+                            {e.valor.toFixed(esPct?1:e.valor<10?2:1)}{esPct?"%":"x"}
+                          </span>
+                          {e.alt&&<div style={{fontSize:9,color:"#fbbf24",marginTop:1}}>{m.altLabel}</div>}
+                        </td>);
+                    })}
                     {!isRisk&&<td style={TD}><ScoreBar score={stk.score} nUsed={stk.nUsed} nTotal={stk.nTotal}/></td>}
                     {isRisk&&<>
                       <td style={{...TD,textAlign:"right"}}><Stack cpV={stk.rcp?.annRet} lpV={stk.rlp?.annRet} cpL={cpL} lpL={lpL} render={v=><CN v={v} suf="%" d={1}/>}/></td>

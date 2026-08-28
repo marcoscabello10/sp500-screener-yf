@@ -521,6 +521,36 @@ def fetch_one(sym, sector=None):
         margin= info.get('profitMargins')
         roa   = info.get('returnOnAssets')
         rev_g = info.get('revenueGrowth')
+        pb    = info.get('priceToBook')
+
+        # ── PATRIMONIO NETO NEGATIVO (28/08/2026) ────────────────────────────
+        # 33 empresas del S&P lo tienen -- MCD, BKNG, MAR, MO, PM, SBUX, ABBV
+        # y 26 mas -- por decadas de recompras y dividendos con deuda.
+        # P/B, ROE y D/E dependen los tres del patrimonio, asi que con el
+        # equity abajo de cero los tres dejan de significar algo.
+        #
+        # Lo peligroso no es que falten: es que la fuente A VECES manda un
+        # numero igual, y un numero absurdo puntua MEJOR que un hueco:
+        #     MAS  -> ROE 5862%   (ingreso sobre un equity casi cero)
+        #     IT   -> ROE  113%
+        #     DVA  -> ROE 88%  y D/E 12,42
+        # El ROE es "mayor es mejor" y pesa 22%: MAS se llevaba el maximo del
+        # sector con un numero que no existe. Por eso se anulan a proposito:
+        # un hueco es honesto, un 5862% es una mentira que gana el ranking.
+        patrimonio_negativo = pb is not None and pb < 0
+
+        # Reemplazo del D/E cuando no hay patrimonio contra que medirlo. Es el
+        # estandar de la industria: cuanta deuda neta hay por cada dolar de
+        # EBITDA. NO aplica a bancos -- su "caja" incluye depositos, asi que la
+        # deuda neta da negativa (JPM: -183.000 millones) y el cociente no
+        # significa nada. Por eso se exige nd > 0.
+        td, tc, eb = info.get('totalDebt'), info.get('totalCash'), info.get('ebitda')
+        nd_ebitda = None
+        if td is not None and tc is not None and eb is not None and eb > 0:
+            nd = td - tc
+            if nd > 0:
+                nd_ebitda = round(nd / eb, 3)
+
         has_cedear = check_cedear(sym)
         return {
             'symbol':       sym,
@@ -530,9 +560,19 @@ def fetch_one(sym, sector=None):
             'changePercent':pct,
             'marketCap':    info.get('marketCap') or 0,
             'pe':           info.get('trailingPE'),
-            'pb':           info.get('priceToBook'),
-            'roe':          roe * 100 if roe is not None else None,
-            'de':           abs(de / 100) if de is not None else None,
+            # El P/B se deja CRUDO (negativo incluido): el screener ya descarta
+            # los <= 0 al puntuar, igual que api/informe.py::percentil(), y
+            # conservarlo permite detectar el patrimonio negativo aguas abajo.
+            'pb':           pb,
+            'roe':          None if (patrimonio_negativo or roe is None) else roe * 100,
+            # Antes decia abs(de / 100). El abs() convertia un D/E negativo
+            # (patrimonio negativo) en uno positivo de aspecto normal: DVA
+            # aparecia con 12,42, que se puntuaba como deuda altisima cuando en
+            # realidad es un numero que no existe. Sin abs, y anulado si el
+            # patrimonio es negativo.
+            'de':           None if (patrimonio_negativo or de is None) else de / 100,
+            'ndEbitda':     nd_ebitda,
+            'patrimonioNegativo': patrimonio_negativo,
             'evEbitda':     info.get('enterpriseToEbitda'),
             'netMargin':    margin * 100 if margin is not None else None,
             'roa':          roa * 100 if roa is not None else None,

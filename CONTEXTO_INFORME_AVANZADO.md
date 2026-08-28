@@ -2635,6 +2635,230 @@ de comparar.
 
 ---
 
+## ✅ BUG DE F1 ARREGLADO — el patrimonio negativo puntúa como "barato" (28/08/2026)
+
+Marcos reportó "faltan datos" en F1: MCD sin ROE ni D/E, los bancos sin
+EV/EBITDA, MO y PM sin ROE ni D/E. **No es un problema de datos. Son tres cosas
+distintas y solo una es un bug** — pero es grave.
+
+### 1. ✅ Los huecos de ROE y D/E son CORRECTOS
+
+MCD, BKNG, MAR, MO, PM, SBUX, ABBV y 26 más tienen **patrimonio neto
+negativo**: décadas de recompras y dividendos financiados con deuda dejaron el
+equity por debajo de cero. Con equity negativo **el ROE y el D/E no tienen
+sentido** (denominador negativo), así que la fuente no los reporta. Está bien.
+
+### 2. ✅ Los bancos sin EV/EBITDA también son CORRECTOS
+
+Un banco **no tiene EBITDA con sentido**: la deuda es su materia prima, no su
+financiamiento. Por eso JPM, BAC, WFC y SCHW no traen `evEbitda`, y el D/E de
+un banco tampoco es comparable con el de una industrial.
+
+**El informe ya lo sabe** — `SECTOR_OCULTAR['Financials']` en `api/informe.py`
+oculta `evEbitda`, `netDebt`, `netDebtToEbitda`, `currentRatio`, `quickRatio` y
+`grossMarginPct`. **El screener no**: muestra la columna vacía sin decir que no
+aplica.
+
+### 3. 🔴 EL BUG: un P/B de −187 saca el mejor puntaje del sector
+
+`norm()` en `App.jsx` (línea ~1472) ordena de menor a mayor y para las métricas
+de "menor es mejor" devuelve `1 - p`:
+
+```js
+const rank=[...cl].sort((a,b)=>a-b).filter(v=>v<val).length;
+const p=rank/(cl.length-1);
+return hb?p:1-p;
+```
+
+El P/B de MCD es **−187,38**. Es el número **más chico de todo el sector**, así
+que `rank = 0`, `p = 0`, y devuelve **1,0 — el puntaje perfecto** en una
+métrica que pesa 15%.
+
+**Y pesa más que 15%.** Como el ROE (22%) y el D/E (13%) se caen por falta de
+dato, `tw` baja de 1,00 a 0,65 y el P/B pasa a valer **0,15 / 0,65 = 23%** del
+score. O sea: la empresa cobra el premio máximo en una métrica rota, y esa
+métrica pesa un 50% más de lo previsto, **justo por culpa de la misma causa**.
+
+Traducido: **tener el patrimonio en cero o negativo es lo que más te sube el
+score.** Es exactamente al revés de lo que debería.
+
+#### Alcance medido
+
+| métrica | negativos sobre 504 | quiénes |
+|---|---|---|
+| `pb` | **33** | ABBV MO AZO BKNG CAH CCI DVA DELL DPZ FICO FDXF IT MCD MAR SBUX … |
+| `evEbitda` | 3 | BRK-B, BA, MRNA |
+| `pe` | 0 | (la fuente ya devuelve `None` cuando hay pérdidas) |
+| `de` | 0 | |
+
+**Consumer Discretionary con filtro CEDEAR** (lo que ve Marcos en pantalla):
+
+| # | hoy | con el arreglo |
+|---|---|---|
+| 1 | **MCD 77,6 (4/6)** ▼2 | DECK 78,9 (6/6) |
+| 2 | DECK 76,7 (6/6) ▲1 | BKNG 71,9 (3/6) |
+| 3 | BKNG 74,3 (4/6) ▲1 | MCD 70,9 (3/6) |
+| 4 | CCL 64,2 (6/6) = | CCL 67,2 (6/6) |
+| 5 | EBAY 61,3 (6/6) = | EBAY 62,9 (6/6) |
+
+**Sobre las 504 sin filtro**, cambian de dueño **5 puestos del Top 5**:
+
+| sector | salen | entran |
+|---|---|---|
+| Consumer Discretionary | MCD, YUM | CCL, NVR |
+| Healthcare | DVA | REGN |
+| Industrials | OTIS | SNA |
+| Technology | HPQ | MU |
+
+Sin el filtro CEDEAR, MCD cae del puesto 3 al **15**, AZO baja 11 y BKNG baja 8.
+
+### 🎯 Lo importante: este bug YA LO ARREGLAMOS, en el informe
+
+`percentil()` en `api/informe.py` (línea 427) tiene exactamente el arreglo, con
+el comentario que lo explica:
+
+```python
+    Para los múltiplos donde "menor es mejor" se descartan los valores <= 0:
+    un P/E o un forward P/E negativo NO significa barato, significa que la
+    empresa pierde plata. Sin este filtro RGTI puntuaba 100/100 en valuación.
+    if menor_es_mejor:
+        valores = [x for x in valores if x is not None and x > 0]
+        if valor is not None and valor <= 0:
+            return None
+```
+
+**Lo encontramos en el informe, lo arreglamos ahí, y nunca lo llevamos al
+screener.** Los dos códigos hacen el mismo cálculo y solo uno está arreglado.
+
+> 📌 **Regla para el futuro:** cuando se arregle un bug de *criterio* (no de
+> plomería) en uno de los dos proyectos, revisar si el otro tiene el mismo
+> cálculo. Están separados a propósito, pero `norm()` de App.jsx y `percentil()`
+> de informe.py son **la misma fórmula escrita dos veces**, y por eso se
+> desincronizan. Candidatos a revisar: `MENOR_ES_MEJOR` y `SECTOR_OCULTAR`.
+
+### ✅ ARREGLADO (28/08/2026) — con reemplazos, no con huecos
+
+Marcos eligió **no exigir un mínimo de métricas** (el badge `n/6` ya avisa) pero
+pidió *"intentemos obtener todas las métricas nosotros con el snapshot"*. Eso
+resultó ser lo correcto y además lo que resolvió el problema de fondo: en vez de
+dejar huecos, **se reemplaza cada métrica rota por el múltiplo que los analistas
+usan justamente cuando no hay patrimonio contra qué medir.**
+
+| métrica | por qué se rompe | reemplazo | rescata |
+|---|---|---|---|
+| P/B | necesita patrimonio | **P/S** (Price/Sales) | 34 |
+| ROE | necesita patrimonio | **ROA** (sobre activos) | 29 |
+| D/E | necesita patrimonio | **Deuda neta / EBITDA** | 32 |
+| EV/EBITDA en bancos | no existe el EBITDA | ninguno — dice `n/a` | — |
+
+**Resultado sobre las 503:**
+
+| | antes | con arreglo solo | **+ reemplazos** |
+|---|---|---|---|
+| 6/6 métricas | — | 398 | **397 + 46 con 5/5** |
+| 3/6 métricas | — | **29** | **0** |
+
+Los 29 que iban a quedar con la mitad del score sacado de tres números **son
+cero**. 37 empresas usan al menos un reemplazo.
+
+#### Los casos concretos, después
+
+| | valuación | rentabilidad | deuda |
+|---|---|---|---|
+| MCD | 6,92 (P/S) | 13,25% (ROA) | 3,60x (DN/EBITDA) |
+| BKNG | 5,58 (P/S) | 20,38% (ROA) | 0,36x (DN/EBITDA) |
+| MO | 5,40 (P/S) | 29,55% (ROA) | 1,41x (DN/EBITDA) |
+| PM | 6,90 (P/S) | 14,59% (ROA) | 2,39x (DN/EBITDA) |
+| JPM | 2,64 (P/B) | 17,79% (ROE) | EV/EBITDA `n/a` |
+
+#### Qué se tocó
+
+**`local_bot/fetch_fundamentals.py`**
+
+- **Anula `roe` y `de` cuando el patrimonio es negativo**, aunque la fuente
+  mande un número. Esto era imprescindible: MAS informaba **ROE 5862%**, IT
+  113%, DVA 88% y D/E 12,42. El ROE es "mayor es mejor" y pesa 22%, así que
+  **MAS se llevaba el máximo del sector con un número que no existe.** Un hueco
+  es honesto; un 5862% es una mentira que gana el ranking.
+- **Saca el `abs()` de `'de': abs(de / 100)`.** El `abs()` convertía un D/E
+  negativo en uno positivo de aspecto normal — DVA aparecía con 12,42, que se
+  puntuaba como deuda altísima cuando en realidad es un número inexistente.
+- **Agrega `ndEbitda`** calculado de `totalDebt − totalCash / ebitda`, y solo si
+  la deuda neta es positiva (en bancos da negativa porque los depósitos cuentan
+  como caja: JPM da −183.000 millones).
+- **Deja el `pb` crudo, negativo incluido** — el screener ya descarta los `<= 0`
+  al puntuar, y conservarlo permite detectar el patrimonio negativo aguas abajo.
+
+**`src/App.jsx`**
+
+- `norm()` descarta los `<= 0` en "menor es mejor". **Había DOS copias de
+  `norm()`** (una en `runP1`, otra en `runClientP1`) escritas con distinto
+  espaciado; la segunda casi se escapa del arreglo.
+- `metricaEfectiva()` resuelve qué se usa realmente, y `puntuarGrupo()` unifica
+  el cálculo del score que **estaba escrito tres veces** (F1, F5 modo cliente y
+  el `marketScore` de las sugerencias de reemplazo). Las tres habrían necesitado
+  el mismo arreglo por separado.
+- **Los pools no se mezclan**: un ROA se compara contra ROAs, nunca contra ROEs.
+  Son escalas distintas — el ROA siempre da más bajo porque no lleva
+  apalancamiento. Mezclarlos castigaría a los reemplazados sin motivo.
+- La tabla muestra **lo que se puntuó**, con la etiqueta del reemplazo en ámbar
+  debajo (`P/S`, `ROA %`, `DN/EBITDA`) y el motivo en el tooltip.
+- `SECTOR_NO_APLICA` — portado de `SECTOR_OCULTAR`. **Solo `evEbitda`**: el
+  primer intento incluía también `de` y fue un error, porque el percentil es
+  relativo al sector y el D/E de un banco se compara contra el de otros bancos,
+  que es la comparación correcta. Lo detectó la prueba (COIN, IVZ y MSCI
+  quedaban con una métrica menos sin motivo).
+
+#### Cuánto se movió: 8 de 55 puestos del Top 5
+
+**6 de los 11 sectores no cambian** (Communication Services, Consumer Staples,
+Energy, Materials, Real Estate, Utilities). Los que sí:
+
+| sector | salen | entran |
+|---|---|---|
+| Consumer Discretionary | MCD, YUM | NVR, BKNG |
+| Healthcare | HCA, DVA | REGN, RMD |
+| Industrials | OTIS | SNA |
+| Technology | IT, WDC, HPQ | MU, SNDK, PTC |
+
+Las caídas más grandes son exactamente los casos de patrimonio negativo:
+**DVA #5 → #20**, **IT #2 → #8**, **FDXF #27 → #81**. Y MAS **sigue #1** en
+Industrials aun sin su ROE de 5862% (80 en vez de 87) — o sea que el arreglo no
+tira todo abajo a ciegas, corrige lo que estaba mal medido.
+
+#### Verificación: `test/prueba-metricas.cjs`, 27 comprobaciones ✅
+
+Extrae `FUND_METRICS`, `metricaEfectiva`, `puntuarGrupo`, `SECTOR_NO_APLICA` y
+el `norm` **reales** de App.jsx y los corre sobre las 503 del snapshot,
+simulando lo que va a producir el bot parcheado. Comprueba que un `<= 0` no
+puntúe ni ensucie el pool, que el reemplazo entre solo cuando hace falta, que
+los pools no se mezclen, que un negativo en "mayor es mejor" **sí** puntúe (un
+margen de −5% es un dato real), y que los 75 scores de Technology coincidan con
+el promedio ponderado recalculado a mano.
+
+### 🚩 FISV: el único caso que el arreglo NO cubre
+
+Fiserv aparece con **2 de 6 métricas** (solo P/E 10,07 y P/B 1,04; el resto
+todo `null`) y con eso **puntúa 99 y encabeza Technology**. Es la única empresa
+de las 503 con 3 o más métricas nulas.
+
+**Sospecha fuerte: es un ticker viejo.** Fiserv cambió de `FISV` a **`FI`** en
+2023, y `FI` no está en el snapshot. Además el market cap que trae (28.000
+millones) no se parece al de Fiserv. Si el ticker está muerto, yfinance devuelve
+lo poco que le queda en caché y el resto `null`.
+
+**Dos cosas a decidir, distintas:**
+
+1. **Arreglar el ticker** — revisar de dónde sale `FISV` (la lista de Wikipedia
+   en `fetch_sp500_list()`) y si hay más casos de renombre sin actualizar.
+2. **Un piso mínimo de métricas.** Marcos eligió no ponerlo, y con los
+   reemplazos esa decisión quedó bien: ya no hay ningún 3/6. Pero FISV muestra
+   que **una empresa con 2 métricas puede encabezar un sector**, y eso no lo
+   cubre el badge. Un piso de "la mitad de las aplicables" hoy dejaría afuera
+   **solo a FISV**, sin tocar nada más. Queda como propuesta.
+
+---
+
 ## 📦 PENDIENTE DE PUSH — lista acumulada
 
 Todo esto está escrito en la carpeta y **todavía no subido**. Verificar con
@@ -2644,16 +2868,21 @@ Todo esto está escrito en la carpeta y **todavía no subido**. Verificar con
 > `src/App.jsx` **ya fueron pusheados** por Marcos. Lo que sigue es la tanda del
 > **25/08/2026**: veredicto de 3 posiciones, foco en rotación y los CEDEARs.
 
-### Tanda de la FASE B2 (28/08)
+### Tanda de ahora (28/08)
 
-✅ **Código ya pusheado** en `689463f` (App.jsx, prueba-snapshot.cjs, contexto).
-
-Falta commitear el dato, que ya está en el index:
+✅ B2 ya pusheada en `689463f`. Pendiente:
 
 ```
-public/data/historico_precios.json   9,3 MB — 633 simbolos x 1673 fechas
-CONTEXTO_INFORME_AVANZADO.md         (resultado de la corrida + cadencia)
+public/data/historico_precios.json   9,3 MB — snapshot de precios (ya en el index)
+src/App.jsx                          ⚠️ SCREENER — arreglo del patrimonio negativo
+local_bot/fetch_fundamentals.py      anula roe/de con patrimonio<0, saca el abs(), agrega ndEbitda
+test/prueba-metricas.cjs             NUEVO — 27 comprobaciones
+CONTEXTO_INFORME_AVANZADO.md
 ```
+
+⚠️ **Después de pushear hay que correr `fetch_fundamentals.py`**: el arreglo del
+screener necesita el campo `ndEbitda`, que solo aparece con el bot parcheado.
+Sin eso, los reemplazos de D/E no entran (los de P/S y ROA sí, esos ya están).
 
 Todo lo de abajo ya está pusheado.
 

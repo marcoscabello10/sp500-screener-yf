@@ -37,6 +37,7 @@ from urllib.parse import urlparse, parse_qs
 from datetime import datetime, timezone
 import json
 import os
+import re
 import time
 import urllib.request
 import urllib.error
@@ -1426,6 +1427,413 @@ def diagnostico():
 # ─────────────────────────────────────────────────────────────────────────────
 # Handler
 # ─────────────────────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════════════
+# TESIS DE CARTERA — el analisis del conjunto, no de un activo
+# ═════════════════════════════════════════════════════════════════════════════
+#
+# Que la hace distinta de `action=tesis`
+# --------------------------------------
+# La tesis individual contesta "¿es buena esta empresa?". Esta contesta "¿que
+# conviene hacer con ESTA cartera?", que es otra pregunta: una empresa excelente
+# puede tener que recortarse porque pesa 20%, y una mediocre puede quedarse
+# porque es lo unico que diversifica.
+#
+# EL PRINCIPIO QUE ORDENA TODO
+# ----------------------------
+# El codigo decide los NUMEROS. El modelo explica, prioriza y redacta.
+#
+# `analizarCartera()` ya calcula pesos, topes, excesos en dolares, estado y
+# accion de cada posicion, y esos numeros YA se le muestran al usuario en una
+# tabla. Si el modelo los recalculara, produciria numeros distintos a los de la
+# tabla que esta arriba en la misma pagina: el cliente veria "recortar USD
+# 4.200" en un lado y "reducir a 8%" en el otro. Dos fuentes de verdad es el
+# peor resultado posible.
+#
+# Por eso el prompt le PROHIBE recalcular, y por eso hay una validacion en
+# codigo despues (`validar_respuesta_cartera`): pedirle a un modelo que valide
+# su propia aritmetica es una pregunta retorica, siempre contesta que si.
+#
+# POR QUE ES POST Y NO GET
+# ------------------------
+# El bloque de datos son ~2.000 tokens de JSON armados en el navegador. No entra
+# en una query string, y aunque entrara, quedaria en los logs del servidor.
+
+# ── Tope de salida ───────────────────────────────────────────────────────────
+# La tesis individual usa 2000 y alcanza. Esta NO: tiene cinco secciones y una
+# de ellas es posicion por posicion, asi que crece con la cartera.
+#
+# Presupuesto medido por seccion (10 posiciones):
+#     1. Que hacer                ~250
+#     2. Como esta la cartera     ~250
+#     3. Posicion por posicion    ~120 x N
+#     4. Rotaciones               ~300
+#     5. Para el cliente          ~250
+#                                 ────────
+#     total 10 posiciones        ~2.250   ← 2000 ya se quedaba corto
+#
+# Mas el bloque de razonamiento, que es lo que dejo sin texto a la primera
+# llamada real. Por eso la base es holgada y ademas escala.
+#
+# ⚠️ Subir el tope NO sube el costo por si solo: se paga lo que el modelo
+# escribe, no lo que se le permite escribir. El tope solo evita que se corte.
+# ⚠️ RESTRICCION DURA: `vercel.json` le da 60 segundos a api/informe.py. Una
+# respuesta de ~4.000 tokens tarda 50-80s segun el modelo, asi que una cartera
+# grande PUEDE pasarse. El timeout propio se pone en 55 para que la funcion
+# devuelva un error legible en vez de que Vercel la mate a los 60 y el usuario
+# vea un 504 despues de haber pagado la llamada.
+TIMEOUT_CARTERA = 55
+
+MAX_TOKENS_CARTERA_BASE = 3000
+MAX_TOKENS_CARTERA_POR_POSICION = 250
+MAX_TOKENS_CARTERA_TOPE = 16000
+
+# Mas de esto no entra en un documento que alguien vaya a leer, y el costo
+# empieza a crecer sin que mejore la decision.
+MAX_POSICIONES_CARTERA = 40
+
+
+def max_tokens_cartera(n_posiciones):
+    return min(MAX_TOKENS_CARTERA_TOPE,
+               MAX_TOKENS_CARTERA_BASE
+               + MAX_TOKENS_CARTERA_POR_POSICION * max(0, int(n_posiciones or 0)))
+
+
+# Los cinco motivos de recorte. Se nombran distinto A PROPOSITO: solo el ultimo
+# es sobre la empresa. Mezclarlos es el error mas caro de un informe de cartera,
+# porque "vendimos porque subio" y "vendimos porque se rompio la tesis" son dos
+# conversaciones completamente distintas con el cliente.
+MOTIVOS_RECORTE = ('toma de ganancia', 'rebalanceo', 'reduccion de riesgo',
+                   'rotacion', 'tesis rota')
+
+# ── El bloque de reglas ──────────────────────────────────────────────────────
+# ESTATICO a proposito: no cambia entre carteras, asi que va con cache_control
+# y a partir de la segunda llamada se paga a 0,1x. Es lo que hace viable correr
+# esto seguido. Cualquier dato variable va en el mensaje del usuario, NUNCA aca:
+# una sola palabra distinta invalida el cache entero.
+SISTEMA_CARTERA = """\
+ROL
+Sos un estratega de carteras. Tu trabajo NO es analizar empresas sueltas: eso ya
+está hecho y te llega calculado. Tu trabajo es decidir qué conviene hacer con
+ESTA cartera, en este orden y con estos motivos.
+
+PRINCIPIO CENTRAL
+Puntaje fundamental ≠ acción de cartera.
+Cada activo se mira dos veces:
+  1. Como empresa (¿es buena?).
+  2. Como posición en ESTA cartera (¿cuánto debe pesar acá?).
+Una empresa excelente puede tener que recortarse. Una mediocre puede quedarse.
+
+LOS NÚMEROS YA ESTÁN CALCULADOS — NO LOS REHAGAS
+Recibís pesos actuales, topes, excesos en dólares, estado de cada posición y la
+acción sugerida. Todo eso viene del sistema y ya se le muestra al usuario en una
+tabla, en la misma página que va a leer tu texto.
+  · NO recalcules pesos ni topes.
+  · NO inventes porcentajes que no te dieron.
+  · NO contradigas un número que recibiste.
+Si creés que un número está mal, DECILO explícitamente en vez de corregirlo por
+tu cuenta.
+Tu aporte es el POR QUÉ, el ORDEN y la REDACCIÓN.
+
+LA CARTERA NO SUMA 100% EN ACCIONES
+Puede tener renta fija, efectivo y acciones locales. Los pesos que recibís son
+sobre la cartera COMPLETA. No asumas que las acciones son el total.
+
+DATOS FALTANTES
+Cada activo trae `metricas_usadas` (ej. "4/6") y qué reemplazos se usaron
+(P/S en vez de P/B, ROA en vez de ROE, Deuda Neta/EBITDA en vez de D/E) porque
+la empresa tiene patrimonio neto negativo y esos múltiplos no aplican.
+  · Si un activo tiene menos de 4 métricas, NOMBRALO y bajá la confianza.
+  · Nunca completes un dato que no está. "No hay dato" es una respuesta válida.
+  · Si no te alcanza para opinar de una posición, decilo. Es preferible a
+    inventar una tesis.
+
+REGLAS DE DECISIÓN
+  · No recomiendes vender solo porque el precio subió.
+  · No recomiendes mantener solo porque el precio bajó.
+  · No recomiendes comprar solo porque el precio objetivo de los analistas está
+    alto.
+  · Un dividendo bajo NO es señal de malos fundamentals. El peso del dividendo
+    depende del sector y del objetivo declarado del cliente. Tratalo como parte
+    de la asignación de capital, no como una nota aparte.
+  · Distinguí SIEMPRE, y nombralos con estas palabras exactas, los cinco motivos
+    de recorte:
+      - toma de ganancia   (subió y ahora pesa de más; la empresa está BIEN)
+      - rebalanceo         (se desalineó del objetivo)
+      - reduccion de riesgo (concentración, beta, correlación)
+      - rotacion           (hay algo que le sirve más a esta cartera)
+      - tesis rota         (la empresa cambió; es el ÚNICO sobre la empresa)
+  · Todo recorte tiene que decir A DÓNDE va la plata.
+  · Toda incorporación tiene que MEJORAR la cartera, no simplemente tener mejor
+    puntaje. Un activo con puntaje 80 que duplica un sector que ya está al tope
+    empeora la cartera.
+  · No cambies una concentración por otra.
+  · Cada operación va también en CANTIDAD ENTERA DE ACCIONES, no solo en
+    dólares: no se pueden vender fracciones. Si al redondear a acciones enteras
+    el ajuste da cero, decí "el desvío es menor a una acción, no hay nada que
+    operar" en vez de proponer un monto que no se puede ejecutar.
+
+ROTACIÓN
+Cuando recortes algo, el reemplazo tiene que aportar al menos una de estas, y
+tenés que decir CUÁL:
+  mejor calidad · mejor valuación · mejor crecimiento · menos riesgo ·
+  diversificación de sector · diversificación de factor
+Elegí el que MEJOR LE SIRVE A ESTA CARTERA, no la mejor empresa en abstracto.
+Los candidatos que recibís son los únicos disponibles: no propongas tickers que
+no estén en esa lista.
+
+CONFIANZA
+Asigná confianza por cobertura de datos, no por lo convencido que estés:
+  alta  = 6/6 métricas, sin reemplazos, con histórico
+  media = 4-5 métricas, o con reemplazos, o sin histórico
+  baja  = menos de 4 métricas, o sin cobertura de analistas
+
+SALIDA — exactamente cinco secciones, en este orden, con estos títulos:
+
+## 1. Qué hacer
+Lo primero que hay que ejecutar y en qué orden. Máximo 5 acciones. Si no hay
+nada urgente, decilo en una línea.
+
+## 2. Cómo está la cartera
+Concentración, clases, encaje con el objetivo y el horizonte declarados, y qué
+pasa en el escenario de estrés que te dan.
+
+## 3. Posición por posición
+Por cada una: qué dice como empresa, qué dice como posición, la acción, el
+motivo (con el nombre exacto de la lista de cinco) y la confianza.
+
+## 4. Rotaciones
+Solo las que tengan sentido. Si no hay ninguna que valga la pena, decilo en vez
+de forzar una.
+
+## 5. Para el cliente
+La misma conclusión en lenguaje llano, sin jerga y sin juzgar decisiones
+pasadas. Qué conviene hacer y por qué, en pocas frases. Esta sección se imprime
+y se le entrega al cliente: no pongas acá razonamiento interno ni comentarios
+sobre cómo se compró.
+
+IDIOMA Y TONO
+Español rioplatense, directo, sin adornos. Nada de "es importante destacar" ni
+"cabe mencionar". Si algo es una duda, se dice como duda.
+Esto es un insumo de análisis para que decida una persona, no una recomendación
+de inversión cerrada. No prometas rendimientos."""
+
+
+def _resumen_cartera(c):
+    """El bloque de datos, achicado a lo que el modelo necesita.
+
+    Se manda SOLO lo que cambia una decision. Cada campo de mas se paga en cada
+    llamada, y ademas le da al modelo mas superficie para contradecirse."""
+    pos = (c.get('posiciones') or [])[:MAX_POSICIONES_CARTERA]
+    return {
+        'perfil': c.get('perfil'),
+        'objetivo': c.get('objetivo'),
+        'horizonte': c.get('horizonte'),
+        'cartera': c.get('cartera') or {},
+        'topes': c.get('topes') or {},
+        'estres': c.get('estres') or {},
+        'sectores': c.get('sectores') or [],
+        'posiciones': pos,
+        'candidatos': (c.get('candidatos') or [])[:80],
+    }
+
+
+def _llamar_cartera(proveedor, clave, modelo, datos):
+    """Una sola llamada, con el bloque de reglas cacheado."""
+    n = len(datos.get('posiciones') or [])
+    tope = max_tokens_cartera(n)
+    usuario = ('Estos son los datos de la cartera. Todos los números ya están '
+               'calculados; no los rehagas.\n\n'
+               + json.dumps(datos, ensure_ascii=False, separators=(',', ':')))
+
+    if proveedor == 'anthropic':
+        # `system` como lista de bloques para poder marcar cache_control. El
+        # bloque de reglas es identico en cada llamada, asi que a partir de la
+        # segunda se lee del cache a 0,1x. Si algun dia se le mete algo variable
+        # adentro, el cache deja de servir sin que nadie se entere.
+        cuerpo = {
+            'model': modelo,
+            'max_tokens': tope,
+            'system': [{'type': 'text', 'text': SISTEMA_CARTERA,
+                        'cache_control': {'type': 'ephemeral'}}],
+            'messages': [{'role': 'user', 'content': usuario}],
+        }
+        r = _post_json(PROVEEDORES['anthropic']['url'], {
+            'x-api-key': clave,
+            'anthropic-version': '2023-06-01',
+            'content-type': 'application/json',
+        }, cuerpo, timeout=TIMEOUT_CARTERA)
+        bloques = r.get('content') or []
+        texto = ''.join(b.get('text', '') for b in bloques if b.get('type') == 'text')
+        u = r.get('usage') or {}
+        diag = None
+        if not texto.strip():
+            diag = {'stop_reason': r.get('stop_reason'),
+                    'tipos_de_bloque': [b.get('type') for b in bloques],
+                    'modelo_que_respondio': r.get('model'),
+                    'tokens_salida': u.get('output_tokens'),
+                    'tope_pedido': tope}
+        return (texto.strip(), u.get('input_tokens'), u.get('output_tokens'),
+                diag, u.get('cache_read_input_tokens'), tope)
+
+    # OpenAI cachea solo, sin parametro. El prefijo estable es el `system`.
+    cuerpo = {
+        'model': modelo,
+        'max_completion_tokens': tope,
+        'messages': [{'role': 'system', 'content': SISTEMA_CARTERA},
+                     {'role': 'user', 'content': usuario}],
+    }
+    r = _post_json(PROVEEDORES['openai']['url'],
+                   {'Authorization': f'Bearer {clave}',
+                    'Content-Type': 'application/json'},
+                   cuerpo, timeout=TIMEOUT_CARTERA)
+    ch = (r.get('choices') or [{}])[0]
+    texto = ((ch.get('message') or {}).get('content') or '')
+    u = r.get('usage') or {}
+    diag = None
+    if not texto.strip():
+        diag = {'finish_reason': ch.get('finish_reason'),
+                'modelo_que_respondio': r.get('model'),
+                'tope_pedido': tope}
+    cache = ((u.get('prompt_tokens_details') or {}).get('cached_tokens'))
+    return (texto.strip(), u.get('prompt_tokens'), u.get('completion_tokens'),
+            diag, cache, tope)
+
+
+# Palabras en mayuscula que NO son tickers. Sin esto, el detector de tickers
+# inventados marcaria media respuesta.
+_NO_SON_TICKERS = {
+    'ROE', 'ROA', 'PE', 'PB', 'PS', 'DE', 'EV', 'EBITDA', 'USD', 'ARS', 'IA',
+    'CEDEAR', 'CEDEARS', 'ETF', 'ETFS', 'SPY', 'SP', 'NO', 'SI', 'Y', 'O', 'A',
+    'EL', 'LA', 'DEL', 'CON', 'POR', 'QUE', 'SE', 'ES', 'UN', 'UNA', 'AL',
+    'CAGR', 'FCF', 'DN', 'PIB', 'FED', 'IPC', 'SA', 'SRL', 'ADR', 'ADRS',
+}
+
+
+def validar_respuesta_cartera(texto, datos):
+    """Comprueba EN CODIGO lo que el prompt original pedia "validar" preguntando.
+
+    A un modelo no se le puede pedir que valide su propia aritmetica: contesta
+    que si. Estos chequeos corren sobre el texto ya recibido.
+
+    NO corrige la respuesta: devuelve avisos que se muestran al lado. Arreglar
+    en silencio lo que el modelo hizo mal esconde que se equivoco, y entonces no
+    hay forma de saber cuando confiar."""
+    avisos = []
+    conocidos = {p.get('ticker') for p in (datos.get('posiciones') or [])}
+    candidatos = {c.get('ticker') for c in (datos.get('candidatos') or [])}
+    validos = {t for t in (conocidos | candidatos) if t}
+
+    # 1. Tickers que no existen ni en la cartera ni entre los candidatos.
+    mencionados = set(re.findall(r'\b[A-Z][A-Z0-9]{1,4}(?:-[A-Z])?\b', texto or ''))
+    inventados = sorted(mencionados - validos - _NO_SON_TICKERS)
+    if inventados:
+        avisos.append(f'Menciona tickers que no estan ni en la cartera ni entre '
+                      f'los candidatos: {", ".join(inventados)}. Verificar a mano.')
+
+    # 2. Posiciones que no aparecen en el texto.
+    faltan = sorted(t for t in conocidos if t and t not in (texto or ''))
+    if faltan:
+        avisos.append(f'No menciona estas posiciones: {", ".join(faltan)}.')
+
+    # 3. Las cinco secciones.
+    for titulo in ('Qué hacer', 'Cómo está la cartera', 'Posición por posición',
+                   'Rotaciones', 'Para el cliente'):
+        if titulo.lower() not in (texto or '').lower():
+            avisos.append(f'Falta la seccion "{titulo}".')
+
+    # 4. Los motivos: que use los nombres acordados y no invente otros.
+    #
+    # ⚠️ Se sacan los TITULOS antes de buscar. La seccion se llama "Rotaciones"
+    # y contiene la palabra "rotacion", asi que un texto que no usa ningun
+    # motivo pasaba igual por el titulo. Un chequeo que siempre da verde es
+    # peor que no tenerlo: da la sensacion de estar cubierto.
+    cuerpo_sin_titulos = '\n'.join(
+        l for l in (texto or '').split('\n') if not l.lstrip().startswith('#'))
+    bajo = cuerpo_sin_titulos.lower()
+    if not any(m in bajo for m in MOTIVOS_RECORTE) and any(
+            p.get('estado') in ('sobre', 'critico') for p in (datos.get('posiciones') or [])):
+        avisos.append('Hay posiciones que exceden su tope pero el texto no usa '
+                      'ninguno de los cinco motivos de recorte acordados.')
+
+    # 5. Que no haya contradicho un peso. Se buscan los porcentajes del texto y
+    #    se comparan con los que se le dieron, por posicion.
+    for p in (datos.get('posiciones') or []):
+        t, peso = p.get('ticker'), p.get('peso_pct')
+        if not t or peso is None or t not in (texto or ''):
+            continue
+        cerca = re.findall(rf'{re.escape(t)}[^.\n]{{0,120}}?(\d+[.,]?\d*)\s*%', texto)
+        for c in cerca[:3]:
+            try:
+                v = float(c.replace(',', '.'))
+            except ValueError:
+                continue
+            # Solo se marca si se parece a un peso y NO coincide con ninguno de
+            # los numeros que se le dieron para ese papel.
+            dados = [peso, p.get('tope_pct'), p.get('exceso_pct'),
+                     p.get('ganancia_pct'), p.get('puntaje_fundamental')]
+            if all(d is None or abs(v - d) > 0.6 for d in dados) and v <= 100:
+                avisos.append(f'{t}: el texto dice {v}% y los numeros que se le '
+                              f'dieron son peso {peso}% / tope {p.get("tope_pct")}%. '
+                              f'Revisar.')
+                break
+    return avisos
+
+
+def generar_tesis_cartera(cuerpo, proveedor):
+    """Devuelve (resultado, error). Es el UNICO camino que gasta ademas de
+    `action=tesis`."""
+    p = PROVEEDORES.get(proveedor)
+    if not p:
+        return None, (f'Proveedor {proveedor!r} desconocido. Los validos son: '
+                      f'{", ".join(PROVEEDORES)}.')
+    clave = os.environ.get(p['env_clave'])
+    if not clave:
+        return None, (f'No hay clave de {p["nombre"]} cargada ({p["env_clave"]}). '
+                      f'No se llamo a nadie.')
+
+    datos = _resumen_cartera(cuerpo or {})
+    pos = datos.get('posiciones') or []
+    if not pos:
+        return None, ('La cartera llego sin posiciones. No se llamo a nadie.')
+
+    modelo = os.environ.get(p['env_modelo'], p['modelo_default'])
+    t0 = time.time()
+    try:
+        texto, t_ent, t_sal, diag, t_cache, tope = _llamar_cartera(
+            proveedor, clave, modelo, datos)
+    except urllib.error.HTTPError as e:
+        detalle = e.read().decode('utf-8', 'replace')[:300]
+        return None, f'{p["nombre"]} devolvio {e.code}. {detalle}'
+    except Exception as e:
+        return None, f'No pude hablar con {p["nombre"]}: {type(e).__name__}: {e}'
+
+    if not texto:
+        d = diag or {}
+        extra = ''
+        if d.get('stop_reason') == 'max_tokens' or d.get('finish_reason') == 'length':
+            extra = (f' Se corto por el tope de salida ({tope} tokens) con '
+                     f'{len(pos)} posiciones.')
+        return None, (f'{p["nombre"]} respondio sin texto (la llamada igual se '
+                      f'cobro).{extra} Detalle: {json.dumps(d, ensure_ascii=False)}')
+
+    pe, ps = PRECIOS.get(modelo, (None, None))
+    costo = (round((t_ent or 0) * pe / 1e6 + (t_sal or 0) * ps / 1e6, 5)
+             if pe is not None else None)
+
+    return {
+        'texto': texto,
+        'avisos': validar_respuesta_cartera(texto, datos),
+        'proveedor': proveedor,
+        'proveedor_nombre': p['nombre'],
+        'modelo': modelo,
+        'n_posiciones': len(pos),
+        'tokens': {'entrada': t_ent, 'salida': t_sal, 'desde_cache': t_cache,
+                   'tope_de_salida': tope},
+        'costo_estimado_usd': costo,
+        'segundos': round(time.time() - t0, 1),
+    }, None
+
+
 class handler(BaseHTTPRequestHandler):
 
     def _responder(self, codigo, cuerpo):
@@ -1436,6 +1844,73 @@ class handler(BaseHTTPRequestHandler):
         self.send_header('Cache-Control', 'no-store, max-age=0')
         self.end_headers()
         self.wfile.write(json.dumps(cuerpo, ensure_ascii=False).encode('utf-8'))
+
+    def do_POST(self):
+        """Solo `action=tesis_cartera`. Es POST porque el bloque de datos son
+        ~2.000 tokens de JSON armados en el navegador: no entra en una query
+        string, y aunque entrara quedaria en los logs del servidor."""
+        try:
+            q = parse_qs(urlparse(self.path).query)
+            accion = (q.get('action') or [''])[0]
+            if accion != 'tesis_cartera':
+                return self._responder(400, {
+                    'error': f'POST solo acepta action=tesis_cartera, no {accion!r}.',
+                    'sin_costo': True})
+
+            # El proveedor es OBLIGATORIO y explicito, igual que en la tesis
+            # individual: sin default, para que sea imposible gastar en uno
+            # creyendo que elegiste el otro.
+            proveedor = (q.get('proveedor') or [''])[0].strip().lower()
+            if not proveedor:
+                return self._responder(400, {
+                    'error': 'Falta el parametro proveedor (anthropic u openai). '
+                             'Es obligatorio a proposito: sin el, no se llama a '
+                             'ninguno.',
+                    'sin_costo': True})
+
+            largo = int(self.headers.get('Content-Length') or 0)
+            if largo <= 0:
+                return self._responder(400, {
+                    'error': 'El POST llego sin cuerpo. No se llamo a nadie.',
+                    'sin_costo': True})
+            # Tope de tamano: sin esto un cuerpo gigante se manda igual al
+            # modelo y se paga. 400 KB es holgado para 40 posiciones.
+            if largo > 400000:
+                return self._responder(413, {
+                    'error': f'El cuerpo pesa {largo} bytes, demasiado. '
+                             f'No se llamo a nadie.',
+                    'sin_costo': True})
+            try:
+                cuerpo = json.loads(self.rfile.read(largo).decode('utf-8'))
+            except Exception as e:
+                return self._responder(400, {
+                    'error': f'El cuerpo no es JSON valido: {type(e).__name__}. '
+                             f'No se llamo a nadie.',
+                    'sin_costo': True})
+
+            res, err = generar_tesis_cartera(cuerpo, proveedor)
+            if err:
+                # `sin_costo` solo si es seguro que no se llamo. Si el error
+                # viene de la respuesta del modelo, la llamada YA se cobro y
+                # decir lo contrario seria mentir.
+                gasto = ('respondio' in err) or ('devolvio' in err)
+                return self._responder(502 if gasto else 400,
+                                       {'error': err, 'sin_costo': not gasto})
+            return self._responder(200, res)
+
+        except Exception as e:
+            import traceback
+            return self._responder(500, {
+                'error': f'{type(e).__name__}: {e}',
+                'traza': traceback.format_exc()[-600:]})
+
+    def do_OPTIONS(self):
+        # El POST desde el navegador dispara preflight.
+        self.send_response(204)
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        self.end_headers()
 
     def do_GET(self):
         try:

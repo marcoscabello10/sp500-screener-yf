@@ -2410,6 +2410,62 @@ como dice la tabla pero la volatilidad y el beta se mantienen, la fuente nueva
 está bien y se puede avanzar con B2. Si la volatilidad o el beta se mueven
 mucho, hay otra cosa y **no se cambia la fuente hasta entender qué**.
 
+### ✅ COMPARACIÓN CONTRA F2 — la fuente nueva pasa (27/08/2026)
+
+Sobre las **mismas ventanas** que muestra F2 (3Y = 756 días, 5Y = 1260),
+replicando `calcRisk()`:
+
+| | | F2 (Twelve Data) | snapshot yfinance | dif |
+|---|---|---|---|---|
+| **SPY 3Y** | retorno | 20,70% | 22,26% | **+1,56** |
+| | volatilidad | 15,40% | 15,33% | −0,07 |
+| | beta | 1,00 | 1,00 | 0,00 |
+| | maxDD | −19,0% | −18,8% | +0,24 |
+| **SPY 5Y** | retorno | 11,90% | 13,41% | **+1,51** |
+| | volatilidad | 17,20% | 17,17% | −0,03 |
+| | beta | 1,00 | 1,00 | 0,00 |
+| **JPM 3Y** | retorno | 34,30% | 37,34% | **+3,04** |
+| | volatilidad | 23,00% | 22,96% | −0,04 |
+| | beta | 0,86 | 0,86 | 0,00 |
+| **JPM 5Y** | retorno | 18,10% | 21,13% | **+3,03** |
+| | volatilidad | 24,40% | 24,38% | −0,02 |
+| | beta | 0,88 | 0,88 | −0,00 |
+| | maxDD | −40,6% | −38,8% | +1,83 |
+
+**La predicción se cumplió en lo que importaba:**
+
+- **Volatilidad: coincide dentro de 0,07 puntos** en los cuatro casos.
+- **Beta: idéntico a dos decimales** en los cuatro.
+- **maxDD: dentro de 1,8 puntos**, y siempre menor en el ajustado — correcto,
+  los dividendos amortiguan la caída acumulada.
+- **El retorno es siempre más alto**, que es exactamente el ajuste.
+
+#### El único punto que hubo que explicar
+
+La brecha de retorno (**+1,5 SPY / +3,0 JPM**) supera al dividend yield de HOY
+(0,74% / 1,71%). Dos motivos, los dos correctos:
+
+1. **El yield del período fue mayor que el de hoy.** El precio ajustado de JPM
+   se multiplicó por **2,60** en 5 años; el dividendo por acción creció mucho
+   menos, así que hace 5 años rendía ~3% y no 1,7%.
+2. **Los dividendos se reinvierten.** Los cobrados temprano rinden al mismo
+   ritmo que la acción durante los años que quedan. Por eso la brecha tiene que
+   **superar** al promedio simple de los yields, no igualarlo.
+
+O sea: la predicción original era conservadora por usar el yield actual. La
+dirección y el orden de magnitud dieron bien, y **lo que no debía moverse no se
+movió**.
+
+### 🟢 Veredicto: la fase B2 puede avanzar
+
+Volatilidad, beta y maxDD —lo que alimenta el ranking de riesgo, la correlación
+y Markowitz— **coinciden**. Lo único que cambia es el retorno, y cambia **hacia
+el número correcto**: el retorno total de un accionista incluye los dividendos
+que cobró.
+
+Vale anotarlo al revés: **hasta hoy F2 venía subestimando el retorno** de todo
+lo que paga dividendos. KO, XOM y los bancos aparecían peor de lo que fueron.
+
 ### Lo que falta (fase B2, con riesgo real)
 
 Que F2/F3/F4 lean el snapshot. Toca `App.jsx` y mueve los números. Va después
@@ -2426,7 +2482,16 @@ Todo esto está escrito en la carpeta y **todavía no subido**. Verificar con
 > `src/App.jsx` **ya fueron pusheados** por Marcos. Lo que sigue es la tanda del
 > **25/08/2026**: veredicto de 3 posiciones, foco en rotación y los CEDEARs.
 
-### Tanda de las fases A y B1 (27/08)
+### Tanda de ahora (28/08) — solo el contexto
+
+```
+CONTEXTO_INFORME_AVANZADO.md   (comparación contra F2: la fuente nueva pasa)
+```
+
+Nada de código. Es la única cosa pendiente: todo lo de abajo ya lo pusheó
+Marcos, incluidas las fases A y B1.
+
+### Tanda de las fases A y B1 (27/08) — ✅ YA PUSHEADO
 
 ```
 src/App.jsx                  ⚠️ SCREENER — adelgazarHist + histCacheSave sin lsSet

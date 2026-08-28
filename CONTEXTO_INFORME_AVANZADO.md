@@ -3011,6 +3011,199 @@ lo poco que le queda en caché y el resto `null`.
 
 ---
 
+## 🏦 RESULTADO DE LA SONDA DE BANCOS (28/08/2026)
+
+```
+NIM  : 17/17 (100%)   [OK]
+CET1 : 11/17  (65%)   [NO]
+```
+
+### ❌ CET1: NO se hace. Y es peor de lo que dice el 65%
+
+Dos motivos, y el segundo no lo vi hasta leer la salida:
+
+**1. La etiqueta que respondió NO es CET1.** Es
+`TierOneRiskBasedCapitalToRiskWeightedAssets` — **Tier 1**, que es CET1 **más**
+el capital adicional (acciones preferidas). Suele dar 1 a 2 puntos por encima
+del CET1. O sea que ni siquiera en los 11 que "funcionaron" tenemos el número
+que se pidió.
+
+**2. Los que respondieron tampoco son confiables.** **MTB dio 6,00%**, y eso es
+imposible para un Tier 1: el mínimo regulatorio con colchones ronda 8,5% y M&T
+opera cerca de 11-13%. Lo más probable es que la sonda haya agarrado otra
+dimensión del mismo dato (un ratio de apalancamiento, u otro contexto). Un dato
+que a veces trae otra cosa **sin avisar** es peor que no tener el dato.
+
+**Conclusión: CET1 queda afuera.** Sacarlo bien exigiría parsear el texto del
+10-Q banco por banco, y eso se rompe cada vez que uno cambia el formato.
+
+### ⚠️ NIM: sale al 100%, pero NO conviene puntuarlo
+
+Los números salieron correctos y creíbles:
+
+| | NIM aprox | |
+|---|---|---|
+| SYF | 15,51% | tarjetas |
+| COF | 6,41% | tarjetas |
+| AXP | 5,79% | tarjetas |
+| MTB | 3,25% | regional |
+| RF | 3,14% | regional |
+| JPM / WFC / C | 2,16-2,25% | money-center |
+| BAC | 1,76% | money-center |
+| BNY | 1,05% | custodia |
+
+Están donde tienen que estar: las tarjetas arriba, los regionales en 2,5-3,3%,
+los grandes cerca de 2%, la custodia abajo. Como proxy, funciona.
+
+**Pero mirá el rango: SYF 15,5% contra BNY 1,05%. Catorce puntos.** Esa
+diferencia **no mide calidad, mide modelo de negocio**: un emisor de tarjetas
+SIEMPRE va a tener más NIM que un banco de custodia, porque cobra 20% de
+interés y el otro cobra comisiones.
+
+> 🚨 **Puntuar el NIM crearía una versión nueva del bug que se acaba de
+> arreglar**: una métrica que premia *ser de un tipo de negocio* en vez de
+> *andar bien*. Es exactamente lo mismo que el P/B de −187 premiando el
+> patrimonio negativo. Y encima el grupo "Bancos" mete a AXP, COF y SYF junto a
+> JPM justamente porque son bank holding companies — o sea que el problema está
+> garantizado por construcción.
+
+**Propuesta: mostrar el NIM como dato, no como puntaje.** Aparece en la ficha
+del banco (con la aclaración de que es aproximado sobre activos totales) pero
+no entra al score. Si algún día se quiere puntuar, tendría que ser dentro de
+Banks-Diversified + Banks-Regional únicamente, sacando Credit Services y BNY —
+ahí el rango es 1,76% a 3,25%, que sí es comparable.
+
+---
+
+## 🔴 DOS BUGS DE `UnboundLocalError` EN `api/informe.py` (28/08/2026)
+
+Al escribir el "qué revisar" del punto 4 aparecieron **dos variables que solo
+existían dentro de un `if`**, y las dos reventaban justamente en Financials:
+
+```python
+    if mb and len(mb) >= 4:
+        delta = mb[ks[-1]] - mb[ks[0]]     # <- solo existe si hay margen bruto
+    ...
+    else:
+        nd, nde = cons.get('netDebt'), ...  # <- solo existe si NO es Financials
+```
+
+- **`delta`**: `mb` viene vacío siempre que no hay serie de margen bruto — y
+  `grossMarginPct` está en `SECTOR_OCULTAR['Financials']`, así que en bancos
+  **nunca** se define.
+- **`nd` / `nde`**: la rama que las define es el `else` de "si es Financials no
+  se muestra la deuda neta". En Financials se toma la otra rama.
+
+Las dos ahora se inicializan en `None` antes del `if`. **Es el mismo patrón que
+`{acción}` en el f-string y que `r.status` en App.jsx: un nombre que no existe
+en la rama que casi nunca se mira.** Van tres.
+
+> 📌 Lo importante: **este par lo encontró la prueba antes de subirlo**, no
+> producción. Correr `evaluar()` con datos reales de MO y WFC costó dos minutos
+> y evitó un 500 en todos los bancos con señal de trampa de valor.
+
+---
+
+## 🧪 LOS TESTS NUNCA PUDIERON CORRER EN LA PC DE MARCOS (28/08/2026)
+
+`test_contrato.py` y `test_tesis.py` tenían clavada la ruta del contenedor
+donde se escribieron:
+
+```python
+D = Path('/mnt/user-data/uploads/sp500-screener-yf')
+spec = ... '/home/claude/informe/build/informe.py'
+```
+
+En la máquina de Marcos eso es `FileNotFoundError`. **La suite existía pero era
+incorrible donde vive el código.** Ahora las rutas se resuelven relativas al
+propio archivo (`Path(__file__).resolve().parent.parent`), así que anda desde
+cualquier lado:
+
+```
+python test/test_contrato.py
+python test/test_tesis.py
+```
+
+Las dos pasan con el código nuevo.
+
+> 📌 **Regla:** un test con una ruta absoluta del entorno donde se escribió no
+> es un test, es una nota. Rutas siempre relativas a `__file__`.
+
+---
+
+## ✅ TESIS EN EL ANEXO DE CARTERA — ACTIVADA (28/08/2026)
+
+**Síntoma:** al cargar una cartera o seleccionar varios activos no aparecían
+los botones de tesis. En un activo suelto sí.
+
+**No era un bug del endpoint.** Se comprobó contra producción:
+
+```json
+{"anthropic": {"disponible": true,  "modelo": "claude-sonnet-5"},
+ "openai":    {"disponible": false, "modelo": "gpt-5.6-luna"}}
+```
+
+**Era `conTesis={false}` en `Cartera.jsx`**, puesto a propósito con este
+razonamiento: *"serían N botones que gastan, uno por activo"*. **El
+razonamiento estaba mal**: cada botón gasta **solo cuando se lo clickea**, así
+que N botones no son N llamadas. Marcos elige de cuál quiere la lectura en
+prosa, uno por uno — que es exactamente la regla de costo del proyecto. Los
+botones ya llevaban `no-imprimir`, así que no ensucian el PDF.
+
+### Y de paso: el estado "sin claves" ya no es invisible
+
+`tesis.jsx` hacía `if (!activos.length) return null` — el componente
+desaparecía **sin decir nada**, y desde la pantalla no había forma de
+distinguir "falta la clave" de "hay un bug". Es el mismo problema que el
+`catch {}` vacío del caché de histórico. Ahora muestra un aviso que dice qué
+variable falta.
+
+> ⚠️ **OpenAI figura `disponible: false`**: falta cargar `OPENAI_API_KEY` en
+> Vercel (Anthropic sí está). No es un error — es que nunca se cargó esa clave.
+
+---
+
+## 📋 "QUÉ REVISAR" EN LOS AVISOS DE TRAMPA DE VALOR (28/08/2026)
+
+**Antes:** *"Barato por algo: revisar por qué antes de comprar el descuento."*
+Y ahí terminaba. Mandaba a revisar sin decir **qué**, o sea que le trasladaba
+el trabajo al lector.
+
+**Ahora arma la lista de chequeos y, donde el dato ya está bajado, la
+CONTESTA.** Los seis puntos:
+
+1. **¿El mercado ya lo sabe?** Compara el P/E a futuro contra el actual. Si el
+   de futuro es **mayor**, los analistas esperan **menos** ganancia — el indicio
+   más directo de que el descuento no es oportunidad.
+2. **¿Lo sostiene la recompra?** Si el EPS sube pero la ganancia total cae, lo
+   está sosteniendo la recompra de acciones, no el negocio. Eso tiene límite.
+3. **¿El dividendo aguanta?** Payout sobre 80% con ingresos cayendo = riesgo.
+4. **¿Cuánto tiempo da la deuda?** Deuda neta / EBITDA sobre 3x.
+5. **¿Se defiende el margen o cede precio?** Variación del margen bruto.
+6. **¿Es la empresa o todo el sector?** Único que queda a mano — pero se
+   pregunta explícitamente.
+
+Salida real para **MO**, con sus datos:
+
+> - A favor: el P/E a futuro (11,6x) es menor que el actual (14,4x), así que se
+>   espera que la ganancia se recupere.
+> - El EPS sube +4,0% anual pero la ganancia total cae −1,2% con 3,5% anual de
+>   recompra: lo sostiene la recompra de acciones, no el negocio.
+> - **El dividendo está en riesgo: paga 89% de la ganancia para rendir 6,2%.**
+>   Con los ingresos cayendo, ese reparto no tiene margen.
+> - A favor: sostiene el margen bruto (+2,5 puntos), así que vende menos pero
+>   no más barato.
+
+Y para **WFC**, que no tiene margen bruto ni deuda neta, **saltea esos dos
+puntos en vez de romper** (que es justamente el bug que se arregló arriba).
+
+Se agregó la clave `revisar` a los riesgos y el componente `QueRevisar`,
+exportado desde `Informe.jsx` y reusado en los **tres** lugares donde se
+renderiza un riesgo — para no tener tres copias que después se desincronizan,
+que es como nacieron los dos `norm()` de App.jsx.
+
+---
+
 ## 📦 PENDIENTE DE PUSH — lista acumulada
 
 Todo esto está escrito en la carpeta y **todavía no subido**. Verificar con
@@ -3020,7 +3213,22 @@ Todo esto está escrito en la carpeta y **todavía no subido**. Verificar con
 > `src/App.jsx` **ya fueron pusheados** por Marcos. Lo que sigue es la tanda del
 > **25/08/2026**: veredicto de 3 posiciones, foco en rotación y los CEDEARs.
 
-### Tanda de ahora (28/08)
+### Tanda de ahora (28/08) — segunda parte
+
+```
+api/informe.py               ⚠️ arregla 2 UnboundLocalError + "que revisar" en trampa de valor
+src/informe/Informe.jsx      componente QueRevisar (exportado) + comentario de conTesis
+src/informe/Cartera.jsx      tesis ACTIVADA en el anexo + usa QueRevisar
+src/informe/tesis.jsx        el estado "sin claves" ya no es invisible
+test/test_contrato.py        rutas relativas a __file__ (antes no corrian aca)
+test/test_tesis.py           idem
+local_bot/probe_bancos.py    NUEVO — la sonda (ya pusheada, queda de registro)
+CONTEXTO_INFORME_AVANZADO.md
+```
+
+Las dos suites pasan: `python test/test_contrato.py` y `python test/test_tesis.py`.
+
+### Tanda anterior (28/08)
 
 ✅ B2 ya pusheada en `689463f`. Pendiente:
 

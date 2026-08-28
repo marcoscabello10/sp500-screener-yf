@@ -18,8 +18,13 @@ import re
 import sys
 from pathlib import Path
 
-D = Path('/mnt/user-data/uploads/sp500-screener-yf')
-spec = importlib.util.spec_from_file_location('inf', '/home/claude/informe/build/informe.py')
+# ⚠️ Las rutas se resuelven RELATIVAS a este archivo. Antes estaban clavadas
+# al contenedor donde se escribieron los tests, asi que en la maquina de Marcos
+# reventaban con FileNotFoundError y la suite nunca se pudo correr donde vive
+# el codigo. Ahora anda desde cualquier lado: `python test/test_X.py`.
+RAIZ = Path(__file__).resolve().parent.parent
+D = RAIZ
+spec = importlib.util.spec_from_file_location('inf', str(RAIZ / 'api' / 'informe.py'))
 I = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(I)
 

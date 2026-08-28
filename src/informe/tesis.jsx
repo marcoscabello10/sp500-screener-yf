@@ -101,7 +101,24 @@ export default function Tesis({ ticker }) {
 
   if (proveedores === null) return null
   const activos = Object.entries(proveedores).filter(([, p]) => p.disponible)
-  if (!activos.length) return null      // sin claves no hay botones: no se puede gastar
+
+  // Sin ninguna clave cargada no hay botones — no se puede gastar. Pero ANTES
+  // esto era `return null` a secas y el componente desaparecia SIN DECIR NADA:
+  // desde la pantalla no habia forma de distinguir "falta la clave" de "hay un
+  // bug". Es el mismo problema que el `catch {}` vacio del cache de historico.
+  // Ahora lo dice, y dice exactamente que variable falta.
+  if (!activos.length) {
+    const faltan = Object.entries(proveedores).map(([k]) => k.toUpperCase() + '_API_KEY')
+    return (
+      <div className="no-imprimir" style={{
+        background: C.panel, border: `1px solid ${C.borde}`, borderRadius: 8,
+        padding: '9px 13px', margin: '14px 0', fontSize: 12.5, color: C.tenue }}>
+        Tesis con IA apagada: no hay ninguna clave cargada en Vercel
+        {faltan.length ? ` (${faltan.join(' o ')})` : ''}. Sin clave no se puede
+        gastar, asi que no se muestran los botones.
+      </div>
+    )
+  }
 
   return (
     <section style={{ marginTop: 34 }}>

@@ -701,6 +701,12 @@ def evaluar(ticker, fund, cons, detalle, hist, sec):
 
     # ── SALUD FINANCIERA ─────────────────────────────────────────────────────
     sal_puntos, sal_notas = [], []
+    # ⚠️ nd/nde se inicializan ACA, afuera del if/else de abajo. En Financials
+    # se toma la rama que NO las define (los depositos entran como caja y el
+    # numero no significa nada), asi que sin esto quedaban sin ligar y
+    # cualquier lectura posterior tiraba UnboundLocalError. Mismo patron que
+    # `delta`, que {accion} en el f-string y que `r.status` en App.jsx.
+    nd = nde = None
     if 'netDebt' in ocultar:
         sal_notas.append(
             'En bancos y aseguradoras la deuda neta y el EV/EBITDA no se '
@@ -708,6 +714,8 @@ def evaluar(ticker, fund, cons, detalle, hist, sec):
             'nada. Se mira P/B y ROE.')
     else:
         nd, nde = cons.get('netDebt'), cons.get('netDebtToEbitda')
+        # (nd y nde se inicializan arriba en None: en Financials esta rama no
+        #  corre y cualquier lectura posterior reventaria.)
         if nd is not None and nd < 0:
             sal_notas.append(f'Caja neta positiva: tiene {abs(nd)/1e9:.1f} mil '
                              f'millones más en caja que en deuda.')
@@ -729,6 +737,13 @@ def evaluar(ticker, fund, cons, detalle, hist, sec):
         if p is not None:
             sal_puntos.append(p)
     mb = (hist.get('series') or {}).get('margenes', {}).get('bruto') if hist.get('disponible') else None
+    # ⚠️ `delta` se inicializa ACA, afuera del if. Antes solo existia adentro,
+    # y cuando `mb` venia vacio —que es SIEMPRE en Financials, porque
+    # grossMarginPct esta en SECTOR_OCULTAR— cualquier lectura posterior
+    # reventaba con UnboundLocalError. Es el mismo patron que {accion} en el
+    # f-string y que `r.status` en App.jsx: un nombre que no existe en la rama
+    # que casi nunca se mira.
+    delta = None
     if mb and len(mb) >= 4:
         ks = sorted(mb)
         delta = mb[ks[-1]] - mb[ks[0]]
@@ -827,10 +842,73 @@ def evaluar(ticker, fund, cons, detalle, hist, sec):
     riesgos = []
     # trampa de valor
     if p_pe is not None and p_pe > 65 and (r3 is not None and r3 < 0):
+        # Antes esto decia "revisar por que antes de comprar el descuento" y
+        # ahi terminaba: mandaba a revisar sin decir QUE. Ahora arma la lista
+        # de chequeos y, donde el dato ya esta bajado, la CONTESTA. Un aviso
+        # que solo dice "fijate" traslada el trabajo al lector.
+        revisar = []
+
+        # 1. El mercado ya sabe? Un forward P/E MAS ALTO que el actual
+        #    significa que los analistas esperan que la ganancia CAIGA. Es el
+        #    indicio mas directo de que el descuento no es una oportunidad.
+        if pe and fpe:
+            if fpe > pe * 1.05:
+                revisar.append(f'El mercado ya espera que empeore: el P/E a '
+                               f'futuro ({fpe:.1f}x) es MAYOR que el actual '
+                               f'({pe:.1f}x), o sea que se proyecta menos '
+                               f'ganancia, no mas.')
+            elif fpe < pe * 0.9:
+                revisar.append(f'A favor: el P/E a futuro ({fpe:.1f}x) es menor '
+                               f'que el actual ({pe:.1f}x), asi que se espera '
+                               f'que la ganancia se recupere.')
+
+        # 2. Caen los ingresos pero sube el EPS? Entonces lo esta sosteniendo
+        #    la recompra de acciones, no el negocio — y eso tiene un limite.
+        if e5 is not None and n5 is not None and e5 > 0 and n5 < 0:
+            extra = f' con {abs(a5):.1f}% anual de recompra' if a5 else ''
+            revisar.append(f'El EPS sube {e5:+.1f}% anual pero la ganancia total '
+                           f'cae {n5:+.1f}%{extra}: lo sostiene la recompra de '
+                           f'acciones, no el negocio. Eso tiene limite.')
+
+        # 3. El dividendo aguanta? Es LA pregunta si el papel se compro por
+        #    la renta y los ingresos estan cayendo.
+        if payout is not None and dy is not None:
+            if payout > 80:
+                revisar.append(f'El dividendo esta en riesgo: paga {payout:.0f}% '
+                               f'de la ganancia para rendir {dy:.1f}%. Con los '
+                               f'ingresos cayendo, ese reparto no tiene margen.')
+            elif payout > 0:
+                revisar.append(f'El dividendo por ahora aguanta: reparte '
+                               f'{payout:.0f}% de la ganancia para rendir '
+                               f'{dy:.1f}%.')
+
+        # 4. Cuanto tiempo da la deuda antes de que aprete.
+        if nde is not None and nde > 3:
+            revisar.append(f'La deuda no da mucho tiempo: {nde:.1f}x EBITDA. '
+                           f'Con ingresos en baja, ese multiplo sube solo.')
+
+        # 5. Se defiende el margen o esta cediendo precio?
+        if delta is not None:
+            if delta < -2:
+                revisar.append(f'Ademas esta cediendo precio: el margen bruto '
+                               f'bajo {delta:.1f} puntos en el periodo.')
+            elif delta > 2:
+                revisar.append(f'A favor: sostiene el margen bruto '
+                               f'({delta:+.1f} puntos), asi que vende menos '
+                               f'pero no mas barato.')
+
+        # 6. Es caida de todo el sector o solo de esta empresa? Sin el dato
+        #    del sector no se puede contestar, pero SI hay que preguntarlo.
+        revisar.append('Queda por mirar a mano si la caida es de la empresa o '
+                       'de todo su sector: no es lo mismo perder contra los '
+                       'competidores que acompanar un ciclo.')
+
         riesgos.append({'codigo': 'trampa_valor', 'severidad': 'alta',
                         'texto': f'Barata contra su sector pero con ingresos '
                                  f'cayendo {r3:+.1f}% anual. Barato por algo: '
-                                 f'revisar por que antes de comprar el descuento.'})
+                                 f'esto es lo que hay que revisar antes de '
+                                 f'comprar el descuento.',
+                        'revisar': revisar})
     if ups is not None and ups > 40 and (fund.get('roe') or 0) < 0:
         riesgos.append({'codigo': 'upside_sin_ganancias', 'severidad': 'alta',
                         'texto': f'Los analistas ven {ups:+.0f}% de recorrido pero '

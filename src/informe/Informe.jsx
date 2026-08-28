@@ -38,6 +38,20 @@ const METRICAS = [
   { k: 'dividendYieldPct',  de: 'cons', label: 'Dividendo',         fmt: v => pct(v, 2) },
 ]
 
+// Los chequeos concretos que acompanan a un riesgo. Un aviso que dice
+// "revisar por que" sin decir QUE revisar le traslada el trabajo al lector;
+// esto lista los puntos y, donde el dato estaba, ya viene contestado.
+// Se exporta para que Cartera.jsx lo use en vez de tener su propia copia.
+export function QueRevisar({ items }) {
+  if (!items || !items.length) return null
+  return (
+    <ul style={{ margin: '7px 0 0', paddingLeft: 17, fontSize: 13,
+                 color: C.tenue, lineHeight: 1.5 }}>
+      {items.map((t, i) => <li key={i} style={{ marginBottom: 3 }}>{t}</li>)}
+    </ul>
+  )
+}
+
 export default function Informe({ d, onVolver, conTesis = true }) {
   const ocultar = new Set(d.sector_contexto?.ocultar || [])
   const notas = d.sector_contexto?.notas || {}
@@ -59,9 +73,10 @@ export default function Informe({ d, onVolver, conTesis = true }) {
       <Encabezado d={d} />
       <Veredicto d={d} />
       {/* La tesis va arriba de todo el detalle, pegada al veredicto: es la
-          lectura en prosa de eso mismo. En el anexo del informe de cartera se
-          apaga (conTesis=false) — serian N botones que gastan, uno por activo,
-          dentro de un documento que ya se genero. */}
+          lectura en prosa de eso mismo. `conTesis` sigue existiendo por si
+          alguna vista la quiere apagar, pero el anexo de la cartera YA NO la
+          apaga: cada boton gasta solo cuando se lo clickea, asi que N botones
+          no son N llamadas. */}
       {conTesis && <Tesis ticker={d.ticker} />}
 
       {d.avisos?.length > 0 && (
@@ -86,7 +101,10 @@ export default function Informe({ d, onVolver, conTesis = true }) {
                 <span style={{ color: c.color, fontWeight: 700, fontSize: 12,
                                textTransform: 'uppercase', minWidth: 46,
                                letterSpacing: '.04em' }}>{r.severidad}</span>
-                <span style={{ color: C.cuerpo, fontSize: 14 }}>{r.texto}</span>
+                <span style={{ color: C.cuerpo, fontSize: 14 }}>
+                  {r.texto}
+                  <QueRevisar items={r.revisar} />
+                </span>
               </div>
             )
           })}

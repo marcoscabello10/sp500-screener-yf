@@ -1,5 +1,5 @@
 import React from 'react'
-import Informe from './Informe.jsx'
+import Informe, { QueRevisar } from './Informe.jsx'
 import { planRotacion, concentracionPorSector, SECTOR_PESADO_PCT } from './sugerencias.js'
 import { analizarCartera, stressTest, exposicion, CLASE_TEXTO, ESTADO_TEXTO,
          ACCION_PESO_TEXTO, ORIGEN_PESOS, PERFIL_POR_DEFECTO,
@@ -78,7 +78,14 @@ export default function Cartera({ informes, meta, stocks, scores, conAnexo,
           </Seccion>
           {validos.map(i => (
             <div key={i.ticker} className="salto-antes">
-              <Informe d={i} onVolver={null} conTesis={false} />
+              {/* La tesis SI va en el anexo (28/08/2026). El motivo original
+                  para apagarla —"serian N botones que gastan"— estaba mal
+                  planteado: cada boton gasta SOLO cuando se lo clickea, asi
+                  que N botones no son N llamadas. Marcos elige de cual quiere
+                  la lectura en prosa, uno por uno, que es justamente la regla
+                  de costo del proyecto: gastar solo cuando se lo pide.
+                  Los botones llevan `no-imprimir`, asi que no salen en el PDF. */}
+              <Informe d={i} onVolver={null} />
             </div>
           ))}
         </div>
@@ -849,7 +856,10 @@ function PuntosDeAtencion({ riesgos }) {
             marginBottom: 8, display: 'flex', gap: 11 }}>
             <span style={{ fontFamily: F.num, fontWeight: 700, color: c.color,
                            minWidth: 48 }}>{r.ticker}</span>
-            <span style={{ fontSize: 14 }}>{r.texto}</span>
+            <span style={{ fontSize: 14 }}>
+              {r.texto}
+              <QueRevisar items={r.revisar} />
+            </span>
           </div>
         )
       })}
@@ -925,6 +935,7 @@ function Ficha({ d }) {
         <div key={i} style={{ background: C.rojoFondo, color: C.rojo, fontSize: 13,
                               borderRadius: 6, padding: '7px 11px', marginTop: 6 }}>
           {r.texto}
+          <QueRevisar items={r.revisar} />
         </div>
       ))}
     </div>

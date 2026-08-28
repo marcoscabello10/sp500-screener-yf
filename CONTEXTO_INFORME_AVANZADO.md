@@ -2466,7 +2466,110 @@ que cobró.
 Vale anotarlo al revés: **hasta hoy F2 venía subestimando el retorno** de todo
 lo que paga dividendos. KO, XOM y los bancos aparecían peor de lo que fueron.
 
-### Lo que falta (fase B2, con riesgo real)
+### ✅ FASE B2 HECHA (28/08/2026) — F2/F3/F4 leen el snapshot
+
+**Qué cambió en `src/App.jsx`** (+184 líneas, −14; la mayor parte comentarios):
+
+**1. El lector del snapshot** (`snapshotBajar` + `snapshotHistorico`, ~110
+líneas nuevas, todas juntas y autocontenidas). Baja
+`/data/historico_precios.json`, lo expande a la forma `[{date, close}]`
+ascendente que ya esperaban `toDailyRet`/`alignedRet` —la MISMA que devolvía
+Twelve Data después del `.reverse()`— y por eso **nada río abajo cambió**:
+`calcRisk`, la matriz de correlación y Markowitz siguen igual.
+
+**2. El orden de fuentes en las tres fases** (6 líneas por fase):
+
+```
+snapshot local  →  caché de localStorage (7 días)  →  Twelve Data
+```
+
+El snapshot va **antes** del caché a propósito. Si fuera al revés, un caché de
+Twelve Data de hace 5 días taparía un snapshot recién generado y los números
+seguirían siendo los crudos sin ninguna señal de por qué.
+
+**3. Clave de caché `v1` → `v2`.** El `v1` podía tener series de Twelve Data
+(cierre crudo) y ahora se guardan ajustadas: son números que no se pueden
+mezclar. Se cambia la clave para que el caché viejo no siga contestando 7 días,
+y hay un `useEffect` que **borra el `v1` una vez** — podía estar ocupando varios
+MB de los ~5 MB que este origen **comparte con el informe**.
+
+#### 🔒 Todo o nada, a propósito
+
+Si el snapshot no cubre al menos el **85%** de los símbolos pedidos, no se
+completa el resto con Twelve Data: se cae **entero** al camino viejo. Mezclar
+series ajustadas con crudas en la misma matriz de correlación o covarianza
+daría números sin significado — cada papel medido con una regla distinta.
+Es preferible tardar y ser consistente.
+
+#### El interruptor — 8 motivos de caída, los 8 probados
+
+| Motivo | Qué hace |
+|---|---|
+| no está el archivo (404) | Twelve Data |
+| el fetch explota (sin red) | Twelve Data |
+| el JSON no tiene la forma esperada | Twelve Data |
+| el snapshot tiene más de 45 días | Twelve Data |
+| no tiene `generated_at` | Twelve Data |
+| no trae SPY (el benchmark) | Twelve Data |
+| se pide más historia de la que cubre | Twelve Data |
+| cubre menos del 85% de los símbolos | Twelve Data |
+
+Cada uno escribe en consola **por qué** y **qué hacer**, con el prefijo
+`[hist] snapshot no usado:`. Antes un problema de fuente se perdía en silencio.
+
+#### 🐛 Bug encontrado de paso: `${r.status}` en los tres lotes
+
+En las tres fases había, dentro del `try` del lote:
+
+```js
+console.log(`[hist] lote ${batch.join(',')} → status ${r.status}`, d);
+```
+
+**`r` no existe en ese scope** — vive dentro de `histFetch`. La línea tiraba
+`ReferenceError` en **todos** los lotes, siempre. Las fases andaban igual
+porque los datos ya se habían asignado dos líneas arriba, pero el `catch`
+marcaba cada símbolo con `histErrors[s] = "Error de red: r is not defined"`,
+y **ese** era el mensaje que se mostraba cuando algo fallaba de verdad, tapando
+la causa real (429, sin datos, símbolo inexistente).
+
+Es el mismo patrón que el `{acción}` del f-string y el `base` de `cartera.js`:
+**un nombre que no existe en una rama que casi nunca se mira**. Arreglado en
+los tres lugares.
+
+#### Verificación: `test/prueba-snapshot.cjs`, 41 comprobaciones ✅
+
+La prueba **extrae las funciones reales de `App.jsx`** con regex y las corre en
+un `vm` con `fetch` falso. No copia el código: copiarlo verificaría una copia y
+no lo que se despliega. Se le da el **snapshot real** de la PC (6 símbolos,
+1672 fechas). Comprueba:
+
+1. Forma `{date, close}`, fechas ascendentes, ninguna fuera de orden, ningún
+   `close` nulo.
+2. **Los `null` se saltean, no se rellenan.** Con `[null, null, 50, 55]` la
+   serie queda con 2 puntos y `toDailyRet` da **1** retorno (+10%), no 3.
+   Rellenar habría inventado dos retornos de 0% que bajan la volatilidad.
+3. El recorte por `from` corta de verdad y no deja nada anterior.
+4. Los 8 motivos de caída, cada uno con su mensaje.
+5. **Los números coinciden al centésimo** con los ya comparados contra F2:
+   SPY 3Y 22,26% / 15,33 / β1,00 · JPM 5Y 21,13% / 24,38 / β0,88.
+
+Correr con: `node test/prueba-snapshot.cjs` (necesita Node — Marcos no lo
+tiene instalado, así que la corrí acá; queda en el repo para el futuro).
+
+También pasó: `esbuild --bundle` (sintaxis) y `detector-shadow.cjs`
+(8 shadowings vs 7 antes; el nuevo es un `let i` de un `for`, igual que los 6
+que ya había).
+
+#### Lo que Marcos va a ver
+
+- **F2/F3/F4 dejan de tardar ~88 minutos** y pasan a leer un archivo local.
+- El mensaje de progreso dice `⚡ Histórico del snapshot local (N días,
+  ajustado por dividendos)`, así que **se ve de dónde salieron los números**.
+- Los **retornos suben** en todo lo que paga dividendos. Volatilidad, beta y
+  maxDD quedan donde estaban.
+- Si nunca corre `fetch_historico.py`, **todo sigue funcionando como antes**.
+
+### ~~Lo que falta (fase B2)~~ — HECHO, ver arriba
 
 Que F2/F3/F4 lean el snapshot. Toca `App.jsx` y mueve los números. Va después
 de comparar.
@@ -2482,14 +2585,20 @@ Todo esto está escrito en la carpeta y **todavía no subido**. Verificar con
 > `src/App.jsx` **ya fueron pusheados** por Marcos. Lo que sigue es la tanda del
 > **25/08/2026**: veredicto de 3 posiciones, foco en rotación y los CEDEARs.
 
-### Tanda de ahora (28/08) — solo el contexto
+### Tanda de la FASE B2 (28/08) — ⚠️ TOCA EL SCREENER
 
 ```
-CONTEXTO_INFORME_AVANZADO.md   (comparación contra F2: la fuente nueva pasa)
+src/App.jsx                  ⚠️ SCREENER — F2/F3/F4 leen el snapshot; +184/−14
+test/prueba-snapshot.cjs     NUEVO — 41 comprobaciones del lector
+CONTEXTO_INFORME_AVANZADO.md (comparación contra F2 + esta fase)
 ```
 
-Nada de código. Es la única cosa pendiente: todo lo de abajo ya lo pusheó
-Marcos, incluidas las fases A y B1.
+**El orden importa:** primero `git push`, después correr
+`fetch_historico.py` completo, y recién ahí abrir el screener. Si se corre al
+revés no rompe nada (el interruptor cae a Twelve Data), pero la primera corrida
+tarda lo de siempre.
+
+Todo lo de abajo ya está pusheado.
 
 ### Tanda de las fases A y B1 (27/08) — ✅ YA PUSHEADO
 

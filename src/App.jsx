@@ -107,7 +107,12 @@ const FUND_METRICS = [
 ];
 
 // ── Cache helpers (localStorage — funciona en browser estándar y Vercel) ──────
-const HIST_CACHE_KEY    = "sp500_hist_prices_v1";
+// v2: el v1 podía tener series de Twelve Data (cierre CRUDO). Ahora la fuente
+// preferida es el snapshot de yfinance (cierre AJUSTADO por dividendos y
+// splits) y los dos números no son comparables, así que se cambia la clave para
+// que un caché viejo no siga contestando con la fuente vieja durante 7 días.
+const HIST_CACHE_KEY    = "sp500_hist_prices_v2";
+const HIST_CACHE_KEY_V1 = "sp500_hist_prices_v1";   // se borra una sola vez
 const HIST_CACHE_DAYS   = 7;
 const CLIENT_CACHE_DAYS = 7;
 
@@ -203,6 +208,118 @@ function histCacheSave(hist, spyPrices, from, expectedCount) {
 }
 function histCacheClear() {
   lsDel(HIST_CACHE_KEY);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// SNAPSHOT DE HISTÓRICO (fase B2) — reemplaza a Twelve Data cuando está
+// ════════════════════════════════════════════════════════════════════════════
+//
+// Qué cambia y por qué
+// --------------------
+// Hasta ahora F2/F3/F4 le pedían el histórico a Twelve Data EN VIVO, 8 créditos
+// por minuto: 505 símbolos son ~88 minutos de espera. Además `api/data.py`
+// escribe `adjClose = close`, o sea que los retornos ignoraban los dividendos.
+//
+// `local_bot/fetch_historico.py` corre en la PC (donde Yahoo sí responde) y deja
+// `public/data/historico_precios.json` con precios AJUSTADOS. Leer ese archivo
+// es un fetch a un estático del mismo origen: segundos, no una hora y media.
+//
+// Comprobado contra F2 el 27/08/2026 (SPY y JPM, ventanas 3Y y 5Y):
+//   volatilidad dentro de 0,07 puntos · beta idéntico a dos decimales ·
+//   maxDD dentro de 1,8 · el retorno sube (+1,5 SPY / +3,0 JPM) porque ahora
+//   incluye los dividendos cobrados, que es el número correcto.
+//
+// TODO O NADA, a propósito
+// ------------------------
+// Si el snapshot no cubre a casi todos los símbolos pedidos, NO se completa el
+// resto con Twelve Data: se cae entero al camino viejo. Mezclar series
+// ajustadas con series crudas en la MISMA matriz de correlación o covarianza
+// daría números que no significan nada — cada papel estaría medido con una
+// regla distinta. Es preferible tardar y ser consistente.
+//
+// El interruptor
+// --------------
+// Si el archivo no está, no cubre el período, está vencido o cubre pocos
+// símbolos → se usa Twelve Data exactamente como antes. Nada de esto rompe si
+// el snapshot nunca se genera.
+const SNAP_URL        = '/data/historico_precios.json';
+const SNAP_MAX_DIAS   = 45;    // más viejo que esto, los precios ya se notan
+const SNAP_MIN_COBERT = 0.85;  // mismo umbral que histCacheSave
+
+// Memoria del tab: el archivo puede pesar ~8 MB y las tres fases lo piden.
+// NO va a localStorage (no entra en la cuota de ~5 MB y ahí no hace falta:
+// el browser ya cachea el estático por HTTP).
+let _snapMem = null;
+
+async function snapshotBajar() {
+  if (_snapMem !== null) return _snapMem;
+  try {
+    const r = await fetch(SNAP_URL, { cache: 'no-cache' });
+    if (!r.ok) { _snapMem = false; return false; }
+    const d = await r.json();
+    if (!d || !Array.isArray(d.fechas) || !d.series) { _snapMem = false; return false; }
+    _snapMem = d;
+    return d;
+  } catch {
+    _snapMem = false;
+    return false;
+  }
+}
+
+// Devuelve {hist, spyPrices, edadDias, cobertura} o null (→ usar Twelve Data).
+// `motivo` recibe una línea explicando por qué no se usó, para la consola.
+async function snapshotHistorico(from, simbolos, motivo) {
+  const snap = await snapshotBajar();
+  if (!snap) { motivo('no está public/data/historico_precios.json — corré local_bot/fetch_historico.py'); return null; }
+
+  if (snap.desde && snap.desde > from) {
+    motivo(`el snapshot arranca en ${snap.desde} y hace falta desde ${from} — corré fetch_historico.py con más años`);
+    return null;
+  }
+
+  const edadDias = snap.generated_at
+    ? (Date.now() - Date.parse(snap.generated_at)) / 86400000
+    : 999;
+  if (!(edadDias <= SNAP_MAX_DIAS)) {
+    motivo(`el snapshot tiene ${edadDias.toFixed(0)} días (máximo ${SNAP_MAX_DIAS}) — volvé a correr fetch_historico.py`);
+    return null;
+  }
+
+  if (!snap.series.SPY) { motivo('el snapshot no trae SPY, que es el benchmark'); return null; }
+
+  const tiene = simbolos.filter(s => Array.isArray(snap.series[s])).length;
+  const cobertura = simbolos.length ? tiene / simbolos.length : 0;
+  if (cobertura < SNAP_MIN_COBERT) {
+    motivo(`el snapshot cubre ${tiene}/${simbolos.length} símbolos (hace falta ${Math.round(SNAP_MIN_COBERT*100)}%) — se usa la fuente vieja para no mezclar precios ajustados con crudos`);
+    return null;
+  }
+
+  // Expandir: el archivo guarda un eje de fechas compartido + una lista de
+  // cierres por símbolo. Acá se vuelve a la forma [{date, close}] ascendente
+  // que esperan toDailyRet/alignedRet — la MISMA que devolvía Twelve Data
+  // después del .reverse(), así que nada más abajo cambia.
+  const fechas = snap.fechas;
+  const expandir = (serie) => {
+    const out = [];
+    for (let i = 0; i < serie.length; i++) {
+      const c = serie[i];
+      // null = ese día el papel no cotizaba (salió a bolsa después, o estuvo
+      // suspendido). Se SALTEA, no se rellena: rellenar inventaría un retorno
+      // de 0% que baja la volatilidad artificialmente.
+      if (c == null) continue;
+      const f = fechas[i];
+      if (f < from) continue;
+      out.push({ date: f, close: c });
+    }
+    return out;
+  };
+
+  const hist = {};
+  for (const s of simbolos) {
+    const serie = snap.series[s];
+    if (Array.isArray(serie)) hist[s] = expandir(serie);
+  }
+  return { hist, spyPrices: expandir(snap.series.SPY), edadDias, cobertura };
 }
 
 // Client cache (Fase 5)
@@ -1276,6 +1393,11 @@ export default function App() {
     else setCacheInfo(null);
   }, [cedearFilter]);
 
+  // Limpieza única del caché de histórico v1 (Twelve Data, cierre crudo). Ya no
+  // se lee, y podía estar ocupando varios MB de los ~5 MB que este origen
+  // comparte CON EL INFORME: dejarlo ahí hace que al informe le falte lugar.
+  useEffect(() => { lsDel(HIST_CACHE_KEY_V1); }, []);
+
   const loadFromCache = useCallback(() => {
     const cached = cacheLoad(cedearFilter);
     if (!cached) return;
@@ -1642,9 +1764,20 @@ export default function App() {
       let done=0; const total=allSyms.length+1;
       let hist={}, spyPrices; const histErrors={};
 
-      // ── Caché de histórico compartido (7 días) ──
-      const cached = histCacheLoad(from);
-      if (cached) {
+      // ── Fuente 1: snapshot local de yfinance (precios ajustados) ──
+      // Se consulta ANTES del caché a propósito: es un fetch a un estático del
+      // mismo origen (rápido, y el browser ya lo cachea por HTTP), y así un
+      // caché viejo de Twelve Data no puede tapar un snapshot recién generado.
+      const snap = await snapshotHistorico(from, allSyms,
+        (m) => console.info(`[hist] snapshot no usado: ${m}`));
+      // ── Fuente 2: caché de histórico compartido (7 días) ──
+      const cached = snap ? null : histCacheLoad(from);
+      if (snap) {
+        hist = snap.hist;
+        spyPrices = snap.spyPrices;
+        setLp({step:`⚡ Histórico del snapshot local (${snap.edadDias.toFixed(0)} días, ajustado por dividendos)...`,pct:84,phase:2});
+        done = total;
+      } else if (cached) {
         hist = cached.hist;
         spyPrices = cached.spyPrices;
         setLp({step:`⚡ Histórico desde caché (${HIST_CACHE_DAYS} días)...`,pct:84,phase:2});
@@ -1676,7 +1809,13 @@ export default function App() {
               if (batch[0] === 'SPY') spyPrices = arr.slice().reverse();
               else hist[batch[0]] = arr.slice().reverse();
             }
-            console.log(`[hist] lote ${batch.join(',')} → status ${r.status}`, d);
+            // Antes acá decía `${r.status}` y `r` no existe en este scope: la
+            // línea tiraba ReferenceError en TODOS los lotes. Los datos ya
+            // estaban asignados arriba, así que las fases funcionaban, pero el
+            // catch de abajo marcaba cada símbolo con "Error de red: r is not
+            // defined" y ESE era el mensaje que se mostraba cuando algo fallaba
+            // de verdad, tapando la causa real (429, sin datos, etc.).
+            console.log(`[hist] lote ${batch.join(',')} →`, d);
           } catch (e) {
             batch.forEach(s => { histErrors[s] = `Error de red: ${e.message}`; });
             console.warn(`[hist] lote ${batch.join(',')} → excepción:`, e);
@@ -1753,9 +1892,19 @@ export default function App() {
       let done=0; const total=allSyms.length+1;
       let hist={}, spyPrices; const histErrors={};
 
-      // ── Caché de histórico compartido (7 días) ──
-      const cached = histCacheLoad(from);
-      if (cached) {
+      // ── Fuente 1: snapshot local de yfinance (precios ajustados) ──
+      // Mismo criterio que F2: antes del caché, para que un caché viejo de la
+      // fuente anterior no tape un snapshot nuevo.
+      const snap = await snapshotHistorico(from, allSyms,
+        (m) => console.info(`[hist] snapshot no usado: ${m}`));
+      // ── Fuente 2: caché de histórico compartido (7 días) ──
+      const cached = snap ? null : histCacheLoad(from);
+      if (snap) {
+        hist = snap.hist;
+        spyPrices = snap.spyPrices;
+        setLp({step:`⚡ Histórico del snapshot local (${snap.edadDias.toFixed(0)} días) — calculando correlaciones...`,pct:76,phase:3});
+        done = total;
+      } else if (cached) {
         hist = cached.hist;
         spyPrices = cached.spyPrices;
         setLp({step:"⚡ Histórico desde caché — calculando correlaciones...",pct:76,phase:3});
@@ -1785,7 +1934,13 @@ export default function App() {
               if (batch[0] === 'SPY') spyPrices = arr.slice().reverse();
               else hist[batch[0]] = arr.slice().reverse();
             }
-            console.log(`[hist] lote ${batch.join(',')} → status ${r.status}`, d);
+            // Antes acá decía `${r.status}` y `r` no existe en este scope: la
+            // línea tiraba ReferenceError en TODOS los lotes. Los datos ya
+            // estaban asignados arriba, así que las fases funcionaban, pero el
+            // catch de abajo marcaba cada símbolo con "Error de red: r is not
+            // defined" y ESE era el mensaje que se mostraba cuando algo fallaba
+            // de verdad, tapando la causa real (429, sin datos, etc.).
+            console.log(`[hist] lote ${batch.join(',')} →`, d);
           } catch (e) {
             batch.forEach(s => { histErrors[s] = `Error de red: ${e.message}`; });
             console.warn(`[hist] lote ${batch.join(',')} → excepción:`, e);
@@ -1863,9 +2018,18 @@ export default function App() {
       let done=0; const total=allSyms.length+1;
       let hist={}, spyPrices; const histErrors={};
 
-      // ── Caché de histórico compartido (7 días) ──
-      const cached = histCacheLoad(from);
-      if (cached) {
+      // ── Fuente 1: snapshot local de yfinance (precios ajustados) ──
+      // Mismo criterio que F2 y F3.
+      const snap = await snapshotHistorico(from, allSyms,
+        (m) => console.info(`[hist] snapshot no usado: ${m}`));
+      // ── Fuente 2: caché de histórico compartido (7 días) ──
+      const cached = snap ? null : histCacheLoad(from);
+      if (snap) {
+        hist = snap.hist;
+        spyPrices = snap.spyPrices;
+        setLp({step:`⚡ Histórico del snapshot local (${snap.edadDias.toFixed(0)} días) — construyendo covarianza...`,pct:55,phase:4});
+        done = total;
+      } else if (cached) {
         hist = cached.hist;
         spyPrices = cached.spyPrices;
         setLp({step:"⚡ Histórico desde caché — construyendo covarianza...",pct:55,phase:4});
@@ -1895,7 +2059,13 @@ export default function App() {
               if (batch[0] === 'SPY') spyPrices = arr.slice().reverse();
               else hist[batch[0]] = arr.slice().reverse();
             }
-            console.log(`[hist] lote ${batch.join(',')} → status ${r.status}`, d);
+            // Antes acá decía `${r.status}` y `r` no existe en este scope: la
+            // línea tiraba ReferenceError en TODOS los lotes. Los datos ya
+            // estaban asignados arriba, así que las fases funcionaban, pero el
+            // catch de abajo marcaba cada símbolo con "Error de red: r is not
+            // defined" y ESE era el mensaje que se mostraba cuando algo fallaba
+            // de verdad, tapando la causa real (429, sin datos, etc.).
+            console.log(`[hist] lote ${batch.join(',')} →`, d);
           } catch (e) {
             batch.forEach(s => { histErrors[s] = `Error de red: ${e.message}`; });
             console.warn(`[hist] lote ${batch.join(',')} → excepción:`, e);

@@ -174,14 +174,33 @@ function puntuarGrupo(pool, sector, norm) {
   // el pool entero adentro del bucle de cada papel.
   const resueltas = new Map(
     FUND_METRICS.map(m => [m.key, pool.map(s => metricaEfectiva(s, m, sector))]));
+
+  // Pool de comparación POR CAMPO: TODO el sector que tenga ese campo, no solo
+  // los que lo usan como reemplazo.
+  //
+  // ⚠️ Acá había un error que se encontró el 28/08 probando `sugerencias.js`.
+  // La versión anterior comparaba el P/S de MO contra el P/S de los OTROS que
+  // también usan P/S como reemplazo. En Consumer Staples los únicos con
+  // patrimonio negativo son MO y PM: un pool de DOS. `norm` exige dos, así que
+  // no fallaba — devolvía un percentil sobre dos valores, que solo puede dar 0
+  // o 1. Un puntaje máximo o mínimo por sorteo, sin ningún aviso.
+  //
+  // El P/S existe para TODAS las empresas del sector. Comparar contra todas es
+  // más correcto y hace que el pool alcance. Lo que sigue prohibido es mezclar
+  // ESCALAS (un ROA contra ROEs), y se respeta: el pool se arma por CAMPO.
+  const poolPorCampo = {};
+  for (const m of FUND_METRICS)
+    for (const e of resueltas.get(m.key))
+      if (e && e.campo && !poolPorCampo[e.campo])
+        poolPorCampo[e.campo] = pool.map(s => s[e.campo]);
+
   return pool.map((stk, i) => {
     let score = 0, tw = 0, nUsed = 0, nAlt = 0;
     const usando = {};
     for (const m of aplicables) {
       const e = resueltas.get(m.key)[i];
       if (e.campo == null) continue;
-      const vals = resueltas.get(m.key).map(x => x.campo === e.campo ? x.valor : null);
-      const n = norm(vals, e.valor, m.hb);
+      const n = norm(poolPorCampo[e.campo], e.valor, m.hb);
       if (n != null) {
         score += n * m.w; tw += m.w; nUsed++;
         if (e.alt) { nAlt++; usando[m.key] = e.campo; }

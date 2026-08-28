@@ -8,17 +8,45 @@
 // es el que hay que revisar.
 //
 // Criterio (igual que F1): percentil dentro del PROPIO SECTOR de cada métrica,
-// promediado. Comparar un banco contra una tecnológica no dice nada.
+// promediado POR PESO. Comparar un banco contra una tecnológica no dice nada.
+//
+// 📌 28/08/2026 — este archivo se puso al día con el arreglo del patrimonio
+// negativo que se hizo en App.jsx. Van DOS veces que el criterio cambia en un
+// lado y no en el otro. Las tres copias que hay que revisar juntas son:
+//     src/App.jsx::norm            (screener)
+//     api/informe.py::percentil    (informe, backend)
+//     este archivo::percentil      (informe, front)
+// No se pueden unificar —los proyectos están separados a propósito y uno es
+// Python— pero sí hay que tocarlas de a tres.
 
-// Las seis métricas de F1. "menor" indica que un valor bajo es mejor.
+// Las seis métricas de F1, con su PESO y su REEMPLAZO.
+//
+// ⚠️ Los tres campos importan y los tres se desincronizaron alguna vez:
+//
+//   `peso`  — F1 promedia PONDERADO (el ROE pesa 22%, el D/E 13%). Acá se
+//             promediaba SIMPLE, así que un candidato podía rankear distinto
+//             que en la tabla de F1 que Marcos tiene delante. Corregido.
+//
+//   `alt`   — 33 empresas del S&P tienen patrimonio neto negativo (MCD, BKNG,
+//             MO, PM, SBUX, ABBV…). Ahí el P/B, el ROE y el D/E no significan
+//             nada, y sin reemplazo el papel perdía TRES métricas y quedaba
+//             por debajo del corte. Se sustituyen por los múltiplos que se usan
+//             justamente cuando no hay patrimonio contra qué medir.
+//
+//   `noAplicaEn` — un banco no tiene EBITDA con sentido (la deuda es su materia
+//             prima). Es "no aplica", distinto de "falta el dato".
 const METRICAS = [
-  { k: 'pe',        menor: true  },
-  { k: 'pb',        menor: true  },
-  { k: 'roe',       menor: false },
-  { k: 'de',        menor: true  },
-  { k: 'evEbitda',  menor: true  },
-  { k: 'netMargin', menor: false },
+  { k: 'pe',        menor: true,  peso: 0.20 },
+  { k: 'pb',        menor: true,  peso: 0.15, alt: 'priceToSales' },
+  { k: 'roe',       menor: false, peso: 0.22, alt: 'roa' },
+  { k: 'de',        menor: true,  peso: 0.13, alt: 'ndEbitda' },
+  { k: 'evEbitda',  menor: true,  peso: 0.15, noAplicaEn: ['Financials'] },
+  { k: 'netMargin', menor: false, peso: 0.15 },
 ]
+
+// Mínimo de métricas para que un puntaje sea publicable. Con menos de tres, el
+// número sale de tan poca información que ordena por ruido.
+const MIN_METRICAS = 3
 
 // A partir de acá un sector pesa demasiado y conviene que la rotación salga
 // de ahí y no entre ahí. No es una regla de mercado: es el umbral con el que
@@ -38,7 +66,28 @@ function percentil(valor, valores, menor) {
   return menor ? 100 - p : p
 }
 
-/** Puntaje 0-100 de cada acción dentro de su sector. */
+/**
+ * Qué se usa realmente para una métrica en un papel: la propia si sirve, si no
+ * el reemplazo. Devuelve el CAMPO además del valor, porque el campo define
+ * contra quién se compara: un ROA se compara contra ROAs, nunca contra ROEs.
+ * Son escalas distintas — el ROA siempre da más bajo porque no lleva
+ * apalancamiento— y mezclarlos castigaría al reemplazado sin motivo.
+ */
+function metricaEfectiva(s, m) {
+  if (m.noAplicaEn?.includes(s.sector)) return null
+  const sirve = v => v != null && !Number.isNaN(v) && (!m.menor || v > 0)
+  if (sirve(s[m.k])) return { campo: m.k, valor: s[m.k], alt: false }
+  if (m.alt && sirve(s[m.alt])) return { campo: m.alt, valor: s[m.alt], alt: true }
+  return null
+}
+
+/**
+ * Puntaje 0-100 de cada acción dentro de su sector, promedio PONDERADO.
+ *
+ * Devuelve { [symbol]: {score, nUsadas, nAplicables, reemplazos} } — no solo el
+ * número. La cobertura hace falta aguas arriba: la tesis de cartera tiene que
+ * poder decir "de este papel sé poco" en vez de opinar con tres datos.
+ */
 export function scoresPorSector(stocks) {
   const porSector = {}
   for (const s of stocks) {
@@ -46,19 +95,60 @@ export function scoresPorSector(stocks) {
     ;(porSector[s.sector] ||= []).push(s)
   }
   const out = {}
-  for (const [, lista] of Object.entries(porSector)) {
-    const cols = {}
-    for (const m of METRICAS) cols[m.k] = lista.map(s => s[m.k])
-    for (const s of lista) {
-      const ps = METRICAS
-        .map(m => percentil(s[m.k], cols[m.k], m.menor))
-        .filter(p => p != null)
-      out[s.symbol] = ps.length >= 3
-        ? Math.round((ps.reduce((a, b) => a + b, 0) / ps.length) * 10) / 10
-        : null
-    }
+  for (const [sector, lista] of Object.entries(porSector)) {
+    // Se resuelve una vez por papel y métrica: adentro del bucle de cada papel
+    // sería O(n²) rearmando el pool entero cada vez.
+    const resueltas = {}
+    for (const m of METRICAS) resueltas[m.k] = lista.map(s => metricaEfectiva(s, m))
+    const aplicables = METRICAS.filter(m => !m.noAplicaEn?.includes(sector))
+
+    // Pool de comparación POR CAMPO. Es TODO el sector que tenga ese campo, no
+    // solo los que lo usan como reemplazo.
+    //
+    // ⚠️ Acá estaba el error: el primer intento comparaba el P/S de MO contra
+    // el P/S de los OTROS que también usan P/S como reemplazo. En Consumer
+    // Staples los únicos con patrimonio negativo son MO y PM, o sea un pool de
+    // DOS, y `percentil` exige cinco. Resultado: el reemplazo se caía en
+    // silencio, MO quedaba con 3 de 6 métricas y —justamente por eso— salía
+    // 93,8 y primero del sector, que es la misma enfermedad que se acaba de
+    // arreglar.
+    //
+    // El P/S existe para TODAS las empresas del sector, no solo para las de
+    // patrimonio negativo. Comparar contra todas es a la vez más correcto y lo
+    // que hace que el pool alcance. Lo que sigue prohibido es mezclar ESCALAS
+    // (un ROA contra ROEs), y eso se respeta: el pool se arma por CAMPO.
+    const pool = {}
+    const campoDe = m => new Set(resueltas[m.k].filter(Boolean).map(e => e.campo))
+    for (const m of METRICAS)
+      for (const campo of campoDe(m))
+        pool[campo] = pool[campo] || lista.map(s => s[campo])
+
+    lista.forEach((s, i) => {
+      let suma = 0, pesoUsado = 0, nUsadas = 0
+      const reemplazos = []
+      for (const m of aplicables) {
+        const e = resueltas[m.k][i]
+        if (!e) continue
+        const p = percentil(e.valor, pool[e.campo], m.menor)
+        if (p == null) continue
+        suma += p * m.peso
+        pesoUsado += m.peso
+        nUsadas++
+        if (e.alt) reemplazos.push(`${m.k}→${e.campo}`)
+      }
+      out[s.symbol] = nUsadas >= MIN_METRICAS
+        ? { score: Math.round((suma / pesoUsado) * 10) / 10,
+            nUsadas, nAplicables: aplicables.length, reemplazos }
+        : { score: null, nUsadas, nAplicables: aplicables.length, reemplazos }
+    })
   }
   return out
+}
+
+/** El puntaje suelto, para el código que solo quiere el número. */
+export function soloScore(scores) {
+  return Object.fromEntries(
+    Object.entries(scores).map(([k, v]) => [k, v && v.score]))
 }
 
 /**
@@ -74,11 +164,16 @@ export function sugerirReemplazos(ticker, stocks, scores, enCartera,
   const propio = stocks.find(s => s.symbol === ticker)
   const excluidos = new Set([...(enCartera || []), ticker])
   const evitar = new Set(evitarSectores)
+  // `scores[x]` ya NO es un numero suelto sino {score, nUsadas, ...}: hace falta
+  // la cobertura aguas arriba. Se lee siempre por este helper para que no quede
+  // ningun `scores[x] - scores[y]` comparando objetos, que en JS da NaN sin
+  // avisar y ordena cualquier cosa.
+  const pts = sym => scores[sym]?.score ?? null
   const elegibles = stocks.filter(s =>
-    s.hasCedear && !excluidos.has(s.symbol) && scores[s.symbol] != null)
+    s.hasCedear && !excluidos.has(s.symbol) && pts(s.symbol) != null)
 
   const mejorDe = lista => lista
-    .slice().sort((a, b) => scores[b.symbol] - scores[a.symbol])[0] || null
+    .slice().sort((a, b) => pts(b.symbol) - pts(a.symbol))[0] || null
 
   // Un papel de la cartera puede no estar en `stocks` — es lo que pasa con los
   // CEDEAR de afuera del S&P 500. Sin este respaldo se quedaba sin sector y el
@@ -95,11 +190,15 @@ export function sugerirReemplazos(ticker, stocks, scores, enCartera,
 
   const armar = s => s && ({
     symbol: s.symbol, name: s.name, sector: s.sector,
-    score: scores[s.symbol], pe: s.pe, roe: s.roe, netMargin: s.netMargin,
+    score: pts(s.symbol), pe: s.pe, roe: s.roe, netMargin: s.netMargin,
+    // Cobertura del candidato: sin esto el documento ofrecia un reemplazo con
+    // 3 de 6 metricas al lado de uno con 6 de 6, como si valieran lo mismo.
+    metricas: `${scores[s.symbol]?.nUsadas ?? 0}/${scores[s.symbol]?.nAplicables ?? 6}`,
+    reemplazos: scores[s.symbol]?.reemplazos || [],
   })
 
   return {
-    ticker, score: scores[ticker] ?? null, sector,
+    ticker, score: pts(ticker), sector,
     mismoSector: armar(mismoSector),
     otroSector: armar(otroSector),
   }
@@ -210,4 +309,60 @@ export function planRotacion(informes, stocks, scores) {
     sectoresPesados,
     porTicker: Object.fromEntries(filas.map(f => [f.ticker, f])),
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POOL DE CANDIDATOS PARA LA TESIS DE CARTERA
+//
+// Es lo mismo que muestra F1 —las mejores por sector, solo CEDEAR— pero armado
+// acá para no depender de que el screener haya corrido.
+//
+// Por que un tope por sector y no "todos los CEDEAR":
+//   Los candidatos VAN DENTRO DEL PROMPT, y ahi cada papel cuesta tokens en
+//   cada llamada. Los 150 CEDEAR son ~4.500 tokens; los 5 mejores por sector
+//   son ~55 papeles y ~1.650. El modelo no necesita el padron completo: necesita
+//   los mejores de cada rubro para poder elegir.
+//
+// Por que se excluye la cartera ANTES de cortar y no despues:
+//   Si se corta primero y se excluye despues, un sector donde el cliente ya
+//   tiene 3 de los 5 mejores queda con 2 candidatos. Excluyendo primero,
+//   siempre quedan 5 candidatos REALES.
+//
+// Sectores chicos: Real Estate tiene 1 CEDEAR y Utilities 3. Devuelven 1 y 3.
+// No es un error, es todo lo que existe.
+export const CANDIDATOS_POR_SECTOR = 5
+
+/**
+ * @param stocks     el snapshot completo (sp500_fundamentals)
+ * @param scores     lo que devuelve scoresPorSector
+ * @param enCartera  tickers que el cliente ya tiene (se excluyen)
+ * @param porSector  cuantos por sector (default CANDIDATOS_POR_SECTOR)
+ */
+export function candidatosRotacion(stocks, scores, enCartera = [],
+                                   porSector = CANDIDATOS_POR_SECTOR) {
+  const ya = new Set(enCartera)
+  const pts = sym => scores[sym]?.score ?? null
+  const grupos = {}
+  for (const s of stocks) {
+    if (!s.sector || !s.hasCedear || ya.has(s.symbol)) continue
+    if (pts(s.symbol) == null) continue
+    ;(grupos[s.sector] ||= []).push(s)
+  }
+  const out = []
+  for (const [sector, lista] of Object.entries(grupos)) {
+    lista
+      // Desempate alfabetico: dos corridas con los mismos datos tienen que dar
+      // el mismo documento. Sin esto el orden depende del sort del navegador.
+      .sort((a, b) => pts(b.symbol) - pts(a.symbol) || a.symbol.localeCompare(b.symbol))
+      .slice(0, porSector)
+      .forEach(s => out.push({
+        ticker: s.symbol,
+        nombre: s.name,
+        sector,
+        puntaje: pts(s.symbol),
+        metricas: `${scores[s.symbol].nUsadas}/${scores[s.symbol].nAplicables}`,
+        reemplazos: scores[s.symbol].reemplazos,
+      }))
+  }
+  return out.sort((a, b) => a.sector.localeCompare(b.sector) || b.puntaje - a.puntaje)
 }

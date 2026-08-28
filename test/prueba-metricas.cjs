@@ -116,21 +116,22 @@ const g3 = [
 ];
 const r3 = API.puntuarGrupo(g3, 'X', API.norm);
 const cC = r3.find(x => x.symbol === 'C');
-// Ojo: `usando` solo se llena si la metrica ADEMAS puntuo. Acá C es el unico
-// con ROA en el pool, asi que norm devuelve null y `usando` queda vacio -- que
-// es lo correcto. Se verifica la resolucion en la funcion, no en el resultado.
 chequear('C resuelve a ROA como reemplazo',
   API.metricaEfectiva(g3[2], mRoe, 'X').campo === 'roa');
-// Con solo un valor en el pool de ROA, norm devuelve null (hace falta n>=2).
-chequear('con un solo ROA en el pool la metrica no puntua (n<2), no se cuela contra los ROE',
-  cC.nUsed === 5, `nUsed=${cC.nUsed}`);
-const g3b = g3.map(s => s.symbol === 'B' ? { ...s, roe: null } : s);
-const r3b = API.puntuarGrupo(g3b, 'X', API.norm);
-const bB = r3b.find(x => x.symbol === 'B'), cC2 = r3b.find(x => x.symbol === 'C');
-chequear('con DOS en el pool de ROA, ambos puntuan entre si',
-  bB.usando.roe === 'roa' && cC2.usando.roe === 'roa' && bB.nUsed === 6 && cC2.nUsed === 6);
-chequear('y B (ROA 11) le gana a C (ROA 10) en esa metrica',
-  API.norm([11,10], 11, true) > API.norm([11,10], 10, true));
+// ⚠️ Este caso ANTES daba por bueno que C perdiera la metrica: el pool del
+// reemplazo eran solo los que usan ROA, o sea uno, y norm devolvia null.
+// Se descubrio probando sugerencias.js que eso esta MAL: el ROA existe para
+// TODO el sector, no solo para los de patrimonio negativo. Ahora el pool es
+// todo el sector, C puntua, y la cobertura no se pierde por ser el unico.
+chequear('C SI puntua: su ROA se compara contra los ROA de todo el sector',
+  cC.nUsed === 6, `nUsed=${cC.nUsed}`);
+chequear('y lo marca como reemplazo', cC.usando.roe === 'roa', JSON.stringify(cC.usando));
+// Lo que sigue prohibido: mezclar escalas. El ROA de C (10) NO se compara
+// contra los ROE (30 y 40); si asi fuera, saldria ultimo.
+chequear('el ROA de C no se compara contra los ROE (no sale ultimo por escala)',
+  API.norm([9, 11, 10], 10, true) === 0.5, `${API.norm([9,11,10],10,true)}`);
+chequear('B (ROA 11) le gana a C (ROA 10) dentro del pool de ROA',
+  API.norm([9,11,10], 11, true) > API.norm([9,11,10], 10, true));
 
 // ── 4. Bancos: "no aplica", distinto de "falta" ─────────────────────────────
 console.log('\n4. Financials: no aplica != falta el dato');
@@ -161,10 +162,9 @@ for (const r of rTech) {
   const res = API.FUND_METRICS.map(m => ({ m, e: API.metricaEfectiva(r, m, 'Technology') }));
   for (const { m, e } of res) {
     if (e.campo == null) continue;
-    const vals = gTech.map(s => {
-      const x = API.metricaEfectiva(s, m, 'Technology');
-      return x.campo === e.campo ? x.valor : null;
-    });
+    // El pool es TODO el sector que tenga ese campo (ver el cambio del 28/08),
+    // no solo los que lo usan como reemplazo.
+    const vals = gTech.map(s => s[e.campo]);
     const n = API.norm(vals, e.valor, m.hb);
     if (n != null) { sc += n * m.w; tw += m.w; }
   }

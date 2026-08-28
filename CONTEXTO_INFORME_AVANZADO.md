@@ -3204,6 +3204,104 @@ que es como nacieron los dos `norm()` de App.jsx.
 
 ---
 
+## ✅ PASO 1 DE LA TESIS DE CARTERA — `sugerencias.js` al día (28/08/2026)
+
+Antes de conectar la tesis había que resolver que `sugerencias.js` —de donde
+salen los candidatos de rotación— **reimplementaba** el criterio de F1 y estaba
+desactualizado. Ya está.
+
+### Lo que se corrigió
+
+| | antes | ahora |
+|---|---|---|
+| promedio de percentiles | **simple** | **ponderado** (0,20/0,15/0,22/0,13/0,15/0,15) |
+| reemplazos P/S · ROA · DN/EBITDA | no | **sí** |
+| `evEbitda` en bancos | contaba | **no aplica**, denominador 5 |
+| lo que devuelve | un número | `{score, nUsadas, nAplicables, reemplazos}` |
+
+El cambio de forma de `scores` era el riesgo del paso (es el mismo tipo de
+cambio de contrato que rompió el informe con los acentos), así que se buscaron
+**todos** los consumidores: `scores` solo viaja App.jsx → Cartera.jsx →
+`planRotacion` → `sugerirReemplazos`, todo dentro del módulo. Se agregó un
+helper `pts()` para que no quede ningún `scores[a] - scores[b]` restando
+objetos, que en JS da `NaN` sin avisar y ordena cualquier cosa.
+
+### 🔴 Y apareció un bug de pool — en los DOS archivos
+
+Al probar los reemplazos, **MO puntuaba 93,8 con 3 de 6 métricas y encabezaba
+Consumer Staples.** Los reemplazos no se le aplicaban. El motivo:
+
+> El pool de comparación de un reemplazo eran **solo los papeles que usan ese
+> mismo reemplazo**. En Consumer Staples los únicos con patrimonio negativo son
+> **MO y PM: un pool de dos.** `percentil` exige cinco → devolvía `null` → el
+> reemplazo se caía **en silencio** → MO quedaba con 3 métricas y, justamente
+> por eso, con el puntaje más alto del sector.
+
+En Consumer Discretionary hay 11 con patrimonio negativo, así que el pool
+alcanzaba y MCD y BKNG sí funcionaban. **El bug solo aparecía en los sectores
+con pocos casos**, que es por qué no se vio antes.
+
+**El arreglo:** el pool de un campo es **todo el sector que tenga ese campo**,
+no solo los que lo usan como reemplazo. El P/S existe para todas las empresas,
+no solo para las de patrimonio negativo. Es a la vez más correcto y hace que el
+pool alcance. Lo que sigue prohibido es mezclar **escalas** (un ROA contra
+ROEs) y eso se respeta: el pool se arma **por campo**.
+
+**`src/App.jsx` tenía el mismo bug**, oculto porque su umbral es 2 en vez de 5:
+no fallaba, devolvía un percentil sobre dos valores — que solo puede dar 0 o 1.
+**Un puntaje máximo o mínimo por sorteo, sin ningún aviso.** Corregido también.
+
+#### Cuánto movió
+
+- **En `sugerencias.js`**: el reemplazo de otro sector para XOM pasó de
+  **MO (93,8 con 3/6)** a **NEM (83 con 6/6)**. Un candidato falso por otro real.
+- **En F1**: **1 solo puesto de 55** (Healthcare: sale RMD, entra HCA). Chico,
+  pero el que estaba mal era el de antes.
+
+### 🆕 `candidatosRotacion()` — el pool para la tesis
+
+**Decisión de Marcos:** que los candidatos salgan de lo que da F1 —las mejores
+por sector, solo CEDEAR— y no de las 150, para ahorrar. **Correcto, y el ahorro
+está medido:**
+
+```
+todos los CEDEAR:     144 papeles  ~4.478 tokens
+top 5 por sector:      49 papeles  ~1.522 tokens
+ahorro por llamada:               ~2.956 tokens
+```
+
+Los candidatos **van dentro del prompt**, así que eso se paga en **cada**
+llamada. El modelo no necesita el padrón completo: necesita los mejores de cada
+rubro para poder elegir.
+
+Dos detalles de diseño que la prueba verifica:
+
+1. **Se excluye la cartera ANTES de cortar.** Si se cortara primero, un sector
+   donde el cliente ya tiene 3 de los 5 mejores quedaría con 2 candidatos. Así
+   siempre quedan 5 **reales**.
+2. **Desempate alfabético.** Dos corridas con los mismos datos tienen que dar el
+   mismo documento; sin eso el orden depende del `sort` del navegador.
+
+Sectores chicos: Real Estate devuelve 1 y Utilities 3. No es un error, es todo
+lo que hay.
+
+### Verificación
+
+- `test/prueba-sugerencias.cjs` — **31 comprobaciones**, NUEVO. Carga el módulo
+  real (parseando los `export` a un sandbox, sin build) y lo corre sobre las 503.
+- `test/prueba-metricas.cjs` — actualizado. **Tenía un caso que daba por bueno
+  el comportamiento viejo**: afirmaba que estaba bien que un papel perdiera la
+  métrica por ser el único con reemplazo en su sector. Ahora verifica lo
+  contrario, y que las escalas sigan sin mezclarse.
+
+> 📌 **Lección:** el bug del pool estaba en App.jsx desde que se escribió el
+> arreglo del patrimonio negativo, y su propia prueba lo daba por correcto.
+> Apareció recién al implementar lo mismo en otro archivo con otro umbral.
+> **Escribir el mismo criterio dos veces es caro, pero compararlos encuentra
+> cosas.**
+
+---
+
 ## 📦 PENDIENTE DE PUSH — lista acumulada
 
 Todo esto está escrito en la carpeta y **todavía no subido**. Verificar con
@@ -3212,6 +3310,17 @@ Todo esto está escrito en la carpeta y **todavía no subido**. Verificar con
 > Todo lo anterior (informe de cartera incluido) y el arreglo de Twelve Data en
 > `src/App.jsx` **ya fueron pusheados** por Marcos. Lo que sigue es la tanda del
 > **25/08/2026**: veredicto de 3 posiciones, foco en rotación y los CEDEARs.
+
+### Tanda de ahora (28/08) — tercera parte
+
+```
+src/informe/sugerencias.js   ponderado + reemplazos + candidatosRotacion + arreglo de pool
+src/App.jsx                  ⚠️ SCREENER — mismo arreglo de pool (mueve 1 puesto de 55)
+test/prueba-sugerencias.cjs  NUEVO — 31 comprobaciones
+test/prueba-metricas.cjs     actualizado (tenia un caso que validaba el bug)
+TESIS_CARTERA.md             diseño cerrado
+CONTEXTO_INFORME_AVANZADO.md
+```
 
 ### Tanda de ahora (28/08) — segunda parte
 

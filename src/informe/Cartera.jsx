@@ -1,9 +1,12 @@
 import React from 'react'
 import Informe, { QueRevisar } from './Informe.jsx'
-import { planRotacion, concentracionPorSector, SECTOR_PESADO_PCT } from './sugerencias.js'
+import TesisCartera from './tesisCartera.jsx'
+import { planRotacion, concentracionPorSector, SECTOR_PESADO_PCT,
+         candidatosRotacion } from './sugerencias.js'
 import { analizarCartera, stressTest, exposicion, CLASE_TEXTO, ESTADO_TEXTO,
          ACCION_PESO_TEXTO, ORIGEN_PESOS, PERFIL_POR_DEFECTO,
-         OBJETIVO_POR_DEFECTO, HORIZONTE_POR_DEFECTO } from './cartera.js'
+         OBJETIVO_POR_DEFECTO, HORIZONTE_POR_DEFECTO,
+         armarDatosTesis } from './cartera.js'
 import { C, F, semaforo, colorSeveridad, num, pct, fecha } from './estilos.js'
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -45,6 +48,12 @@ export default function Cartera({ informes, meta, stocks, scores, conAnexo,
   const stress = stressTest(cart)
   const expo = exposicion(cart)
 
+  // El bloque de datos para la tesis con IA. Es SOLO reempaquetar lo que ya se
+  // calculo arriba: si acá se calculara algo, habría dos fuentes de verdad y el
+  // texto podría contradecir la tabla que está en esta misma página.
+  const candidatos = candidatosRotacion(stocks, scores, validos.map(i => i.ticker))
+  const datosTesis = armarDatosTesis(cart, stress, candidatos, scores)
+
   const concentracion = concentracionPorSector(
     validos.map(i => ({ sector: i.sector })))
 
@@ -55,6 +64,12 @@ export default function Cartera({ informes, meta, stocks, scores, conAnexo,
   return (
     <div style={{ maxWidth: 940, margin: '0 auto', padding: '26px 22px 70px' }}>
       <Portada meta={meta} n={validos.length} cart={cart} />
+
+      {/* Va ARRIBA de todo y NO depende de `conAnexo`: es la lectura del
+          conjunto, que es lo primero que se quiere leer. Los botones por activo
+          siguen viviendo en el anexo, para profundizar en uno. */}
+      <TesisCartera datos={datosTesis} />
+
       {cart.hayPesos && expo && <Exposicion cart={cart} expo={expo} />}
       {cart.hayPesos && <Pesos cart={cart} />}
       <Afinidad cart={cart} />

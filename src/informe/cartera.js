@@ -601,3 +601,136 @@ export function stressTest(cart) {
                  'se leería igual de serio que los otros, y no lo es.',
   }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BLOQUE DE DATOS PARA LA TESIS DE CARTERA
+//
+// Acá NO se calcula nada nuevo: se junta y se renombra lo que `analizarCartera`
+// y `stressTest` ya devolvieron. Ese es todo el punto del diseño — el código
+// decide los números y el modelo solo los explica. Si esta función calculara
+// algo, habría dos fuentes de verdad y el texto podría contradecir la tabla
+// que está tres centímetros más arriba en la misma página.
+//
+// Las claves salen en snake_case y en castellano porque son las que el prompt
+// nombra. Cambiar una acá sin cambiarla en `api/informe.py` deja al modelo
+// leyendo un campo que no existe, y eso NO da error: da una tesis que ignora
+// ese dato en silencio. Es exactamente lo que pasó con el pase de acentos.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Redondeo a un decimal, tolerante a null. */
+const r1 = v => (v == null || !isFinite(v)) ? null : Math.round(v * 10) / 10
+
+// ⚠️ `scores` es OBLIGATORIO aunque el parámetro tenga default.
+// `metricas_usadas` y `reemplazos` NO están en los activos de analizarCartera:
+// vienen de `scoresPorSector()` en sugerencias.js, indexados por símbolo. Sin
+// pasarlos, esos dos campos salen null, el modelo no sabe de qué papeles tiene
+// pocos datos, y la CONFIANZA que declara deja de estar atada a nada medido.
+// Y no daría ningún error: daría una tesis con confianza "alta" en todo.
+export function armarDatosTesis(cart, estres, candidatos = [], scores = {}) {
+  if (!cart || !Array.isArray(cart.activos)) return null
+
+  const exp = exposicion(cart)
+  const cob = sym => {
+    const s = scores[sym]
+    if (!s || s.nUsadas == null) return { metricas: null, reemplazos: [] }
+    return { metricas: `${s.nUsadas}/${s.nAplicables}`,
+             reemplazos: s.reemplazos || [] }
+  }
+  // El peor escenario del stress test, que es el que contesta la pregunta que
+  // todo cliente hace primero: "¿cuánto puedo perder?".
+  const peor = (estres?.escenarios || [])[0] || null
+
+  return {
+    perfil: cart.perfil?.nombre || cart.perfil?.clave || null,
+    objetivo: cart.objetivo?.nombre || null,
+    horizonte: cart.horizonte?.nombre || null,
+
+    cartera: {
+      valor_total_usd: cart.valorTotalCartera ?? cart.valorTotal ?? null,
+      cobertura_analizada_pct: r1(cart.cobertura),
+      // Si la cartera está cubierta solo en parte, el modelo TIENE que saberlo:
+      // si no, habla de porcentajes que suman 100 sobre un universo que no es
+      // la cartera del cliente.
+      es_parcial: !!cart.parcial,
+      // Los nombres salen de `exposicion()`: `variable` y `tope`, no
+      // `rentaVariablePct`. Un campo mal escrito acá sale null sin avisar.
+      renta_variable_pct: exp?.variable ?? null,
+      tope_renta_variable_pct: exp?.tope ?? null,
+      resto: (cart.base?.resto || [])
+        .filter(c => c.pct > 0)
+        .map(c => ({ clase: c.nombre || c.clave, pct: r1(c.pct) })),
+    },
+
+    topes: {
+      por_posicion: cart.perfil?.maxPosicion ?? null,
+      por_sector: cart.perfil?.maxSector ?? null,
+      equiponderado: r1(cart.pesoEquiponderado),
+    },
+
+    estres: peor ? {
+      peor_escenario: peor.titulo,
+      caida_pct: peor.caidaPct,
+      caida_usd: peor.caidaUSD,
+    } : null,
+
+    sectores: (cart.sectores || [])
+      .filter(s => s.pct > 0)
+      .map(s => ({
+        sector: s.sector, pct: r1(s.pct), tope: r1(s.tope),
+        excede: !!s.excede, exceso_usd: s.excesoUSD ?? null,
+      })),
+
+    posiciones: (cart.activos || []).map(a => ({
+      ticker: a.ticker,
+      nombre: a.nombre,
+      sector: a.sector,
+      clase: a.clase,
+      puntaje_fundamental: a.puntajeFundamental,
+      afinidad_objetivo: a.afinidad,
+      banderas_altas: a.banderas,
+      // Cobertura de datos: es lo que ata la CONFIANZA que el modelo declara a
+      // algo medido, en vez de a lo convencido que suene. Sin esto, "confianza
+      // alta" vuelve siempre.
+      metricas_usadas: cob(a.ticker).metricas,
+      reemplazos: cob(a.ticker).reemplazos,
+      peso_pct: r1(a.peso),
+      tope_pct: r1(a.topeClase),
+      estado: a.estado,
+      exceso_pct: r1(a.excesoPct),
+      exceso_usd: a.excesoUSD ?? null,
+      // Para poder expresar el recorte en ACCIONES ENTERAS: no se venden
+      // fracciones, y "recortar USD 40" de un papel de USD 500 no se opera.
+      acciones: a.cantidad ?? null,
+      ganancia_pct: r1(a.gananciaPct),
+      accion_calculada: a.accion,
+      toma_ganancia: !!a.tomaGanancia,
+      beta: a.beta,
+    })),
+
+    candidatos: (candidatos || []).map(c => ({
+      ticker: c.ticker, sector: c.sector,
+      puntaje: c.puntaje, metricas: c.metricas,
+    })),
+  }
+}
+
+/**
+ * Huella de la cartera, para el caché.
+ *
+ * Cambia si cambia CUALQUIER cosa que movería la tesis: los papeles, sus pesos,
+ * el perfil, el objetivo o el horizonte. NO cambia con el valor absoluto de la
+ * cartera —si todo sube 3% el análisis es el mismo— ni con el orden en que
+ * llegaron los activos.
+ *
+ * El peso se redondea a un decimal a propósito: sin eso, un centavo de
+ * diferencia en la cotización invalidaría el caché y la tesis se volvería a
+ * pagar cada vez que se abre la página.
+ */
+export function huellaCartera(datos) {
+  if (!datos) return null
+  const posiciones = (datos.posiciones || [])
+    .map(p => `${p.ticker}:${p.peso_pct}`)
+    .sort()
+    .join(',')
+  return [datos.perfil, datos.objetivo, datos.horizonte, posiciones].join('|')
+}

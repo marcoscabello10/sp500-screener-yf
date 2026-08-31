@@ -232,6 +232,75 @@ async function main() {
   chequear('con una sola posicion NO calcula nada y explica por que',
     r4.disponible === false && r4.motivo, JSON.stringify(r4));
 
+  // ── El benchmark y los pares (31/08/2026) ────────────────────────────────
+  // Dos lecturas que salen de la MISMA matriz que ya se calculaba: no cuestan
+  // una llamada nueva ni un token. SPY estaba en el snapshot desde el primer
+  // dia sin compararse con nada.
+  console.log('\n7. Contra el indice (SPY)');
+  const b = r.benchmark;
+  chequear('el benchmark se calcula', b != null);
+  if (b) {
+    console.log(`     cartera ${b.retorno_cartera_pct}% / vol ${b.volatilidad_cartera_pct}%`
+              + `   vs   SPY ${b.retorno_benchmark_pct}% / vol ${b.volatilidad_benchmark_pct}%`);
+    console.log(`     beta ${b.beta_vs_benchmark} · corr ${b.correlacion_vs_benchmark}`
+              + ` · ret/vol ${b.retorno_sobre_volatilidad} vs ${b.retorno_sobre_volatilidad_benchmark}`);
+    chequear('el exceso es la resta de los dos retornos',
+      Math.abs(b.exceso_pct - (b.retorno_cartera_pct - b.retorno_benchmark_pct)) <= 0.11,
+      `${b.exceso_pct}`);
+    chequear('la volatilidad coincide con la que ya se reportaba aparte',
+      b.volatilidad_cartera_pct === r.volatilidad_cartera_pct,
+      `${b.volatilidad_cartera_pct} vs ${r.volatilidad_cartera_pct}`);
+    // Una cartera de cinco grandes del S&P TIENE que correlacionar fuerte con
+    // el indice. Si esto diera 0,2 habria un error de alineacion de fechas,
+    // que es el bug clasico de este tipo de cuenta y no da ningun error.
+    chequear('correlaciona fuerte con el indice (si no, las fechas no alinean)',
+      b.correlacion_vs_benchmark > 0.6, `${b.correlacion_vs_benchmark}`);
+    chequear('la beta es de un orden creible',
+      b.beta_vs_benchmark > 0.3 && b.beta_vs_benchmark < 2.5,
+      `${b.beta_vs_benchmark}`);
+    chequear('la ventana es la misma que la del resto del analisis',
+      b.ventana_dias === r.ventana_dias);
+    chequear('el ret/vol es el cociente y nada mas',
+      Math.abs(b.retorno_sobre_volatilidad
+               - b.retorno_cartera_pct / b.volatilidad_cartera_pct) < 0.02);
+  }
+
+  console.log('\n8. Pares que son una sola apuesta');
+  chequear('la lista existe siempre (vacia es una respuesta valida)',
+    Array.isArray(r.pares_correlacionados));
+  chequear('en esta cartera diversificada no hay ninguno',
+    r.pares_correlacionados.length === 0,
+    JSON.stringify(r.pares_correlacionados));
+
+  // Una cartera armada A PROPOSITO con un par obvio: dos petroleras.
+  const PETRO = { activos: [
+    { ticker: 'XOM', peso: 12, topeClase: 12, sector: 'Energy' },
+    { ticker: 'CVX', peso: 10, topeClase: 12, sector: 'Energy' },
+    { ticker: 'KO',  peso: 10, topeClase: 12, sector: 'Consumer Staples' },
+    { ticker: 'JPM', peso: 10, topeClase: 12, sector: 'Financials' },
+  ] };
+  const rp = await Rg.analizarRiesgo(PETRO, []);
+  const par = rp.pares_correlacionados.find(
+    p => (p.a === 'XOM' && p.b === 'CVX') || (p.a === 'CVX' && p.b === 'XOM'));
+  chequear('XOM+CVX se detecta como una sola apuesta', par != null,
+    JSON.stringify(rp.pares_correlacionados));
+  if (par) {
+    console.log(`     ${par.a}+${par.b} corr ${par.correlacion} `
+              + `peso combinado ${par.peso_combinado_pct}%`);
+    chequear('el peso combinado es la suma de los dos',
+      Math.abs(par.peso_combinado_pct - 22) < 0.11, `${par.peso_combinado_pct}`);
+    // ESTE es el punto de toda la seccion: ninguno de los dos excede el tope
+    // de 12% por su cuenta, y juntos son 22%. La tabla de pesos no lo muestra.
+    chequear('el combinado excede el tope aunque ninguno lo exceda solo',
+      par.peso_combinado_pct > 12);
+    chequear('se marca que son del mismo sector', par.mismo_sector === true);
+    chequear('la correlacion supera el umbral declarado',
+      par.correlacion >= Rg.CORR_PAR_ALTA);
+  }
+  chequear('los pares vienen ordenados por peso combinado',
+    rp.pares_correlacionados.every((p, i) => i === 0
+      || rp.pares_correlacionados[i - 1].peso_combinado_pct >= p.peso_combinado_pct));
+
   resumen();
 }
 

@@ -1594,6 +1594,29 @@ mismos números están en una tabla, en la misma página que va a leer el usuari
   · Tu trabajo sobre el plan es el ORDEN (qué primero, qué puede esperar) y el
     PORQUÉ. La cuenta no.
 
+CONTRA QUÉ SE COMPARA — EL BENCHMARK
+Cuando venga `riesgo.benchmark`, trae cómo le fue a ESTA cartera contra el
+índice (SPY) en la misma ventana: retorno, volatilidad, beta, correlación y
+retorno sobre volatilidad de los dos.
+  · Es la comparación que contesta la pregunta que el cliente hace igual:
+    ¿esto rinde más que comprar el índice y quedarse quieto?
+  · `retorno_sobre_volatilidad` es lo que hay que mirar, NO el retorno solo.
+    Rendir más tomando el doble de riesgo no es rendir más.
+  · `beta_vs_benchmark` mayor a 1 = amplifica al índice; menor a 1 = amortigua.
+  · ⚠️ Es retorno HISTÓRICO de la ventana, NO una proyección. Decilo cada vez
+    que lo menciones. Que haya rendido 24% no significa que vaya a rendir 24%.
+
+PARES QUE SON UNA SOLA APUESTA
+`riesgo.pares_que_son_una_apuesta` lista los pares con correlación ≥ 0,70, con
+su `peso_combinado_pct`.
+  · Dos papeles que se mueven juntos NO son dos posiciones: son una del tamaño
+    de las dos. Compará ese peso combinado contra el tope, no cada uno por
+    separado.
+  · Si `mismo_sector` es falso es MÁS grave, no menos: la tabla de sectores no
+    lo muestra y el cliente cree que diversificó.
+  · Si la lista viene vacía, decilo en una línea — es una buena noticia y hoy
+    nadie se la dice.
+
 EL RETORNO ESPERADO ES DÉBIL Y HAY QUE TRATARLO ASÍ
 El único retorno esperado disponible es el precio objetivo de los analistas a
 12 meses. Es un predictor pobre. Usalo como contexto, nunca como el motivo
@@ -1682,6 +1705,8 @@ pasa en el escenario de estrés que te dan.
 Y dónde está concentrado el RIESGO, que casi nunca coincide con dónde está
 concentrado el dinero. Si la volatilidad actual y la del objetivo difieren,
 decí las dos.
+Va también la comparación contra el índice y, si los hay, los pares que son una
+sola apuesta con su peso combinado.
 
 ## 3. Posición por posición
 UNA LÍNEA por posición, en este formato exacto y sin párrafos:
@@ -1859,9 +1884,18 @@ def estimar_cartera(n_posiciones, proveedor='anthropic', modo=None):
     # una ilusion.
     #
     # Medido el 31/08 sobre `_resumen_cartera()` con carteras reales de 3, 5,
-    # 10, 15, 20 y 25 posiciones (955, 1.520, 2.374, 2.913, 3.602 y 4.275
-    # tokens). La recta de abajo queda por ENCIMA de las seis.
-    entrada = 800 + 160 * n
+    # 10, 15, 20 y 25 posiciones. La recta queda por ENCIMA de las seis.
+    #
+    #   sin benchmark ni pares:  955 · 1.520 · 2.374 · 2.913 · 3.602 · 4.275
+    #   con los dos (actual)  : 1.050 · 1.616 · 2.469 · 3.031 · 3.720 · 4.422
+    #
+    # ⚠️ Los bloques `benchmark` (82 tokens) y `pares_que_son_una_apuesta` (24)
+    # movieron el payload ~110 tokens y la recta anterior (800 + 160n) pasó a
+    # subestimar en 5 y 10 posiciones. La guarda de `test_tesis_cartera.py`
+    # NO lo cazó porque tenía adentro las mediciones viejas: una guarda cuyos
+    # numeros no se actualizan junto con el payload deja de guardar nada.
+    # Al tocar el payload hay que volver a medir Y actualizar los dos lugares.
+    entrada = 850 + 165 * n
     # La salida crecio un poco: la seccion 1 cierra con los invalidation points
     # y las lineas de la seccion 3 llevan monto y acciones.
     salida = 1150 + 55 * n

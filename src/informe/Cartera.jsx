@@ -33,7 +33,7 @@ import { C, F, semaforo, colorSeveridad, num, pct, fecha } from './estilos.js'
 // ─────────────────────────────────────────────────────────────────────────────
 
 export default function Cartera({ informes, meta, stocks, scores, conAnexo,
-                                 posiciones, otros }) {
+                                 posiciones, otros, mercado = null }) {
   const validos = informes.filter(i => i && !i.error)
 
   // Los dos puntajes, calculados por separado y a proposito:
@@ -106,7 +106,7 @@ export default function Cartera({ informes, meta, stocks, scores, conAnexo,
       {planPesos && <ActualVsObjetivo plan={planPesos} />}
       <Afinidad cart={cart} />
       {stress && <Stress cart={cart} stress={stress} />}
-      <Rotacion plan={plan} total={validos.length} cart={cart} />
+      <Rotacion plan={plan} total={validos.length} cart={cart} mercado={mercado} />
       <Resumen informes={validos} plan={plan} />
       <Composicion datos={concentracion} />
       {riesgosAltos.length > 0 && <PuntosDeAtencion riesgos={riesgosAltos} />}
@@ -549,7 +549,7 @@ function Stress({ cart, stress }) {
   )
 }
 
-function Rotacion({ plan, total, cart }) {
+function Rotacion({ plan, total, cart, mercado = null }) {
   const { sacar, mantener, reforzar, sinDatos, sectoresPesados } = plan
   const nada = sacar.length === 0
 
@@ -574,6 +574,26 @@ function Rotacion({ plan, total, cart }) {
                : `Una acción por activo, ordenada por urgencia. Sale solo de los
                   fundamentales: esta cartera no trae cantidades, así que el
                   informe no sabe cuánto pesa cada papel.`}>
+
+      {/* De cuántos papeles se está eligiendo, y dónde no hay de dónde elegir.
+          Antes el informe ofrecía "el mejor de Real Estate" sin decir que era
+          el ÚNICO de Real Estate — una elección de uno no es una elección. */}
+      {mercado?.resumen && (
+        <p style={{ fontSize: 12.5, color: C.tenue, marginTop: -4,
+                    marginBottom: 12 }}>
+          Las alternativas salen de los <b>{mercado.resumen.operables} papeles
+          que se pueden comprar como CEDEAR</b> ({mercado.resumen.deAfuera} de
+          ellos fuera del S&amp;P 500), puntuados contra
+          las {mercado.resumen.total} de su mismo sector.
+          {mercado.resumen.sectoresSinAlternativa.length > 0 && (
+            <> <span style={{ color: C.ambar }}>
+              En {mercado.resumen.sectoresSinAlternativa.join(' y ')} no hay
+              alternativa real: son menos de tres papeles operables, así que ahí
+              la única decisión posible es quedarse o salir del sector.
+            </span></>
+          )}
+        </p>
+      )}
 
       <div className="evitar-corte" style={{
         display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 16 }}>
@@ -1013,6 +1033,9 @@ function ActualVsObjetivo({ plan }) {
         </tbody>
       </table>
 
+      {plan.benchmark && <ContraElIndice b={plan.benchmark} />}
+      {plan.pares && plan.pares.length > 0 && <UnaSolaApuesta pares={plan.pares} />}
+
       {mueve.length > 0 && (
         <p style={{ fontSize: 13.5, marginTop: 12 }}>
           <b>En total:</b> vender US$ {num(plan.venderUSD, 0)} y comprar
@@ -1034,6 +1057,108 @@ function ActualVsObjetivo({ plan }) {
         que esta tabla convive con el escenario de estrés, no lo reemplaza.
       </p>
     </Seccion>
+  )
+}
+
+// ── CONTRA EL ÍNDICE ────────────────────────────────────────────────────────
+// SPY estaba en el snapshot desde el primer día (1.674 puntos) y no se
+// comparaba con nada. Sin benchmark, "rinde 24% con 16% de volatilidad" no se
+// puede juzgar: la pregunta que el cliente hace igual es si eso le gana a
+// comprar el índice y quedarse quieto.
+function ContraElIndice({ b }) {
+  const gana = b.retorno_sobre_volatilidad != null
+    && b.retorno_sobre_volatilidad_benchmark != null
+    && b.retorno_sobre_volatilidad > b.retorno_sobre_volatilidad_benchmark
+  const fila = (etiqueta, cart, idx, suf = '') => (
+    <tr>
+      <td style={{ color: C.tenue }}>{etiqueta}</td>
+      <td className="n" style={{ fontWeight: 600, color: C.titulo }}>
+        {cart != null ? `${num(cart, cart < 10 ? 2 : 1)}${suf}` : '—'}
+      </td>
+      <td className="n" style={{ color: C.tenue }}>
+        {idx != null ? `${num(idx, idx < 10 ? 2 : 1)}${suf}` : '—'}
+      </td>
+    </tr>
+  )
+  return (
+    <div className="evitar-corte" style={{ marginTop: 18 }}>
+      <h4 style={{ fontSize: 14.5, color: C.subtitulo, margin: '0 0 8px' }}>
+        Comparada con el índice
+      </h4>
+      <table style={{ maxWidth: 470 }}>
+        <thead>
+          <tr><th></th><th className="n">Esta cartera</th><th className="n">S&amp;P 500</th></tr>
+        </thead>
+        <tbody>
+          {fila('Rendimiento anual', b.retorno_cartera_pct, b.retorno_benchmark_pct, '%')}
+          {fila('Volatilidad', b.volatilidad_cartera_pct, b.volatilidad_benchmark_pct, '%')}
+          {fila('Rendimiento por unidad de riesgo',
+                b.retorno_sobre_volatilidad, b.retorno_sobre_volatilidad_benchmark)}
+        </tbody>
+      </table>
+      <p style={{ fontSize: 12.5, color: C.tenue, marginTop: 8 }}>
+        Beta {num(b.beta_vs_benchmark, 2)} —{' '}
+        {b.beta_vs_benchmark > 1.05 ? 'amplifica los movimientos del índice'
+          : b.beta_vs_benchmark < 0.95 ? 'los amortigua'
+          : 'se mueve casi igual que el índice'}.{' '}
+        <b style={{ color: gana ? C.verde : C.ambar }}>
+          {gana ? 'Paga mejor el riesgo que toma que el índice.'
+                : 'El índice paga mejor el riesgo que toma.'}
+        </b>{' '}
+        ⚠️ Todo esto es <b>lo que pasó</b> en los últimos {b.ventana_dias} días de
+        rueda, no una proyección. La última fila divide rendimiento por
+        volatilidad y no descuenta ninguna tasa libre de riesgo — cuál es la tasa
+        libre de riesgo para un argentino es otra discusión, y este informe no la
+        zanja.
+      </p>
+    </div>
+  )
+}
+
+// ── DOS PAPELES, UNA SOLA APUESTA ───────────────────────────────────────────
+// La "concentración temática" del prompt original de Marcos, que nunca se había
+// implementado. Es la única lectura del informe que NO se puede deducir de la
+// tabla de sectores: dos papeles de sectores distintos pueden moverse juntos, y
+// ahí el cliente cree que diversificó cuando no lo hizo.
+function UnaSolaApuesta({ pares }) {
+  return (
+    <div className="evitar-corte" style={{ marginTop: 18 }}>
+      <h4 style={{ fontSize: 14.5, color: C.subtitulo, margin: '0 0 8px' }}>
+        Posiciones que se mueven juntas
+      </h4>
+      <p style={{ fontSize: 13.5, marginTop: 0 }}>
+        Estos pares se movieron casi igual durante los últimos tres años. No son
+        dos posiciones: son <b>una sola apuesta</b> del tamaño de las dos, así que
+        el peso que hay que comparar contra el tope es el combinado.
+      </p>
+      <table style={{ maxWidth: 580 }}>
+        <thead>
+          <tr>
+            <th>Par</th><th className="n">Correlación</th>
+            <th className="n">Peso combinado</th><th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {pares.map(p => (
+            <tr key={`${p.a}-${p.b}`}>
+              <td style={{ fontFamily: F.num, fontWeight: 600, color: C.titulo }}>
+                {p.a} + {p.b}
+              </td>
+              <td className="n">{num(p.correlacion, 2)}</td>
+              <td className="n" style={{ fontWeight: 600 }}>
+                {num(p.peso_combinado_pct, 1)}%
+              </td>
+              <td style={{ fontSize: 12.5,
+                           color: p.mismo_sector ? C.tenue : C.ambar }}>
+                {p.mismo_sector
+                  ? 'mismo sector'
+                  : 'sectores distintos — la tabla de sectores no lo muestra'}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   )
 }
 

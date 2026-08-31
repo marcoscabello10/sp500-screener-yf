@@ -207,6 +207,114 @@ function aplicarTopes(w, topes, iteraciones = 40) {
  * @param candidatos  los de candidatosRotacion(), para medir su aporte
  * @returns null si no hay histórico o no alcanzan los papeles con datos.
  */
+// ── EL BENCHMARK ────────────────────────────────────────────────────────────
+// SPY está en el snapshot desde el primer día (1.674 puntos) y no se comparaba
+// con nada. Era la capa 3 del marco de Marcos y el dato más barato que quedaba
+// sin usar: sin un benchmark, "la cartera rinde 12% con 16% de volatilidad" no
+// se puede juzgar. Con él, la pregunta pasa a ser la correcta: ¿esto paga el
+// riesgo que toma, comparado con no hacer nada y comprar el índice?
+//
+// ⚠️ El retorno es HISTÓRICO, de la ventana del snapshot. No es una proyección
+// y el informe tiene que decirlo así. Se muestra al lado de la volatilidad
+// justamente para que no se lea solo.
+function contraBenchmark(snap, desde, largo, w, con, cov, varCartera) {
+  const serie = snap.series?.SPY
+  if (!serie) return null
+  const rb = retornosDe(serie, desde)
+  if (rb.length < largo) return null
+  const b = rb.slice(-largo)
+
+  const volB = anual(covarianza(b, b))
+  // Retorno de la cartera: la combinación lineal de los retornos diarios con
+  // los pesos actuales. Es lo que habría rendido ESTA cartera, no la suma de
+  // lo que rindió cada papel por su cuenta.
+  const rp = []
+  for (let t = 0; t < largo; t++) {
+    let x = 0
+    for (let i = 0; i < con.length; i++) x += w[i] * con[i].r.slice(-largo)[t]
+    rp.push(x)
+  }
+  const anualizar = (r) => (Math.pow(
+    r.reduce((a, x) => a * (1 + x), 1), 252 / r.length) - 1) * 100
+  const retP = anualizar(rp)
+  const retB = anualizar(b)
+
+  // Beta de la cartera contra el índice, y correlación. Beta 1 significa que se
+  // mueve igual; 0,7 que amortigua; 1,3 que amplifica.
+  const covPB = covarianza(rp, b)
+  const varB = covarianza(b, b)
+  const beta = varB > 0 ? covPB / varB : null
+  const corr = Math.sqrt(varCartera * varB) > 0
+    ? covPB / Math.sqrt(varCartera * varB) : null
+
+  const r1 = x => x == null ? null : Math.round(x * 10) / 10
+  const r2 = x => x == null ? null : Math.round(x * 100) / 100
+  return {
+    simbolo: 'SPY',
+    retorno_cartera_pct: r1(retP),
+    retorno_benchmark_pct: r1(retB),
+    exceso_pct: r1(retP - retB),
+    volatilidad_cartera_pct: r1(anual(varCartera)),
+    volatilidad_benchmark_pct: r1(volB),
+    beta_vs_benchmark: r2(beta),
+    correlacion_vs_benchmark: r2(corr),
+    // Retorno por unidad de riesgo, de los dos. Es la comparación que contesta
+    // "¿vale la pena esta cartera contra comprar el índice?" en un solo número.
+    // NO es un Sharpe: no se le resta la tasa libre de riesgo, porque cuál es
+    // la tasa libre de riesgo para un argentino es una discusión que este
+    // informe no tiene por qué zanjar.
+    retorno_sobre_volatilidad: r2(anual(varCartera) > 0 ? retP / anual(varCartera) : null),
+    retorno_sobre_volatilidad_benchmark: r2(volB > 0 ? retB / volB : null),
+    ventana_dias: largo,
+  }
+}
+
+// ── PARES QUE SON UNA SOLA APUESTA ──────────────────────────────────────────
+// La "concentración temática" del prompt original de Marcos, que nunca se había
+// implementado. Dos papeles con correlación 0,85 no son dos posiciones: son una
+// con el doble de tamaño, y ninguna tabla de pesos por sector lo muestra —
+// pueden estar en sectores distintos y seguir siendo la misma apuesta.
+//
+// EL UMBRAL ESTÁ MEDIDO, no elegido a ojo. Sobre 496 pares de 32 papeles
+// grandes con 3 años de retornos DIARIOS:
+//
+//     min -0,23 · p25 0,07 · mediana 0,15 · p75 0,28 · p90 0,44 · p95 0,71
+//
+// Las correlaciones diarias son MUCHO más bajas de lo que la intuición dice
+// (AAPL–MSFT da 0,35, no 0,8): el ruido de un día tapa el movimiento común.
+// Por eso 0,7 es el percentil ~94 y marca solo el 5% de los pares — y los que
+// marca son exactamente los que son una sola apuesta:
+//
+//     RIO–BHP 0,89 · XOM–CVX 0,82 · KGC–PAAS 0,81 · BAC–WFC 0,81 · GFI–HMY 0,81
+//
+// Esto se volvió MUCHO más útil al sumar los CEDEAR de afuera del índice: el
+// universo nuevo trae siete mineras (VALE, RIO, BHP, GFI, HMY, KGC, PAAS).
+// Tener tres se siente diversificado y es una sola posición.
+export const CORR_PAR_ALTA = 0.7
+
+function paresCorrelacionados(con, cov, w) {
+  const n = con.length
+  const out = []
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      const d = Math.sqrt(cov[i][i] * cov[j][j])
+      if (!(d > 0)) continue
+      const c = cov[i][j] / d
+      if (c < CORR_PAR_ALTA) continue
+      out.push({
+        a: con[i].ticker, b: con[j].ticker,
+        correlacion: Math.round(c * 100) / 100,
+        // Cuánto pesa la apuesta combinada. Es el número que convierte el dato
+        // en una decisión: dos papeles al 6% con correlación 0,8 son una
+        // posición del 12%, y ahí sí se puede comparar contra el tope.
+        peso_combinado_pct: Math.round((con[i].peso + con[j].peso) * 10) / 10,
+        mismo_sector: (con[i].sector || null) === (con[j].sector || null),
+      })
+    }
+  }
+  return out.sort((x, y) => y.peso_combinado_pct - x.peso_combinado_pct)
+}
+
 export async function analizarRiesgo(cart, candidatos = []) {
   const snap = await cargarHistorico()
   if (!snap) return { disponible: false, motivo: 'no está el histórico de precios' }
@@ -350,6 +458,10 @@ export async function analizarRiesgo(cart, candidatos = []) {
       limitado_por_tope: topeados.includes(i),
     })),
     candidatos: aporteCandidatos,
+    // Las dos lecturas que faltaban, y las dos son cuentas sobre la misma
+    // matriz que ya se calculo: no cuestan una llamada nueva ni un token.
+    benchmark: contraBenchmark(snap, desde, largo, w, con, cov, varActual),
+    pares_correlacionados: paresCorrelacionados(con, cov, w),
   }
 }
 

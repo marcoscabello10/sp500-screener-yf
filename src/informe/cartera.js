@@ -810,6 +810,13 @@ export function armarDatosTesis(cart, estres, candidatos = [], scores = {},
       cobertura_del_calculo_pct: riesgo.cobertura_pct,
       posiciones_sin_datos: (riesgo.sin_datos || []).map(s => s.ticker),
       topes_insuficientes: riesgo.topes_insuficientes,
+      // Capa 3: contra que se compara todo esto. Sin benchmark, "rinde 12% con
+      // 16% de volatilidad" no se puede juzgar.
+      benchmark: riesgo.benchmark,
+      // La "concentracion tematica": pares que se mueven juntos y por lo tanto
+      // son UNA apuesta con dos nombres. No lo muestra ninguna tabla de pesos
+      // por sector, porque pueden estar en sectores distintos.
+      pares_que_son_una_apuesta: riesgo.pares_correlacionados,
     } : { disponible: false, motivo: riesgo?.motivo || 'no se calculo' },
 
     // ── El plan, ya en numeros operables ────────────────────────────────────
@@ -940,6 +947,11 @@ export function planDePesos(cart, riesgo) {
       : null,
     coberturaPct: riesgo.cobertura_pct ?? null,
     topesInsuficientes: riesgo.topes_insuficientes || null,
+    // Viajan por acá para que la sección del informe lea UNA sola fuente. Si
+    // el componente fuera a buscarlos a `riesgo` por su lado, habría dos
+    // caminos hacia el mismo dato y uno se olvidaría de actualizar.
+    benchmark: riesgo.benchmark || null,
+    pares: riesgo.pares_correlacionados || [],
   }
 }
 

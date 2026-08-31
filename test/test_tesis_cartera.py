@@ -410,7 +410,12 @@ print(f'  Motor B completo    -> riesgo + plan + {len(d2["candidatos"])} '
 # Los valores de abajo se midieron sobre `_resumen_cartera()` con carteras
 # reales el 31/08/2026. Si se agrega un bloque nuevo al payload, esta prueba
 # falla y hay que volver a calibrar — que es exactamente lo que queremos.
-MEDIDO = {3: 955, 5: 1520, 10: 2374, 15: 2913, 20: 3602, 25: 4275}
+# Re-medido el 31/08 DESPUES de sumar `benchmark` y `pares_que_son_una_apuesta`.
+# Los valores anteriores (955, 1520, 2374, 2913, 3602, 4275) eran de antes de
+# esos dos bloques, y como eran MAS BAJOS que la realidad nueva, esta guarda
+# pasaba en verde mientras el estimador subestimaba de verdad. Si tocas el
+# payload: volve a medir esto, no alcanza con que la prueba siga pasando.
+MEDIDO = {3: 1050, 5: 1616, 10: 2469, 15: 3031, 20: 3720, 25: 4422}
 for n_pos, real in MEDIDO.items():
     est = I.estimar_cartera(n_pos, 'anthropic')['tokens_estimados']['entrada']
     chequear(est >= real,

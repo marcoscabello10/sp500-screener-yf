@@ -5,6 +5,7 @@ import Cartera from './Cartera.jsx'
 import { PERFILES, PERFIL_POR_DEFECTO, OBJETIVOS, OBJETIVO_POR_DEFECTO,
          HORIZONTES, HORIZONTE_POR_DEFECTO, CLASES_RESTO } from './cartera.js'
 import { scoresPorSector } from './sugerencias.js'
+import { armarUniverso } from './universo.js'
 import { C, F, CSS_GLOBAL } from './estilos.js'
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -59,6 +60,11 @@ export default function App() {
   const [stocks, setStocks] = useState([])
   const [universo, setUniverso] = useState([])
   const [completos, setCompletos] = useState(new Set())
+  // El detalle CRUDO, no solo los nombres. Antes se guardaban unicamente las
+  // claves (para marcar cuales tenian informe completo) y los fundamentales de
+  // los 130 CEDEAR de afuera del indice se tiraban a la basura despues de
+  // bajarlos. Son justamente los que faltaban en la rotacion.
+  const [detalle, setDetalle] = useState(null)
   const [datos, setDatos] = useState(null)
   const [cartera, setCartera] = useState(null)
   const [meta, setMeta] = useState(metaLeer)
@@ -72,7 +78,21 @@ export default function App() {
   const [cargando, setCargando] = useState(false)
   const [error, setError] = useState(null)
 
-  const scores = useMemo(() => scoresPorSector(stocks), [stocks])
+  // ── EL UNIVERSO OPERABLE ──────────────────────────────────────────────────
+  // `stocks` son las 504 del S&P. `detalle` trae ademas los 130 CEDEAR que no
+  // estan en el indice, con los mismos fundamentales. Hasta el 31/08 esos 130
+  // no entraban a ningun lado: aparecian en el buscador y no podian ser
+  // candidatos de rotacion, porque el pool que se puntua era solo `stocks`.
+  //
+  // Medido: de 51 candidatos, 28 son de este grupo (PBR, HMY, SBS, NVO, ABEV,
+  // BBD, VIST...). Mas de la mitad del abanico no existia.
+  const mercado = useMemo(() => armarUniverso(stocks, detalle),
+                          [stocks, detalle])
+  // Los percentiles se calculan sobre TODO (634), no solo sobre lo comprable:
+  // que un papel no cotice como CEDEAR no lo hace menos comparable como
+  // empresa. El filtro por CEDEAR vive en `candidatosRotacion`, que es donde
+  // corresponde — al ELEGIR, no al MEDIR.
+  const scores = useMemo(() => scoresPorSector(mercado.todos), [mercado])
 
   useEffect(() => {
     (async () => {
@@ -85,6 +105,7 @@ export default function App() {
         const r = await fetch('/data/informe_detalle.json')
         const d = await r.json()
         setCompletos(new Set(Object.keys(d.activos || {})))
+        setDetalle(d.activos || {})
         setUniverso(u => {
           const yaEstan = new Set(u.map(a => a.symbol))
           const extra = Object.entries(d.activos || {})
@@ -193,7 +214,8 @@ export default function App() {
         <>
           <BarraAcciones etiqueta={`Cartera · ${cartera.length} activos`}
                          onVolver={volver} />
-          <Cartera informes={cartera} meta={meta} stocks={stocks} scores={scores}
+          <Cartera informes={cartera} meta={meta} stocks={mercado.operables}
+                   mercado={mercado} scores={scores}
                    conAnexo={conAnexo} posiciones={posiciones}
                    otros={meta.otros} />
         </>

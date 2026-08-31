@@ -3706,10 +3706,209 @@ preguntárselo a Marcos.
 
 ---
 
+## 🌎 EL UNIVERSO OPERABLE — la mitad del abanico no existía (31/08/2026)
+
+Marcos preguntó si los CEDEARs se habían actualizado porque "en las pruebas solo
+daba los pocos que probamos". **Tenía razón, y la causa no era un archivo
+desactualizado.**
+
+### El diagnóstico, archivo por archivo
+
+| archivo | símbolos | CEDEARs |
+|---|---|---|
+| `historico_precios.json` | 633 | 129/129 ✅ |
+| `informe_detalle.json` | 281 | 130 fuera del índice ✅ |
+| `sp500_fundamentals.json` | 504 | 0 — y está BIEN, ese es su universo |
+
+`candidatosRotacion()` **ya filtraba por `hasCedear`**, y `sp500_fundamentals`
+ya trae ese campo: los candidatos salían de las **151** del S&P que se compran
+acá. Eso estaba bien.
+
+Lo que faltaba son los **130 CEDEARs que NO están en el S&P 500** — los ADR de
+Brasil, Europa, China, las mineras canadienses. Tienen fundamentales completos
+en `informe_detalle.json`, tienen precios en el histórico, aparecen en el
+buscador… y **nunca podían ser candidatos**, porque el pool que se puntúa era
+solo `stocks` (las 504).
+
+`src/informe/App.jsx` bajaba `informe_detalle.json` y **se quedaba únicamente
+con las claves** (para marcar cuáles tenían informe completo). Los fundamentales
+de esos 130 se tiraban a la basura después de bajarlos.
+
+### Lo que cambió — `src/informe/universo.js` (NUEVO)
+
+```js
+export function armarUniverso(stocks, activos)
+  -> { todos, operables, porSymbol, resumen }
+```
+
+- **`todos` (634)** es el pool contra el que se calculan los percentiles. NO se
+  filtra por CEDEAR: que un papel no cotice en Buenos Aires no lo hace menos
+  comparable como empresa.
+- **`operables` (268)** es de donde salen los candidatos. Ahí sí se filtra,
+  porque recomendar algo que no se puede comprar no es una recomendación.
+
+**Quién gana si un símbolo está en las dos fuentes: el screener.** Es la fuente
+canónica de su propio universo y es la que Marcos ve en F1. Si el informe usara
+otros números para las mismas 504, habría dos verdades para el mismo papel. Del
+detalle solo se toma `hasCedear`. Verificado: **0 campos pisados** en los 151
+símbolos que están en las dos.
+
+### El efecto, medido
+
+```
+CANDIDATOS: 49 antes -> 51 ahora   (28 son NUEVOS)
+
+  Energy         PBR(86.2) GPRK(74.1) VIST(71.3) SHEL(64.5)
+  Materials      HMY(87.5) B(82.2) KGC(81.9) PAAS(73.7)
+  Utilities      SBS(86.7) KEP(71.5)
+  Healthcare     NVO(82.5) GSK(66.2) AZN(61.5)
+  Financials     BBD(74.4) ING(69.1) BBVA(66.4) XP(66.1) BCS(65)
+  Staples        ABEV(79.7) KOF(66)
+  ...
+```
+
+**Más de la mitad del abanico de rotación no existía.** Y son justamente los
+CEDEAR que un inversor argentino compra.
+
+### Lo que hay que saber: los puntajes se mueven
+
+Ampliar el pool de 504 a 634 cambia los percentiles. Medido sobre las 504:
+
+```
+mediana 0,8 pts · p90 2,8 pts · maximo 11,1 pts · solo 22 de 502 se mueven > 5
+```
+
+Los que más se mueven son **todos de Materials** (PPG −11,1 · LIN −10,3 ·
+CRH −10,2 · NEM −9,6 · FCX −9,1), porque el sector ganó 26 mineras y
+commodities que son comparables de verdad. El percentil no empeoró: se volvió
+más honesto. Pero **el puntaje del informe ya no es idéntico al de F1** para
+esos papeles, y eso hay que saberlo antes de que sorprenda.
+
+### Real Estate: 1 solo papel operable
+
+El resumen ahora nombra los sectores donde **no hay de dónde elegir**
+(`MIN_PARA_ROTAR = 3`). Antes el informe podía ofrecer "el mejor de Real Estate"
+sin decir que era el ÚNICO de Real Estate. Una elección de uno no es una
+elección. Utilities queda al límite con 6.
+
+---
+
+## 📊 BENCHMARK CONTRA SPY Y PARES CORRELACIONADOS (31/08/2026)
+
+Las dos capas que faltaban del marco de Marcos. **Las dos son cuentas sobre la
+matriz de covarianza que ya se calculaba: cero llamadas nuevas, cero tokens.**
+
+### Contra el índice (capa 3)
+
+SPY estaba en el snapshot desde el primer día —1.674 puntos— y no se comparaba
+con nada. Sin benchmark, *"rinde 24% con 16% de volatilidad"* no se puede
+juzgar.
+
+```
+                        esta cartera      S&P 500
+  rendimiento anual         24,6%          21,9%
+  volatilidad               15,9%          15,3%
+  rendimiento / riesgo       1,55           1,43
+  beta 0,80  ·  correlacion 0,77
+```
+
+`retorno_sobre_volatilidad` es lo que hay que mirar, **no el retorno solo**:
+rendir más tomando el doble de riesgo no es rendir más. No es un Sharpe —no se
+descuenta tasa libre de riesgo, porque cuál es la tasa libre de riesgo para un
+argentino es una discusión que este informe no tiene por qué zanjar.
+
+⚠️ Es retorno **histórico** de la ventana, no una proyección, y tanto el informe
+como el prompt lo dicen cada vez.
+
+### Pares que son una sola apuesta
+
+La "concentración temática" del prompt original, que nunca se había
+implementado. **Es la única lectura del informe que no se puede deducir de la
+tabla de sectores.**
+
+**El umbral está MEDIDO, no elegido a ojo.** Sobre 496 pares de 32 papeles
+grandes con retornos diarios de 3 años:
+
+```
+min -0,23 · p25 0,07 · mediana 0,15 · p75 0,28 · p90 0,44 · p95 0,71 · max 0,89
+```
+
+Las correlaciones **diarias** son mucho más bajas de lo que la intuición dice:
+AAPL–MSFT da **0,35**, no 0,8 — el ruido de un día tapa el movimiento común. Por
+eso 0,70 es el percentil ~94 y marca solo el 5% de los pares. Los que marca:
+
+```
+RIO-BHP 0,89 · XOM-CVX 0,82 · KGC-PAAS 0,81 · BAC-WFC 0,81 · GFI-HMY 0,81
+```
+
+El caso que lo justifica, y está en la prueba: **XOM 12% + CVX 10% con tope de
+12%.** Ninguno excede el tope solo; juntos son una posición del 22%.
+
+Y esto se volvió mucho más útil justamente al sumar los CEDEAR: el universo
+nuevo trae **siete mineras** (VALE, RIO, BHP, GFI, HMY, KGC, PAAS). Tener tres
+se siente diversificado y es una sola posición.
+
+---
+
+## 🔁 LA GUARDA DEL ESTIMADOR SE QUEDÓ VIEJA EN UN DÍA (31/08/2026)
+
+Vale anotarlo porque es una lección sobre las pruebas, no sobre el estimador.
+
+A la mañana se recalibró `estimar_cartera` y se le puso una guarda con seis
+mediciones reales adentro. A la tarde, `benchmark` (82 tokens) y
+`pares_que_son_una_apuesta` (24) subieron el payload ~110 tokens, y el
+estimador volvió a subestimar en 5 y 10 posiciones.
+
+**La guarda no lo cazó**, porque tenía adentro las mediciones *viejas* — que
+eran más bajas que la realidad nueva, así que todo pasaba en verde.
+
+> Una guarda cuyos números no se actualizan junto con lo que vigila deja de
+> vigilar, y encima da tranquilidad. Al tocar el payload hay que **volver a
+> medir**; que la prueba siga pasando no alcanza como señal.
+
+Recta nueva: `850 + 165·n`, por encima de las seis mediciones nuevas
+(1.050 · 1.616 · 2.469 · 3.031 · 3.720 · 4.422).
+
+---
+
+## 🧩 UNA TERCERA COLISIÓN DE NOMBRE (31/08/2026)
+
+`const universo` ya existía en `src/informe/App.jsx`: es la lista del buscador
+que recibe `<Selector>`. Declarar otro `universo` para el mercado no solo es un
+SyntaxError — le habría pasado al buscador un objeto `{todos, operables, ...}`
+en vez de una lista. Se llama `mercado`.
+
+Van tres en dos días: `plan` en `Cartera.jsx`, `DATA` en las pruebas,
+`universo` acá. **Conviene mirar qué nombres ya existen en el archivo ANTES de
+elegir uno**, no después de que compile.
+
+---
+
 ## 📦 PENDIENTE DE PUSH — lista acumulada
 
 Todo esto está escrito en la carpeta y **todavía no subido**. Verificar con
 `git status` antes de asumir.
+
+### Tanda de ahora (31/08) — cuarta parte: universo operable + capas 3 y 6
+
+```
+src/informe/universo.js      NUEVO — une sp500_fundamentals + informe_detalle
+src/informe/App.jsx          ⚠️ INFORME (no screener) — guarda el detalle crudo,
+                             arma `mercado` y le pasa los operables a Cartera
+src/informe/riesgo.js        benchmark vs SPY + pares correlacionados
+src/informe/cartera.js       los dos bloques al payload y a la tabla
+src/informe/Cartera.jsx      <ContraElIndice> + <UnaSolaApuesta> + nota de
+                             cuantos papeles operables hay por sector
+api/informe.py               reglas del benchmark y de los pares en el prompt
+                             + estimador recalibrado (850 + 165n)
+test/prueba-universo.cjs     NUEVO — 37 comprobaciones
+test/prueba-riesgo.cjs       +15: benchmark y pares
+test/test_tesis_cartera.py   mediciones del estimador actualizadas
+CONTEXTO_INFORME_AVANZADO.md
+```
+
+Las diez suites pasan: 279 comprobaciones en JS + las tres de Python.
+Build del informe verificado con esbuild (227,9 KB).
 
 ### Tanda de ahora (31/08) — tercera parte: las pruebas ahora corren en Windows
 
@@ -4158,4 +4357,4 @@ y recargar. Si no, seguís viendo datos cacheados de antes.
 
 ---
 
-*Actualizado: 31 de agosto de 2026 · Tabla ACTUAL vs OBJETIVO en el informe · Dos bugs que tiraban el Motor B antes de la llamada · Estimador de costo recalibrado · Build verificado · Las 9 suites corren por fin en Windows · 325 comprobaciones en verde · Anterior: 21 de agosto de 2026 · Sonda corrida y analizada · Tesis híbrida y estética clara confirmadas · Pendiente: alcance del histórico y deploy*
+*Actualizado: 31 de agosto de 2026 · Tabla ACTUAL vs OBJETIVO en el informe · Dos bugs que tiraban el Motor B antes de la llamada · Estimador de costo recalibrado · Build verificado · Universo operable: 268 papeles, 28 candidatos nuevos · Benchmark vs SPY y pares correlacionados · 279 comprobaciones en JS + 3 suites de Python · Anterior: 21 de agosto de 2026 · Sonda corrida y analizada · Tesis híbrida y estética clara confirmadas · Pendiente: alcance del histórico y deploy*

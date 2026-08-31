@@ -4366,10 +4366,110 @@ constante (~1.000-1.140 tokens) en vez de crecer con las posiciones.
 
 ---
 
+## 🔴🔴 EL PLAN NO PODÍA PROPONER UNA POSICIÓN NUEVA (31/08/2026)
+
+> *"Me vuelve a recomendar lo mismo sin lo que nosotros pedíamos."*
+
+Arreglar el filtro de candidatos **no alcanzó**, y el motivo es más de fondo.
+
+### El agujero
+
+`planDePesos` sale de la paridad de riesgo, y la paridad de riesgo **reparte el
+peso entre las posiciones QUE YA ESTÁN**. Por construcción no puede proponer una
+entrada nueva: cuando recorta AMD, lo único que sabe hacer con esa plata es
+agrandar AAPL, MSFT y HIMS.
+
+Medido sobre la cartera real de Marcos:
+
+```
+  ticker  pesa   debería     Δ      beta   riesgo   acción
+  AMD     21,6%     5,8%  −15,8pp  2,489    54,8%   vender
+  AAPL     7,5%    15,1%    7,6pp  1,086     4,3%   comprar
+  MSFT     9,2%    15,9%    6,7pp  1,099     5,1%   comprar
+  HIMS       3%     6,9%    3,9pp  2,415     5,9%   comprar
+
+  >>> las TRES compras son posiciones que YA TIENE
+```
+
+Y al mismo tiempo, dos líneas más abajo, **el mismo módulo ya había medido** que
+MO bajaba la volatilidad 5,19 puntos y PG 4,89, los dos con correlación
+**negativa** contra su cartera. El dato existía y no se convertía en una orden:
+competía contra un `plan` con montos exactos y acciones enteras, y el prompt
+—correctamente— le dice al modelo que use esos montos tal cual.
+
+> **No era el modelo. Era que el plan tenía una sola respuesta posible.**
+
+### El arreglo: poner el plan a competir
+
+Para cada candidato se calcula, con **la misma matriz de covarianza**, la
+volatilidad de la cartera objetivo si la plata que iba a agrandar posiciones
+existentes se va a ese papel. Es una cuenta más, cero llamadas, cero tokens.
+
+```
+  el plan que solo agranda lo existente:   26,3%
+
+  ticker  entra con   volatilidad   contra el plan   corr
+  MO         17,3%       19,6%        −6,67 pts     −0,13
+  T          17,3%       19,9%        −6,41 pts     −0,10
+  PG         17,3%       20,0%        −6,28 pts     −0,06
+```
+
+**Recomendar "comprá más AAPL" dejaba 6,7 puntos de volatilidad sobre la mesa.**
+
+### Lo que NO hace, y es importante
+
+**No fuerza una rotación donde no hace falta.** Sobre la cartera de la auditoría
+—5 papeles ya repartidos, 12,2% de volatilidad— ninguna entrada mejora más de
+0,3 puntos y la lista sale vacía: el plan tal cual está es la respuesta
+correcta. Hay una prueba dedicada a eso, porque la primera versión del test
+exigía que siempre hubiera entradas, y eso habría sido pedirle al sistema que
+invente una rotación.
+
+Solo se exponen las que mejoran más de 0,3 puntos, y como mucho tres: es una
+decisión, no un listado.
+
+### La regla nueva del prompt
+
+> Si `mejor_que_el_plan_en_puntos` supera los 2 puntos, recomendar "comprar más
+> de lo que ya tenés" es **la peor de las dos opciones** y hay que decirlo. La
+> sección 1 tiene que ELEGIR, no listar las dos.
+
+### Por qué el orden de los candidatos cambió otra vez
+
+Ya no se ordenan por `delta_volatilidad` (que medía "si entra con un peso
+genérico") sino por `mejora_vs_plan_pts`, que es la pregunta real: **contra el
+plan que ya tenemos, ¿esto lo mejora?**
+
+### El estimador aguantó solo por segunda vez
+
+El bloque nuevo sumó ~50 tokens y la holgura del 5-13% los absorbió sin
+recalibrar. La decisión de dejar margen en vez de pegarse a la medición ya se
+pagó dos veces.
+
+---
+
 ## 📦 PENDIENTE DE PUSH — lista acumulada
 
 Todo esto está escrito en la carpeta y **todavía no subido**. Verificar con
 `git status` antes de asumir.
+
+### Tanda de ahora (31/08) — novena parte: el plan puede abrir posiciones
+
+```
+src/informe/riesgo.js        🔴 para cada candidato: la volatilidad de la
+                             cartera SI la plata del recorte entra ahi
+                             (peso_si_entra_pct, volatilidad_si_entra_pct,
+                             mejora_vs_plan_pts) + orden por esa mejora
+src/informe/cartera.js       plan.entradas + entradas_nuevas al payload
+src/informe/Cartera.jsx      <EntrarEnAlgoNuevo>: el plan contra las alternativas
+api/informe.py               regla: si la entrada gana por mas de 2 puntos,
+                             reforzar lo existente es la PEOR de las dos
+test/prueba-plan.cjs         +17: los dos casos (cartera sana -> no fuerza nada,
+                             concentrada -> MO gana por 6 puntos)
+CONTEXTO_INFORME_AVANZADO.md
+```
+
+Doce suites: 363 comprobaciones en JS + las tres de Python.
 
 ### Tanda de ahora (31/08) — octava parte: el filtro que impedia diversificar
 
@@ -4911,4 +5011,4 @@ y recargar. Si no, seguís viendo datos cacheados de antes.
 
 ---
 
-*Actualizado: 31 de agosto de 2026 · Tabla ACTUAL vs OBJETIVO en el informe · Dos bugs que tiraban el Motor B antes de la llamada · Estimador de costo recalibrado · Build verificado · Universo operable: 268 papeles, 28 candidatos nuevos · Benchmark vs SPY y pares correlacionados · Concentracion por industria · Topes de sector e industria en el optimizador · Excel con cantidades · Afinidad por perfil de riesgo · Tesis fuera del informe del cliente · 346 comprobaciones en JS + 3 suites de Python · Anterior: 21 de agosto de 2026 · Sonda corrida y analizada · Tesis híbrida y estética clara confirmadas · Pendiente: alcance del histórico y deploy*
+*Actualizado: 31 de agosto de 2026 · Tabla ACTUAL vs OBJETIVO en el informe · Dos bugs que tiraban el Motor B antes de la llamada · Estimador de costo recalibrado · Build verificado · Universo operable: 268 papeles, 28 candidatos nuevos · Benchmark vs SPY y pares correlacionados · Concentracion por industria · Topes de sector e industria en el optimizador · Excel con cantidades · Afinidad por perfil de riesgo · Tesis fuera del informe del cliente · El plan puede abrir posiciones nuevas · 363 comprobaciones en JS + 3 suites de Python · Anterior: 21 de agosto de 2026 · Sonda corrida y analizada · Tesis híbrida y estética clara confirmadas · Pendiente: alcance del histórico y deploy*

@@ -1619,6 +1619,32 @@ retorno sobre volatilidad de los dos.
   · ⚠️ Es retorno HISTÓRICO de la ventana, NO una proyección. Decilo cada vez
     que lo menciones. Que haya rendido 24% no significa que vaya a rendir 24%.
 
+⚠️ EL PLAN NO ES LA ÚNICA OPCIÓN — `plan.entradas_nuevas`
+Esto es lo más importante de esta sección y es contraintuitivo.
+
+`plan.movimientos` reparte el recorte SOLO entre las posiciones que ya están en
+la cartera: es lo único que la paridad de riesgo sabe hacer. Por eso cuando
+recorta la posición más grande, sus compras son siempre papeles que el cliente
+YA tiene.
+
+`plan.entradas_nuevas` trae la comparación que falta, medida con la misma
+matriz: qué pasaría si esa plata fuera a un papel que NO está en la cartera.
+Cada una dice con cuánto entraría, en qué volatilidad queda la cartera y
+`mejor_que_el_plan_en_puntos`.
+
+  · Si `mejor_que_el_plan_en_puntos` es grande —más de 2 puntos—, recomendar
+    "comprar más de lo que ya tenés" es la peor de las dos opciones y hay que
+    decirlo. Ejemplo medido: el plan dejaba la cartera en 26,3% agrandando las
+    posiciones existentes; poniendo la misma plata en un papel de otro sector
+    quedaba en 19,6%.
+  · La sección 1 tiene que ELEGIR, no listar las dos. Si la entrada nueva gana
+    por más de 2 puntos, el plan pasa a ser: recortar lo que sobra y ABRIR esa
+    posición, en vez de reforzar lo existente.
+  · Se puede repartir entre las dos o tres mejores en vez de poner todo en una.
+    El peso que figura es el máximo que permite el tope del perfil.
+  · Si la lista viene vacía o las mejoras son chicas, el plan tal cual está es
+    la respuesta correcta — decilo y seguí.
+
 POR QUÉ SE RECORTA ALGO QUE ESTABA BIEN — `riesgo.grupos_limitantes`
 El peso objetivo respeta TRES topes: el de la posición, el del sector y el de
 la industria. Cuando un sector o una industria excede, TODOS sus papeles se

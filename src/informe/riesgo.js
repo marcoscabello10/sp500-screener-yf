@@ -375,6 +375,9 @@ export async function analizarRiesgo(cart, candidatos = []) {
   // `cart.sectores`. Es el MISMO numero que el informe ya imprime: si acá se
   // recalculara, la tabla y el objetivo podrian discrepar.
   const topeSector = (cart?.sectores || [])[0]?.tope ?? null
+  // Cuanto puede pesar una posicion NUEVA. Sale del perfil, igual que todo lo
+  // demas: una entrada no puede nacer excedida.
+  const topeGeneral = cart?.topeGeneral ?? null
   const snap = await cargarHistorico()
   if (!snap) return { disponible: false, motivo: 'no está el histórico de precios' }
 
@@ -515,6 +518,33 @@ export async function analizarRiesgo(cart, candidatos = []) {
   // representativo. Es la única forma de contestar "¿mejora la cartera?" en vez
   // de "¿es mejor empresa?".
   const pesoPrueba = 1 / (n + 1)
+
+  // ── ¿Y SI LA PLATA VA A UNA POSICIÓN NUEVA? ──────────────────────────────
+  //
+  // ⚠️ ESTE ES EL AGUJERO MÁS GRANDE QUE TUVO EL MOTOR B, y lo encontró Marcos
+  // leyendo la salida: *"me vuelve a recomendar lo mismo"*.
+  //
+  // La paridad de riesgo reparte el peso entre las posiciones QUE YA ESTÁN.
+  // Por construcción no puede proponer una entrada nueva: cuando recorta AMD,
+  // la única cosa que sabe hacer con esa plata es agrandar AAPL, MSFT y HIMS.
+  // Medido sobre su cartera real, las tres compras del plan eran las tres
+  // posiciones que ya tenía.
+  //
+  // Y al mismo tiempo, dos líneas más abajo, este mismo módulo ya había medido
+  // que MO bajaba la volatilidad 5,19 puntos y PG 4,89, los dos con correlación
+  // NEGATIVA contra su cartera. El dato existía y no se convertía en una orden.
+  //
+  // Acá se cierra el círculo: para cada candidato se calcula la volatilidad de
+  // la cartera objetivo SI la plata que iba a agrandar posiciones existentes se
+  // va a ese papel. Es la misma matriz, una cuenta más, cero tokens — y
+  // contesta la pregunta exacta: *"¿más AAPL, o MO?"*.
+  const subeCada = objNorm.map((x, i) => Math.max(0, x - w[i]))
+  const subeTotal = subeCada.reduce((a, b) => a + b, 0)
+  // Cuánto puede pesar una entrada nueva: lo que sobra, acotado por el tope de
+  // posición del perfil. Una posición nueva no puede nacer excedida.
+  const topeEntrada = topeGeneral > 0 ? aEscala(topeGeneral) : 1
+  const pesoEntrada = Math.min(subeTotal, topeEntrada)
+
   const aporteCandidatos = []
   for (const c of (candidatos || []).slice(0, 20)) {
     const serie = snap.series[c.ticker]
@@ -533,14 +563,35 @@ export async function analizarRiesgo(cart, candidatos = []) {
     for (let i = 0; i < n; i++) {
       corr += (cov2[n][i] / Math.sqrt(cov2[n][n] * cov[i][i])) * w[i]; p += w[i]
     }
+    // El plan CON este papel adentro: los aumentos previstos se recortan en
+    // proporción y esa plata entra acá. Todo lo demás queda igual, así que la
+    // diferencia de volatilidad es atribuible SOLO a esta decisión.
+    let volConEntrada = null
+    if (subeTotal > 1e-9 && pesoEntrada > 1e-9) {
+      const factor = pesoEntrada / subeTotal
+      const wc = objNorm.map((x, i) => x - subeCada[i] * factor).concat(pesoEntrada)
+      volConEntrada = anual(varianzaCartera(wc, cov2))
+    }
     aporteCandidatos.push({
       ticker: c.ticker, sector: c.sector, puntaje: c.puntaje,
       volatilidad: Math.round(anual(cov2[n][n]) * 10) / 10,
       correlacion_media: p > 0 ? Math.round(corr / p * 100) / 100 : null,
       delta_volatilidad: Math.round((anual(varianzaCartera(w2, cov2)) - volActual) * 100) / 100,
+      // ── Lo nuevo, y es lo que hace ejecutable la rotación ────────────────
+      // Cuánto pesaría si entra, y cuánto MEJOR o PEOR queda la cartera que
+      // con el plan que solo agranda lo que ya hay. Negativo = mejor.
+      peso_si_entra_pct: Math.round(pesoEntrada * pesoAcciones * 10) / 10,
+      volatilidad_si_entra_pct: volConEntrada == null ? null
+        : Math.round(volConEntrada * 10) / 10,
+      mejora_vs_plan_pts: volConEntrada == null ? null
+        : Math.round((volObjetivo - volConEntrada) * 100) / 100,
     })
   }
-  aporteCandidatos.sort((a, b) => a.delta_volatilidad - b.delta_volatilidad)
+  // Se ordena por lo que de verdad decide: cuánto mejora contra el plan base.
+  // Los que no se pudieron medir van al final.
+  aporteCandidatos.sort((a, b) =>
+    (a.mejora_vs_plan_pts == null) - (b.mejora_vs_plan_pts == null)
+    || (b.mejora_vs_plan_pts ?? -99) - (a.mejora_vs_plan_pts ?? -99))
 
   return {
     disponible: true,

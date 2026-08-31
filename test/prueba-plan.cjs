@@ -227,6 +227,102 @@ const tok = Math.round(JSON.stringify(datos.plan).length / 4);
 console.log(`     el bloque \`plan\` son ~${tok} tokens`);
 chequear('el bloque plan es barato', tok < 300, `${tok} tokens`);
 
+// ── 8. EL PLAN NO ES LA UNICA OPCION (31/08/2026) ─────────────────────────
+// El agujero mas grande del Motor B, y lo encontro Marcos leyendo la salida:
+// "me vuelve a recomendar lo mismo". La paridad de riesgo reparte SOLO entre
+// las posiciones que ya estan, asi que al recortar la mas grande lo unico que
+// sabe hacer con esa plata es agrandar las otras. Sobre su cartera real, las
+// tres compras del plan eran las tres posiciones que ya tenia — mientras este
+// mismo modulo ya habia medido que un papel de afuera bajaba la volatilidad
+// cinco veces mas.
+console.log('\n8. Que pasa si la plata va a algo NUEVO');
+const CANDIDATOS = [
+  { ticker: 'MO',  sector: 'Consumer Staples', puntaje: 80 },
+  { ticker: 'PG',  sector: 'Consumer Staples', puntaje: 64 },
+  { ticker: 'T',   sector: 'Communication Services', puntaje: 70 },
+  { ticker: 'NVDA', sector: 'Technology', puntaje: 75 },
+];
+const rc = await Rg.analizarRiesgo(cart, CANDIDATOS);
+const planC = C.planDePesos(cart, rc);
+console.log(`     el plan que solo agranda lo existente deja la cartera en ${planC.volObjetivo}%`);
+for (const e of rc.candidatos) {
+  console.log(`     ${e.ticker.padEnd(6)} entra con ${String(e.peso_si_entra_pct).padStart(5)}% `
+            + `-> ${String(e.volatilidad_si_entra_pct).padStart(5)}%  `
+            + `mejora ${String(e.mejora_vs_plan_pts).padStart(6)} pts  corr ${e.correlacion_media}`);
+}
+chequear('cada candidato dice en cuanto quedaria la cartera si entra',
+  rc.candidatos.every(c => c.volatilidad_si_entra_pct != null));
+chequear('y con cuanto peso entraria',
+  rc.candidatos.every(c => c.peso_si_entra_pct > 0));
+// La aritmetica: mejora = volatilidad del plan - volatilidad con la entrada.
+for (const c of rc.candidatos) {
+  chequear(`${c.ticker}: la mejora es la resta contra el plan`,
+    Math.abs(c.mejora_vs_plan_pts
+             - (planC.volObjetivo - c.volatilidad_si_entra_pct)) < 0.11,
+    `${c.mejora_vs_plan_pts} vs ${(planC.volObjetivo - c.volatilidad_si_entra_pct).toFixed(2)}`);
+}
+// EL PUNTO: un defensivo poco correlacionado tiene que ganarle a una
+// tecnologica mas, aunque la tecnologica tenga mejor puntaje fundamental.
+const mo = rc.candidatos.find(c => c.ticker === 'MO');
+const nvda = rc.candidatos.find(c => c.ticker === 'NVDA');
+chequear('MO (defensivo, corr negativa) le gana a NVDA (tech, corr alta)',
+  mo.mejora_vs_plan_pts > nvda.mejora_vs_plan_pts,
+  `MO ${mo.mejora_vs_plan_pts} vs NVDA ${nvda.mejora_vs_plan_pts}`);
+chequear('aunque NVDA tenga menor puntaje NO se ordena por puntaje',
+  rc.candidatos[0].mejora_vs_plan_pts >= rc.candidatos[1].mejora_vs_plan_pts,
+  rc.candidatos.map(c => `${c.ticker}:${c.mejora_vs_plan_pts}`).join(' '));
+// Solo las que MEJORAN llegan al informe: ofrecer una que empeora es ruido.
+chequear('el plan solo expone las entradas que mejoran de verdad',
+  planC.entradas.every(e => e.mejora_vs_plan_pts > 0.3),
+  JSON.stringify(planC.entradas.map(e => [e.ticker, e.mejora_vs_plan_pts])));
+chequear('y como mucho tres, para que sea una decision y no una lista',
+  planC.entradas.length <= 3);
+// ⚠️ En ESTA cartera (5 papeles ya repartidos, 12,2% de volatilidad) ninguna
+// entrada mejora mas de 0,3 puntos, y eso es la respuesta CORRECTA: el plan tal
+// cual esta es lo que hay que hacer. La primera version de esta prueba exigia
+// que siempre hubiera entradas, que habria sido pedirle al sistema que invente
+// una rotacion donde no hace falta.
+chequear('en una cartera ya repartida NO se fuerza ninguna entrada',
+  planC.entradas.length === 0,
+  JSON.stringify(planC.entradas.map(e => [e.ticker, e.mejora_vs_plan_pts])));
+
+// Y ahora el caso de Marcos: concentrado en tecnologia, con una posicion que
+// se lleva la mitad del riesgo. Aca la entrada nueva TIENE que aparecer.
+console.log('\n   la cartera concentrada, que es donde esto cambia la decision');
+const CONC = C.analizarCartera(
+  [informe('AMD',  'AMD',       'Technology', 60, 'neutral'),
+   informe('MSFT', 'Microsoft', 'Technology', 78, 'compra'),
+   informe('AAPL', 'Apple',     'Technology', 72, 'neutral'),
+   informe('LRCX', 'Lam',       'Technology', 65, 'neutral')],
+  { AMD:  { cantidad: 48, precioCompra: 288, valorActual: 22000, gananciaPct: 60 },
+    MSFT: { cantidad: 39, precioCompra: 428, valorActual: 9000,  gananciaPct: 10 },
+    AAPL: { cantidad: 48, precioCompra: 231, valorActual: 7500,  gananciaPct: 5 },
+    LRCX: { cantidad: 75, precioCompra: 258, valorActual: 7400,  gananciaPct: 8 } },
+  'moderado', 'equilibrado', 'medio', null);
+const rConc = await Rg.analizarRiesgo(CONC, CANDIDATOS);
+const planConc = C.planDePesos(CONC, rConc);
+console.log(`     el plan que solo agranda lo existente: ${planConc.volObjetivo}%`);
+for (const e of planConc.entradas)
+  console.log(`     ${e.ticker.padEnd(6)} -> ${e.volatilidad_si_entra_pct}%  `
+            + `(${e.mejora_vs_plan_pts} pts mejor)`);
+chequear('en una cartera concentrada SI aparecen entradas nuevas',
+  planConc.entradas.length > 0);
+chequear('y la mejor mejora de verdad (mas de 1 punto)',
+  planConc.entradas[0].mejora_vs_plan_pts > 1,
+  `${planConc.entradas[0]?.mejora_vs_plan_pts}`);
+chequear('la ganadora NO es la tecnologica de mejor puntaje',
+  planConc.entradas[0].ticker !== 'NVDA', planConc.entradas[0].ticker);
+
+// El puente al prompt.
+const datosC = C.armarDatosTesis(CONC, C.stressTest(CONC), CANDIDATOS, {}, rConc);
+chequear('las entradas nuevas viajan al modelo',
+  (datosC.plan.entradas_nuevas || []).length > 0);
+chequear('con el numero que hace elegir',
+  datosC.plan.entradas_nuevas.every(e =>
+    e.mejor_que_el_plan_en_puntos != null && e.entra_con_pct > 0));
+chequear('sin candidatos, el bloque queda vacio y no rompe',
+  C.planDePesos(cart, riesgo).entradas.length === 0);
+
 console.log(`\n${'-'.repeat(64)}`);
 console.log(fail === 0 ? `TODO BIEN -- ${ok} comprobaciones`
                        : `${fail} FALLAS de ${ok + fail}`);

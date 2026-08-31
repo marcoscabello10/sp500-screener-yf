@@ -957,7 +957,13 @@ export function armarDatosTesis(cart, estres, candidatos = [], scores = {},
         sector_nuevo: !!c.sector_nuevo,
         ...(r ? { volatilidad_pct: r.volatilidad,
                   correlacion_media_con_la_cartera: r.correlacion_media,
-                  delta_volatilidad_cartera: r.delta_volatilidad } : {}),
+                  delta_volatilidad_cartera: r.delta_volatilidad,
+                  // Lo que convierte "este papel es bueno" en una ORDEN:
+                  // cuanto mejor queda la cartera si la plata del recorte va
+                  // ACA en vez de agrandar lo que ya hay.
+                  peso_si_entra_pct: r.peso_si_entra_pct,
+                  volatilidad_si_entra_pct: r.volatilidad_si_entra_pct,
+                  mejora_vs_plan_pts: r.mejora_vs_plan_pts } : {}),
       }
     }),
 
@@ -993,6 +999,16 @@ export function armarDatosTesis(cart, estres, candidatos = [], scores = {},
       if (!pl) return null
       return {
         umbral_pp: pl.umbralPP,
+        // ⚠️ EL PLAN SOLO REPARTE ENTRE LO QUE YA ESTA. Estas son las entradas
+        // NUEVAS que lo mejoran, medidas con la misma matriz. Sin esto el
+        // modelo solo podia recomendar agrandar posiciones existentes.
+        entradas_nuevas: pl.entradas.map(c => ({
+          ticker: c.ticker, sector: c.sector,
+          entra_con_pct: c.peso_si_entra_pct,
+          volatilidad_resultante_pct: c.volatilidad_si_entra_pct,
+          mejor_que_el_plan_en_puntos: c.mejora_vs_plan_pts,
+          correlacion_con_la_cartera: c.correlacion_media,
+        })),
         volatilidad_actual_pct: pl.volActual,
         volatilidad_si_se_ejecuta_pct: pl.volObjetivo,
         mejora_puntos: pl.mejoraVol,
@@ -1198,6 +1214,11 @@ export function planDePesos(cart, riesgo) {
     benchmark: riesgo.benchmark || null,
     pares: riesgo.pares_correlacionados || [],
     gruposLimitantes: riesgo.grupos_limitantes || [],
+    // Las mejores entradas NUEVAS, medidas contra este mismo plan. Solo las que
+    // de verdad mejoran: ofrecer una que empeora seria ruido con cara de opcion.
+    entradas: (riesgo.candidatos || [])
+      .filter(c => c.mejora_vs_plan_pts != null && c.mejora_vs_plan_pts > 0.3)
+      .slice(0, 3),
   }
 }
 

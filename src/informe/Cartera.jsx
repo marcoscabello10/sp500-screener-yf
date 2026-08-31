@@ -1141,6 +1141,8 @@ function ActualVsObjetivo({ plan }) {
         </tbody>
       </table>
 
+      {plan.entradas?.length > 0 && <EntrarEnAlgoNuevo entradas={plan.entradas}
+                                      volPlan={plan.volObjetivo} />}
       {plan.benchmark && <ContraElIndice b={plan.benchmark} />}
       {plan.pares && plan.pares.length > 0 && <UnaSolaApuesta pares={plan.pares} />}
 
@@ -1344,6 +1346,78 @@ function TesisAparte({ datos }) {
         </div>
       )}
     </>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ¿Y SI LA PLATA VA A ALGO NUEVO?
+//
+// La paridad de riesgo reparte entre las posiciones QUE YA ESTÁN: cuando
+// recorta la más grande, lo único que sabe hacer con esa plata es agrandar las
+// otras. Sobre una cartera real de 7 papeles, las tres compras del plan eran
+// las tres posiciones que el cliente ya tenía — y al mismo tiempo el módulo de
+// riesgo ya había medido que un papel de afuera bajaba la volatilidad cinco
+// veces más.
+//
+// Esta tabla es esa comparación, con la misma matriz de covarianza: el plan
+// contra cada alternativa. No reemplaza al plan; lo pone a competir.
+// ─────────────────────────────────────────────────────────────────────────────
+function EntrarEnAlgoNuevo({ entradas, volPlan }) {
+  return (
+    <div className="evitar-corte" style={{ marginTop: 18 }}>
+      <h4 style={{ fontSize: 14.5, color: C.subtitulo, margin: '0 0 6px' }}>
+        Si esa plata fuera a algo nuevo
+      </h4>
+      <p style={{ fontSize: 13.5, marginTop: 0, marginBottom: 8 }}>
+        El plan de arriba reparte el recorte entre las posiciones que ya están.
+        Estas son las alternativas: papeles que <b>no</b> están en la cartera y
+        que, con la misma plata, la dejarían más tranquila.
+      </p>
+      <table style={{ maxWidth: 640 }}>
+        <thead>
+          <tr>
+            <th>Activo</th><th>Sector</th>
+            <th className="n">Entraría con</th>
+            <th className="n">Volatilidad</th>
+            <th className="n">Contra el plan</th>
+            <th className="n">Corr.</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td style={{ color: C.tenue }}>— el plan de arriba —</td>
+            <td></td><td></td>
+            <td className="n" style={{ color: C.tenue }}>{num(volPlan, 1)}%</td>
+            <td className="n" style={{ color: C.tenue }}>—</td>
+            <td></td>
+          </tr>
+          {entradas.map(e => (
+            <tr key={e.ticker}>
+              <td style={{ fontFamily: F.num, fontWeight: 600, color: C.titulo }}>
+                {e.ticker}
+              </td>
+              <td style={{ fontSize: 13, color: C.tenue }}>{e.sector}</td>
+              <td className="n">{num(e.peso_si_entra_pct, 1)}%</td>
+              <td className="n" style={{ fontWeight: 600, color: C.titulo }}>
+                {num(e.volatilidad_si_entra_pct, 1)}%
+              </td>
+              <td className="n" style={{ fontWeight: 700, color: C.verde }}>
+                −{num(e.mejora_vs_plan_pts, 1)} pts
+              </td>
+              <td className="n" style={{ color: C.tenue }}>
+                {num(e.correlacion_media, 2)}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <p style={{ fontSize: 12.5, color: C.tenue, marginTop: 8 }}>
+        La correlación explica casi todo: un papel que se mueve al revés que la
+        cartera baja el riesgo aunque él mismo sea volátil. El peso de entrada es
+        el máximo que permite el tope del perfil — se puede repartir entre dos o
+        tres de estos en vez de poner todo en uno, y el efecto es parecido.
+      </p>
+    </div>
   )
 }
 

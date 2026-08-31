@@ -335,6 +335,72 @@ chequear(all(k not in (d['posiciones'][0] or {})
          'las posiciones siguen mandando campos que no cambian una decision')
 print(f'  filtro de candidatos-> 49 -> {len(d["candidatos"])}, sin nombres largos')
 
+# ── 12. NADA del Motor B se cae en el camino ──────────────────────────────
+# `_resumen_cartera` arma el payload clave por clave: una clave que no se nombra
+# ahi no llega NUNCA, sin error y sin aviso. Asi se perdieron dos cosas a la
+# vez: el bloque `riesgo` entero y los tres campos de riesgo de cada candidato.
+# El prompt pedia elegir por correlacion y delta de volatilidad mientras esos
+# numeros se tiraban antes de la llamada.
+conB = dict(cartera(4))
+conB['riesgo'] = {'volatilidad_cartera_pct': 15.9,
+                  'volatilidad_si_se_llega_al_objetivo_pct': 12.2,
+                  'cobertura_del_calculo_pct': 87.5,
+                  'ventana_dias': 756, 'posiciones_sin_datos': ['NEW'],
+                  'topes_insuficientes': None}
+conB['plan'] = {'umbral_pp': 1.0, 'mejora_puntos': 3.7,
+                'comprar_usd': 12540, 'vender_usd': 12480,
+                'movimientos': [{'ticker': 'AAPL', 'movimiento': 'vender',
+                                 'de_pct': 30.0, 'a_pct': 10.8,
+                                 'delta_pp': -19.2, 'monto_usd': -11520,
+                                 'acciones': -38}]}
+conB['candidatos'] = [
+    {'ticker': 'KO', 'nombre': 'Coca-Cola Co.', 'sector': 'Materials',
+     'puntaje': 61, 'metricas': '6/6', 'volatilidad_pct': 16.5,
+     'correlacion_media_con_la_cartera': 0.06,
+     'delta_volatilidad_cartera': -1.8},
+    {'ticker': 'MSFT', 'nombre': 'Microsoft', 'sector': 'Materials',
+     'puntaje': 78, 'metricas': '6/6', 'volatilidad_pct': 26.1,
+     'correlacion_media_con_la_cartera': 0.35,
+     'delta_volatilidad_cartera': -0.2}]
+conB['sectores'] = [{'sector': 'Materials', 'pct': 8, 'tope': 35,
+                     'excede': False}]
+d2 = I._resumen_cartera(conB)
+
+chequear(d2.get('riesgo', {}).get('volatilidad_cartera_pct') == 15.9,
+         'el bloque `riesgo` no llega al modelo: se calcula y se tira')
+chequear(d2.get('plan', {}).get('mejora_puntos') == 3.7,
+         'el bloque `plan` no llega al modelo')
+chequear(d2['plan']['movimientos'][0]['monto_usd'] == -11520,
+         'los montos del plan no llegan enteros')
+for c in d2['candidatos']:
+    chequear('delta_volatilidad_cartera' in c,
+             f'{c["ticker"]}: el delta de volatilidad se cae en el filtro')
+    chequear('correlacion_media_con_la_cartera' in c,
+             f'{c["ticker"]}: la correlacion se cae en el filtro')
+# Y el orden: primero el que MAS baja la volatilidad, no el de mejor puntaje.
+# Con el orden por puntaje, el modelo elegia MSFT (78) sobre KO (61) — que es
+# la decision que la auditoria del Motor B midio como nueve veces peor.
+chequear(d2['candidatos'][0]['ticker'] == 'KO',
+         f'los candidatos no vienen ordenados por aporte a ESTA cartera: '
+         f'primero quedo {d2["candidatos"][0]["ticker"]}')
+
+# Sin Motor B el payload igual tiene que salir, con la marca puesta.
+sinB = I._resumen_cartera(dict(cartera(3)))
+chequear(sinB['riesgo'] == {'disponible': False},
+         'sin Motor B el payload tendria que decirlo explicitamente')
+chequear(sinB['plan'] is None, 'sin Motor B no puede haber plan')
+
+# La compuerta general: TODA clave de primer nivel que produce el navegador
+# tiene que sobrevivir. Es la unica forma de que el proximo campo nuevo no se
+# pierda igual que estos dos.
+CLAVES_DEL_NAVEGADOR = {'perfil', 'objetivo', 'horizonte', 'cartera', 'topes',
+                        'estres', 'sectores', 'posiciones', 'candidatos',
+                        'riesgo', 'plan'}
+faltan = CLAVES_DEL_NAVEGADOR - set(d2.keys())
+chequear(not faltan, f'estas claves se pierden en _resumen_cartera: {faltan}')
+print(f'  Motor B completo    -> riesgo + plan + {len(d2["candidatos"])} '
+      f'candidatos con delta, mejor primero')
+
 print('=' * 74)
 if fallos:
     print(f'  {len(fallos)} FALLAS:')

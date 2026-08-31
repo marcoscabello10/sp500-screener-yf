@@ -152,7 +152,13 @@ async function main() {
     ['snapshot sin generated_at',        () => { const s = {...conFecha(1)}; delete s.generated_at; fetchRespuesta = { ok: true, json: async () => s }; }, SNAP.desde, simbolos],
     ['snapshot sin SPY',                 () => { const s = {...conFecha(1), series: {...conFecha(1).series}}; delete s.series.SPY; fetchRespuesta = { ok: true, json: async () => s }; }, SNAP.desde, simbolos],
     ['pide mas historia de la que hay',  () => { fetchRespuesta = { ok: true, json: async () => conFecha(1) }; }, '2000-01-01', simbolos],
-    ['cobertura insuficiente',           () => { fetchRespuesta = { ok: true, json: async () => conFecha(1) }; }, SNAP.desde, [...simbolos, 'XXXA','XXXB','XXXC','XXXD','XXXE','XXXF','XXXG','XXXH','XXXI','XXXJ']],
+    // Los inventados se calculan a partir de cuantos hay: con 10 fijos sobre
+    // 632 simbolos la cobertura daba 98%, o sea que este caso pasaba por
+    // casualidad cuando la lista era corta y dejo de probar nada cuando crecio.
+    // Ahora se piden los que hagan falta para quedar CLARAMENTE bajo el umbral.
+    ['cobertura insuficiente',           () => { fetchRespuesta = { ok: true, json: async () => conFecha(1) }; }, SNAP.desde,
+      [...simbolos, ...Array.from({ length: Math.ceil(simbolos.length * 0.4) },
+                                  (_, i) => `XXX${i}`)]],
   ];
 
   for (const [nombre, preparar, from, syms] of casos) {
@@ -182,12 +188,36 @@ async function main() {
   const spyMap = API.buildSpyMap(r5.spyPrices);
   const spyAl = Object.keys(spyMap).sort().map(d => ({ s: spyMap[d], m: spyMap[d] }));
 
+  // ⚠️ ESTOS NUMEROS ESTAN ANCLADOS A UNA FECHA DEL SNAPSHOT.
+  // El retorno anualizado de los ultimos 756 dias cambia cada vez que el
+  // snapshot avanza: no es un bug, es otra ventana. La primera version de esta
+  // prueba comparaba contra constantes sin decir de que dia eran, asi que
+  // empezaba a "fallar" sola cada vez que Marcos actualizaba el historico —y
+  // una prueba que falla por rutina deja de leerse.
+  //
+  // Volatilidad y beta SI son estables (se miden sobre la misma ventana larga),
+  // asi que esas se siguen exigiendo con tolerancia fina. El retorno se exige
+  // fino solo si el snapshot esta en la fecha del ancla; si avanzo, se pide que
+  // siga en un rango sensato y se avisa.
+  // El ancla se identifica por la CANTIDAD de fechas, no por la ultima fecha:
+  // es lo que define la ventana de 756/1260 dias que se esta midiendo.
+  const ANCLA_N = 1669;         // el snapshot con el que se comparo contra F2
+  const ultima = SNAP.fechas[SNAP.fechas.length - 1];
+  const mismaVentana = SNAP.fechas.length === ANCLA_N;
+  if (!mismaVentana) {
+    console.log(`     (el snapshot avanzo: ${ANCLA_N} -> ${SNAP.fechas.length} `
+              + `fechas, ultima ${ultima}. Los retornos se comparan con `
+              + `tolerancia amplia; volatilidad y beta se siguen exigiendo `
+              + `finas. Para volver a anclar: verificar estos valores contra F2 `
+              + `en la maquina y actualizar ANCLA_N y los retornos.)`);
+  }
   const esperado = {
     'SPY 3Y': { d: 756, ret: 22.26, vol: 15.33, beta: 1.00 },
     'SPY 5Y': { d: 1260, ret: 13.41, vol: 17.17, beta: 1.00 },
     'JPM 3Y': { d: 756, ret: 37.34, vol: 22.96, beta: 0.86 },
     'JPM 5Y': { d: 1260, ret: 21.13, vol: 24.38, beta: 0.88 },
   };
+  const tolRet = mismaVentana ? 0.05 : 3.0;
   for (const [nombre, e] of Object.entries(esperado)) {
     const [sym, ] = nombre.split(' ');
     const al = sym === 'SPY' ? spyAl.slice(-e.d)
@@ -195,7 +225,8 @@ async function main() {
     const m = API.calcRisk(al, rf);
     if (!m) { chequear(nombre, false, 'calcRisk devolvio null'); continue; }
     const cerca = (a, b, tol) => Math.abs(a - b) <= tol;
-    chequear(`${nombre} retorno ${m.annRet.toFixed(2)}% (esperado ${e.ret})`, cerca(m.annRet, e.ret, 0.05));
+    chequear(`${nombre} retorno ${m.annRet.toFixed(2)}% (ancla ${e.ret}, tol ${tolRet})`,
+      cerca(m.annRet, e.ret, tolRet));
     chequear(`${nombre} volatilidad ${m.sVol.toFixed(2)}% (esperado ${e.vol})`, cerca(m.sVol, e.vol, 0.05));
     chequear(`${nombre} beta ${m.beta.toFixed(2)} (esperado ${e.beta})`, cerca(m.beta, e.beta, 0.01));
   }

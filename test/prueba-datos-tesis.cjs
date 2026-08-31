@@ -113,8 +113,10 @@ chequear('todas las posiciones traen metricas_usadas',
 chequear('JPM (banco) tiene denominador 5, no 6',
   datos.posiciones.find(p => p.ticker === 'JPM').metricas_usadas.endsWith('/5'),
   datos.posiciones.find(p => p.ticker === 'JPM').metricas_usadas);
-chequear('reemplazos es un array en todas',
-  datos.posiciones.every(p => Array.isArray(p.reemplazos)));
+// `reemplazos` solo va en las fichas completas: en una posicion que no hay que
+// decidir, saber que se uso ROA en vez de ROE no cambia nada y se paga igual.
+chequear('reemplazos es un array en todas las que requieren decision',
+  datos.posiciones.filter(p => !p.en_orden).every(p => Array.isArray(p.reemplazos)));
 
 // ── 3. La cartera completa, no solo las acciones ───────────────────────────
 console.log('\n3. La cartera NO suma 100% en acciones');
@@ -162,11 +164,22 @@ chequear('todas las claves que lee _resumen_cartera existen en el bloque',
   faltan.length === 0, `faltan: ${faltan.join(', ')}`);
 
 // 5b. Los campos de posicion que el codigo Python nombra.
-for (const campo of ['estado', 'accion_calculada', 'peso_pct', 'tope_pct',
-                     'exceso_pct', 'ganancia_pct', 'puntaje_fundamental']) {
-  chequear(`las posiciones traen ${campo}`,
+// DOS NIVELES: los cuatro primeros van SIEMPRE, porque son lo que hace falta
+// para nombrar una posicion en su linea. El resto solo en las fichas completas
+// —una posicion en orden no tiene exceso que informar—. Si esta distincion se
+// rompe, el modelo va a leer la ausencia como "falta el dato".
+for (const campo of ['ticker', 'peso_pct', 'tope_pct', 'accion_calculada',
+                     'puntaje_fundamental']) {
+  chequear(`TODAS las posiciones traen ${campo}`,
     datos.posiciones.every(p => campo in p));
 }
+for (const campo of ['estado', 'exceso_pct', 'ganancia_pct', 'clase',
+                     'banderas_altas']) {
+  chequear(`las posiciones con decision traen ${campo}`,
+    datos.posiciones.filter(p => !p.en_orden).every(p => campo in p));
+}
+chequear('toda posicion declara en que nivel de detalle viene',
+  datos.posiciones.every(p => typeof p.en_orden === 'boolean'));
 
 // 5c. Los campos que el PROMPT nombra por su nombre. Si el prompt habla de
 //     `metricas_usadas` y el bloque manda `metricas`, el modelo lee un campo

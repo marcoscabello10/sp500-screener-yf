@@ -7,7 +7,7 @@ import { planRotacion, concentracionPorSector, SECTOR_PESADO_PCT,
 import { analizarCartera, stressTest, exposicion, CLASE_TEXTO, ESTADO_TEXTO,
          ACCION_PESO_TEXTO, ORIGEN_PESOS, PERFIL_POR_DEFECTO,
          OBJETIVO_POR_DEFECTO, HORIZONTE_POR_DEFECTO,
-         armarDatosTesis } from './cartera.js'
+         armarDatosTesis, planDePesos } from './cartera.js'
 import { C, F, semaforo, colorSeveridad, num, pct, fecha } from './estilos.js'
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -79,6 +79,12 @@ export default function Cartera({ informes, meta, stocks, scores, conAnexo,
 
   const datosTesis = armarDatosTesis(cart, stress, candidatos, scores, riesgo)
 
+  // La tabla ACTUAL vs OBJETIVO. Sale del MISMO planDePesos() que viaja dentro
+  // de `datosTesis`, asi que el texto de la tesis y esta tabla no pueden decir
+  // montos distintos. Si el historico no esta, `plan` queda null y la seccion
+  // no se dibuja: el resto del informe no cambia.
+  const planPesos = planDePesos(cart, riesgo)
+
   const concentracion = concentracionPorSector(
     validos.map(i => ({ sector: i.sector })))
 
@@ -97,6 +103,7 @@ export default function Cartera({ informes, meta, stocks, scores, conAnexo,
 
       {cart.hayPesos && expo && <Exposicion cart={cart} expo={expo} />}
       {cart.hayPesos && <Pesos cart={cart} />}
+      {planPesos && <ActualVsObjetivo plan={planPesos} />}
       <Afinidad cart={cart} />
       {stress && <Stress cart={cart} stress={stress} />}
       <Rotacion plan={plan} total={validos.length} cart={cart} />
@@ -881,6 +888,162 @@ function Composicion({ datos }) {
         </p>
       )}
     </Seccion>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ACTUAL vs OBJETIVO — la tabla que faltaba
+//
+// Todo lo que hay acá ya se calculaba y no se dibujaba en ningún lado: el peso
+// objetivo por paridad de riesgo, el aporte al riesgo de cada posición y la
+// correlación con el resto. El informe sabía decir "AAPL excede el tope de 12%"
+// y no sabía decir "AAPL pesa 30% y aporta el 60% del riesgo, moverlo a KO baja
+// la volatilidad 3,6 puntos y moverlo a MSFT baja 0,4".
+//
+// No lleva `no-imprimir`: esta sección SÍ va al PDF del cliente. Es la que
+// convierte el diagnóstico en algo que se puede operar el lunes.
+// ─────────────────────────────────────────────────────────────────────────────
+const COLOR_MOV = { comprar: C.verde, vender: C.rojo, mantener: C.tenue }
+const TEXTO_MOV = { comprar: 'Comprar', vender: 'Vender', mantener: 'Queda igual' }
+
+function ActualVsObjetivo({ plan }) {
+  const mueve = plan.filas.filter(f => f.movimiento !== 'mantener')
+  // Sin mejora medible, la recomendación honesta es no hacer nada. Se dice acá
+  // arriba, antes de la tabla, para que no se lea como una lista de tareas.
+  const valeLaPena = plan.mejoraVol != null && plan.mejoraVol >= 0.3
+
+  return (
+    <Seccion titulo="Cuánto debería pesar cada cosa"
+             nota={`El peso objetivo reparte el riesgo, no el dinero: busca que cada posición
+                    aporte una porción parecida de la volatilidad total, respetando los topes
+                    del perfil. Se calcula con ${plan.filas.length ? '3 años de precios' : 'el histórico'}
+                    diarios y no usa ningún pronóstico de retorno.`}>
+
+      <div className="evitar-corte" style={{ display: 'flex', gap: 10,
+                                             flexWrap: 'wrap', marginBottom: 14 }}>
+        <Dato valor={`${num(plan.volActual, 1)}%`} etiqueta="Volatilidad hoy" />
+        <Dato valor={`${num(plan.volObjetivo, 1)}%`} etiqueta="Si se ejecuta" />
+        <Dato valor={plan.mejoraVol != null
+                       ? `${plan.mejoraVol > 0 ? '−' : '+'}${num(Math.abs(plan.mejoraVol), 1)} pts`
+                       : '—'}
+              etiqueta="Cambio de riesgo"
+              color={valeLaPena ? C.verde : C.tenue} />
+        <Dato valor={String(plan.nMovimientos)} etiqueta={`Movimiento${plan.nMovimientos === 1 ? '' : 's'}`} />
+      </div>
+
+      {!valeLaPena && (
+        <p style={{ fontSize: 13.5, color: C.tenue, marginTop: 0 }}>
+          <b>Los ajustes no cambian el riesgo de forma apreciable</b> ({plan.mejoraVol != null
+          ? `${num(plan.mejoraVol, 1)} puntos` : 'sin medir'}). La cartera ya está razonablemente
+          repartida: se pueden hacer, pero no hay urgencia en hacerlos.
+        </p>
+      )}
+
+      {plan.coberturaPct != null && plan.coberturaPct < 99 && (
+        <p style={{ fontSize: 13.5, color: C.ambar, marginTop: 0,
+                    background: C.ambarFondo, borderRadius: 7, padding: '9px 12px' }}>
+          Este cálculo cubre el {num(plan.coberturaPct, 1)}% de las acciones de la cartera.
+          {plan.sinDatos.length > 0 && ` Sin histórico suficiente: ${plan.sinDatos.join(', ')}.`}
+        </p>
+      )}
+
+      {plan.topesInsuficientes && (
+        <p style={{ fontSize: 13.5, color: C.ambar, marginTop: 0 }}>
+          <b>Los topes no alcanzan.</b> {plan.topesInsuficientes.nota}
+        </p>
+      )}
+
+      <table>
+        <thead>
+          <tr>
+            <th>Activo</th>
+            <th className="n">Pesa</th>
+            <th className="n">Debería</th>
+            <th className="n">Δ</th>
+            <th className="n">Monto</th>
+            <th className="n">Aporta al riesgo</th>
+            <th className="n">Corr.</th>
+            <th>Qué hacer</th>
+          </tr>
+        </thead>
+        <tbody>
+          {plan.filas.map(f => (
+            <tr key={f.ticker}>
+              <td>
+                <span style={{ fontFamily: F.num, fontWeight: 600, color: C.titulo }}>
+                  {f.ticker}
+                </span>
+                {f.limitadoPorTope && (
+                  <span style={{ fontSize: 11.5, color: C.tenue }}> · en el tope</span>
+                )}
+              </td>
+              <td className="n">{f.peso != null ? `${num(f.peso, 1)}%` : '—'}</td>
+              <td className="n" style={{ color: C.titulo, fontWeight: 600 }}>
+                {f.objetivo != null ? `${num(f.objetivo, 1)}%` : '—'}
+              </td>
+              <td className="n" style={{ color: COLOR_MOV[f.movimiento] }}>
+                {f.delta != null ? `${f.delta > 0 ? '+' : ''}${num(f.delta, 1)} pp` : '—'}
+              </td>
+              <td className="n" style={{ color: COLOR_MOV[f.movimiento] }}>
+                {f.movimiento === 'mantener' || f.montoUSD == null
+                  ? '—'
+                  : `US$ ${num(Math.abs(f.montoUSD), 0)}`}
+                {f.movimiento !== 'mantener' && f.acciones != null && f.acciones !== 0 && (
+                  <span style={{ fontSize: 11.5, color: C.tenue }}>
+                    {' '}({Math.abs(f.acciones)} acc.)
+                  </span>
+                )}
+              </td>
+              {/* Las dos columnas que separan "pesa mucho" de "arriesga mucho".
+                  Son la lectura que el informe no tenía: un papel puede estar
+                  dentro del tope y aportar el triple de riesgo que su peso. */}
+              <td className="n" style={{
+                    fontWeight: f.concentraRiesgo ? 700 : 400,
+                    color: f.concentraRiesgo ? C.ambar : C.cuerpo }}>
+                {f.aporteRiesgo != null ? `${num(f.aporteRiesgo, 1)}%` : '—'}
+              </td>
+              <td className="n" style={{ color: C.tenue }}>
+                {f.correlacion != null ? num(f.correlacion, 2) : '—'}
+              </td>
+              <td style={{ fontSize: 12.5, color: COLOR_MOV[f.movimiento] }}>
+                {TEXTO_MOV[f.movimiento]}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      {mueve.length > 0 && (
+        <p style={{ fontSize: 13.5, marginTop: 12 }}>
+          <b>En total:</b> vender US$ {num(plan.venderUSD, 0)} y comprar
+          US$ {num(plan.comprarUSD, 0)}.{' '}
+          {Math.abs(plan.venderUSD - plan.comprarUSD) > plan.venderUSD * 0.1 && (
+            <span style={{ color: C.tenue }}>
+              La diferencia sale de —o va a— las posiciones sin datos de riesgo y
+              el resto de la cartera.
+            </span>
+          )}
+        </p>
+      )}
+
+      <p style={{ fontSize: 12.5, color: C.tenue, marginTop: 10 }}>
+        Los ajustes de menos de {num(plan.umbralPP, 1)} punto porcentual quedan como están:
+        están adentro del error del propio cálculo. La correlación es contra el resto de
+        la cartera, ponderada por peso —cerca de 1 significa que ese papel repite lo que ya
+        hay—. Las correlaciones son históricas y tienden a subir justo en las caídas, así
+        que esta tabla convive con el escenario de estrés, no lo reemplaza.
+      </p>
+    </Seccion>
+  )
+}
+
+function Dato({ valor, etiqueta, color }) {
+  return (
+    <div style={{ background: C.panel, borderRadius: 8, padding: '9px 15px', minWidth: 118 }}>
+      <div style={{ fontFamily: F.num, fontSize: 20, fontWeight: 700,
+                    color: color || C.titulo, lineHeight: 1.1 }}>{valor}</div>
+      <div style={{ fontSize: 12.5, color: C.tenue }}>{etiqueta}</div>
+    </div>
   )
 }
 

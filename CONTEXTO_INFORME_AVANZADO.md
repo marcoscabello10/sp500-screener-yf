@@ -3374,10 +3374,214 @@ a fallar, el mensaje ahora dice exactamente por qué.
 
 ---
 
+## ✅ LA TABLA ACTUAL vs OBJETIVO + 2 BUGS QUE TIRABAN EL MOTOR B (31/08/2026)
+
+Cierra los dos puntos aprobados ("avancemos con lo propuesto") y, en el camino,
+aparecieron **dos bugs que explican por qué el informe seguía siendo Motor A**
+aunque el Motor B estuviera calculado y probado.
+
+### 1. La tabla ACTUAL vs OBJETIVO — `planDePesos()`
+
+`src/informe/cartera.js` → `export function planDePesos(cart, riesgo)`.
+Cruza lo que ya existía y estaba en dos lugares distintos:
+
+```
+peso + tope + cantidad + valor   ← analizarCartera()   (Motor A)
+objetivo + aporte + correlación  ← riesgo.js           (Motor B)
+```
+
+y produce el número que se OPERA: Δ en puntos porcentuales, monto en dólares y
+**cantidad entera de acciones** (truncada, nunca redondeada para arriba: hacia
+arriba se vendería más de lo que hay).
+
+Se dibuja en `Cartera.jsx` como `<ActualVsObjetivo>`, entre "Cuánto pesa cada
+cosa" y "Afinidad". **Sí sale impresa** — es la sección que convierte el
+diagnóstico en algo ejecutable.
+
+Sobre la cartera de la auditoría, con el histórico real:
+
+```
+  ticker   pesa  debería      Δ         monto   acc   riesgo  corr   qué hacer
+  AAPL      30%    10.8%  -19.2pp  US$ -11520   -38   59.9%   0.24   vender
+  KO        10%    22.7%   12.7pp    US$  7620   127    3.2%   0.06   comprar
+  XOM      6.7%    14.9%    8.2pp    US$  4920    49    3.5%   0.10   comprar
+  JPM       15%    13.4%   -1.6pp    US$  -960    -3   16.5%   0.21   vender
+  MSFT    13.3%    13.2%   -0.1pp             —     —   16.9%   0.21   queda igual
+
+  volatilidad 15.9% → 12.2%  (mejora 3.7 puntos)
+```
+
+Detalles de diseño que importan:
+
+- **`UMBRAL_AJUSTE_PP = 1.0`.** Por debajo de un punto no se mueve nada. No es
+  por el costo de operar —es una cuota fija mensual, así que el monto nunca
+  justifica no operar— sino porque medio punto está **adentro del error del
+  propio cálculo**: la covarianza es histórica y no tiene esa precisión.
+- **El denominador es la cartera COMPLETA**, no lo analizado. Si se usara lo
+  analizado, cada ajuste saldría chico en la proporción exacta en que la cartera
+  está sin cubrir. Hay una comprobación dedicada a eso.
+- **Si la mejora es menor a 0,3 puntos, la sección lo dice**: "los ajustes no
+  cambian el riesgo de forma apreciable, no hay urgencia". Un informe que
+  siempre encuentra algo para hacer no sirve.
+- **Sin histórico, `planDePesos()` devuelve `null` y la sección no se dibuja.**
+  Mismo interruptor que la fase B2: el Motor A no depende del B.
+
+### 2. 🔴 EL BLOQUE `riesgo` NUNCA LLEGABA AL MODELO
+
+`_resumen_cartera()` en `api/informe.py` arma el payload **clave por clave**.
+Una clave que no se nombra ahí **no llega nunca, sin error y sin aviso**.
+
+`riesgo` no estaba en la lista. O sea: la volatilidad de la cartera, la
+volatilidad objetivo, `cobertura_del_calculo_pct` y `topes_insuficientes` se
+calculaban en el navegador y **se tiraban a la basura justo antes de la
+llamada**. El prompt tenía seis reglas escritas sobre datos que no llegaban.
+
+### 3. 🔴 Y LOS CANDIDATOS PERDÍAN SUS TRES CAMPOS DE RIESGO
+
+`_filtrar_candidatos()` reconstruía cada candidato a mano:
+
+```python
+out.append({'ticker': ..., 'sector': ..., 'puntaje': ..., 'metricas': ...})
+```
+
+Cuatro claves. `volatilidad_pct`, `correlacion_media_con_la_cartera` y
+`delta_volatilidad_cartera` **no estaban**. El prompt decía, literal:
+
+> *"Para elegir dónde poner plata mandan la correlación y el delta de
+> volatilidad, NO el puntaje fundamental."*
+
+…y esos dos números no llegaban. Al modelo le quedaba **solo el puntaje
+fundamental** — exactamente el criterio que la auditoría del Motor B midió como
+**la peor de cuatro opciones** (MSFT, −0,4 puntos, contra KO, −3,6).
+
+Este es el motivo concreto del diagnóstico *"el informe hace mucho del motor A y
+poco del B"*. No era redacción ni prompt: **los números se calculaban bien y se
+perdían en el último paso.**
+
+Además los candidatos ahora **vienen ordenados por lo que le aportan a ESTA
+cartera** (delta de volatilidad, el que más baja primero), no por puntaje. Los
+que no se pudieron medir van al final, no adelante: no se premia la falta de
+dato.
+
+**La compuerta contra que vuelva a pasar**: `test/test_tesis_cartera.py` tiene
+ahora una comprobación que exige que **toda clave de primer nivel que produce el
+navegador sobreviva a `_resumen_cartera`**. El próximo campo nuevo no se puede
+perder en silencio.
+
+### 4. La compresión de posiciones (punto 3 de lo aprobado)
+
+Las posiciones que no requieren ninguna decisión viajan en formato corto.
+El criterio es explícito y conservador — cualquier duda manda la ficha completa:
+
+```js
+const requiereDecision = (a, r) => {
+  if (a.accion !== 'mantener') return true
+  if (a.estado !== 'banda') return true        // critico | sobre | banda | sub
+  if ((a.banderas || 0) > 0) return true
+  if (a.tomaGanancia) return true
+  if (r && r.aporte_al_riesgo_pct > a.peso * 1.5) return true
+  return false
+}
+```
+
+⚠️ **El primer intento usaba `estado === 'neutral'` y `'bajo'`, que no existen.**
+La condición no se cumplía nunca y la compresión no comprimía nada. No fallaba:
+mandaba todo completo, como antes, sin una sola señal. El vocabulario real es
+`critico | sobre | banda | sub`.
+
+Y el prompt tiene un bloque nuevo, **DOS NIVELES DE DETALLE**, para que la
+ausencia de campos no se lea como dato faltante.
+
+### 5. Invalidation points (era el punto 4 de la lista de valor)
+
+Una línea de prompt: la sección 1 cierra con *"Esto estaría mal si…"* — una o
+dos condiciones concretas y observables que harían que este plan sea la decisión
+equivocada. Va **dentro** de la sección 1 y no como sexta sección, para no gastar
+tokens de salida (que son el cuello de botella de los 60s, no los de entrada).
+
+### 6. El costo, medido — cartera de 15 posiciones
+
+Lo que realmente se manda después de `_resumen_cartera()`:
+
+| bloque | tokens |
+|---|---|
+| posiciones (14 en orden + 1 con decisión) | 967 |
+| candidatos (10, con sus deltas) | 714 |
+| plan | 448 |
+| sectores | 190 |
+| resto | 184 |
+| **payload** | **2.503** |
+| prompt de reglas (**cacheado**, 0,1× en las lecturas) | 2.475 |
+
+El bloque de posiciones sin comprimir serían ~1.950: **la compresión ahorra
+~1.000 tokens por llamada** y paga de sobra el `plan` (448) y el `riesgo` (48)
+que ahora sí viajan.
+
+> El ahorro grande sigue siendo el mismo de siempre: **el caché por huella de
+> cartera**. El costo es por CAMBIO, no por consulta. Abrir el informe diez veces
+> sin tocar nada cuesta cero.
+
+### 7. Dos pruebas que fallaban solas (arregladas)
+
+- **`prueba-snapshot.cjs`** comparaba el retorno anualizado contra constantes
+  sin decir de qué día eran. Cada vez que Marcos actualizaba el histórico, la
+  ventana de 756 días se corría y la prueba "fallaba" sola. Ahora el ancla es la
+  **cantidad de fechas** (`ANCLA_N`), y si el snapshot avanzó lo dice y compara
+  con tolerancia amplia. Volatilidad y beta se siguen exigiendo finas — y siguen
+  dando **idénticas** con 4 días más, que es la mejor confirmación de que el
+  módulo está bien.
+- El caso "cobertura insuficiente" agregaba **10 símbolos inventados sobre 632**:
+  daba 98% de cobertura, o sea que no probaba nada. Ahora los inventados se
+  calculan como el 40% de la lista.
+
+### Estado de las pruebas
+
+```
+prueba-snapshot       41 ✅      test_contrato.py        ✅
+prueba-metricas       28 ✅      test_tesis.py           ✅
+prueba-sugerencias    31 ✅      test_tesis_cartera.py   ✅ (+8 casos nuevos)
+prueba-datos-tesis    40 ✅
+prueba-riesgo         25 ✅
+prueba-plan           62 ✅  NUEVO
+```
+
+### Lo que sigue pendiente, en orden de valor
+
+1. **Benchmark contra SPY** (capa 3). SPY ya está en el snapshot con 1.673
+   puntos y no se lo compara con nada.
+2. **Compuerta `DATA_INSUFFICIENT`** (capa 1): un solo lugar que diga "con esto
+   no alcanza", en vez de cinco campos de cobertura desparramados.
+3. **`industry`**: se captura hace tres días y no se usa. Concentración por
+   industria es más fina que por sector.
+4. **Fase C**: matar las llamadas en vivo de `quote`/`profile`/`ratios` y leer
+   de `informe_detalle.json`.
+5. **NIM como dato** (no como puntaje) en la ficha de bancos.
+6. **FISV parece un ticker muerto** — Fiserv pasó a `FI` en 2023. Tiene 2/6
+   métricas y puntúa 99.
+
+---
+
 ## 📦 PENDIENTE DE PUSH — lista acumulada
 
 Todo esto está escrito en la carpeta y **todavía no subido**. Verificar con
 `git status` antes de asumir.
+
+### Tanda de ahora (31/08) — tabla ACTUAL vs OBJETIVO + 2 bugs del Motor B
+
+```
+src/informe/cartera.js       planDePesos() + compresion de posiciones + bloque `plan`
+src/informe/Cartera.jsx      <ActualVsObjetivo> — la tabla, entre "Pesos" y "Afinidad"
+api/informe.py               🔴 `riesgo` y `plan` al payload (faltaban) + candidatos con
+                             sus deltas (faltaban) + DOS NIVELES DE DETALLE + invalidation
+test/prueba-plan.cjs         NUEVO — 62 comprobaciones
+test/prueba-datos-tesis.cjs  al dia con el formato de dos niveles
+test/prueba-snapshot.cjs     ancla por cantidad de fechas + el caso de cobertura ahora prueba
+test/test_tesis_cartera.py   +8 casos: nada del Motor B se cae en el camino
+CONTEXTO_INFORME_AVANZADO.md
+```
+
+Las nueve suites pasan. `src/main.jsx` sigue apareciendo modificado por finales
+de linea (CRLF) — es ruido, se descarta con `git checkout src/main.jsx`.
 
 > Todo lo anterior (informe de cartera incluido) y el arreglo de Twelve Data en
 > `src/App.jsx` **ya fueron pusheados** por Marcos. Lo que sigue es la tanda del
@@ -3783,4 +3987,4 @@ y recargar. Si no, seguís viendo datos cacheados de antes.
 
 ---
 
-*Actualizado: 21 de agosto de 2026 · Sonda corrida y analizada · Tesis híbrida y estética clara confirmadas · Pendiente: alcance del histórico y deploy*
+*Actualizado: 31 de agosto de 2026 · Tabla ACTUAL vs OBJETIVO en el informe · Dos bugs que tiraban el Motor B antes de la llamada · 314 comprobaciones en verde · Anterior: 21 de agosto de 2026 · Sonda corrida y analizada · Tesis híbrida y estética clara confirmadas · Pendiente: alcance del histórico y deploy*

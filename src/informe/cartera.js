@@ -373,13 +373,24 @@ export function analizarCartera(informes, posiciones, perfilClave,
     // Sobre la cartera COMPLETA, igual que los pesos por posición: un sector
     // que es el 40% de lo analizado pero el 19% de la cartera no es un problema
     // de concentración.
+    // ⚠️ CUANDO NO HAY MONTOS, ESTO NO ES UN PESO
+    // Sin importes cargados el porcentaje se calcula por CANTIDAD de papeles:
+    // "3 de 5 posiciones son Technology" = 60%. Eso NO es exposición.
+    //
+    // Y hasta ahora salía al informe como `pct` con `excede: true`, sin ninguna
+    // marca. Una cartera con tres tecnológicas de 2% cada una aparecía como
+    // "Technology excede el 35%" — una alarma falsa, y el modelo no tenía cómo
+    // darse cuenta. `denominador` existe para que quien lo lea sepa qué está
+    // mirando; sin él, todo porcentaje se lee como plata.
     const pct = hayPesos
       ? activos.filter(a => (a.sector || 'Sin sector') === s.sector)
                .reduce((acc, a) => acc + (a.peso || 0), 0)
       : (s.n / activos.length) * 100
     return {
       ...s, pct: round1(pct), tope: round1(topeSector),
-      excede: pct > topeSector,
+      denominador: hayPesos ? 'valor de la cartera' : 'cantidad de posiciones',
+      // Un exceso "por cantidad" no es un exceso de exposición: no se marca.
+      excede: hayPesos && pct > topeSector,
       excesoUSD: hayPesos && pct > topeSector
         ? Math.round((pct - topeSector) / 100 * valorTotal) : null,
     }
@@ -391,7 +402,8 @@ export function analizarCartera(informes, posiciones, perfilClave,
     const pct = hayPesos
       ? del.reduce((acc, a) => acc + (a.peso || 0), 0)
       : (del.length / activos.length) * 100
-    return { clase: k, n: del.length, pct: round1(pct) }
+    return { clase: k, n: del.length, pct: round1(pct),
+             denominador: hayPesos ? 'valor de la cartera' : 'cantidad de posiciones' }
   }).filter(c => c.n > 0)
 
   return {
@@ -655,6 +667,32 @@ export function armarDatosTesis(cart, estres, candidatos = [], scores = {},
   // todo cliente hace primero: "¿cuánto puedo perder?".
   const peor = (estres?.escenarios || [])[0] || null
 
+  // ── Detalle proporcional a la decisión ──────────────────────────────────
+  // Una posición que está en orden no necesita doce campos: necesita que el
+  // modelo la nombre y siga. Medido sobre una cartera de 15 con el reparto
+  // típico (4 accionables, 11 en orden), el bloque completo son 1.937 tokens y
+  // las 11 que no requieren decisión se llevan 1.423 — el 62% del gasto en lo
+  // que no hay que decidir. Comprimidas son 214.
+  //
+  // El criterio es explícito: se comprime solo lo que no tiene NADA que
+  // discutir. Cualquier duda (una bandera, un exceso, aportar mucho más riesgo
+  // que peso) manda la ficha completa.
+  // ⚠️ Los estados son `critico | sobre | banda | sub` — NO "neutral"/"bajo".
+  // El primer intento usó esos dos nombres, que no existen: la condición no se
+  // cumplía nunca y la compresión no comprimía nada. No fallaba: simplemente
+  // mandaba todo completo, como antes, sin una sola señal.
+  const requiereDecision = (a, r) => {
+    if (a.accion !== 'mantener') return true
+    if (a.estado !== 'banda') return true
+    if ((a.banderas || 0) > 0) return true
+    if (a.tomaGanancia) return true
+    // Aporta bastante más riesgo del que su peso sugiere: hay algo que decir
+    // aunque la acción calculada sea "mantener".
+    if (r && r.aporte_al_riesgo_pct != null && a.peso > 0
+        && r.aporte_al_riesgo_pct > a.peso * 1.5) return true
+    return false
+  }
+
   return {
     perfil: cart.perfil?.nombre || cart.perfil?.clave || null,
     objetivo: cart.objetivo?.nombre || null,
@@ -692,10 +730,30 @@ export function armarDatosTesis(cart, estres, candidatos = [], scores = {},
       .filter(s => s.pct > 0)
       .map(s => ({
         sector: s.sector, pct: r1(s.pct), tope: r1(s.tope),
+        // El denominador viaja SIEMPRE. Un porcentaje sin denominador se lee
+        // como exposición aunque sea un conteo, y ahí nace la alarma falsa.
+        denominador: s.denominador,
         excede: !!s.excede, exceso_usd: s.excesoUSD ?? null,
       })),
 
-    posiciones: (cart.activos || []).map(a => ({
+    posiciones: (cart.activos || []).map(a => {
+      const r = riesgoDe(riesgo, a.ticker)
+      // Las que están en orden van en formato corto, con lo justo para que el
+      // modelo las nombre en su línea: quién es, cuánto pesa, cuánto debería,
+      // cuánto riesgo aporta y qué hacer.
+      if (!requiereDecision(a, r)) {
+        return {
+          ticker: a.ticker, sector: a.sector,
+          peso_pct: r1(a.peso), tope_pct: r1(a.topeClase),
+          puntaje_fundamental: a.puntajeFundamental,
+          metricas_usadas: cob(a.ticker).metricas,
+          accion_calculada: a.accion,
+          ...(r ? { aporte_al_riesgo_pct: r.aporte_al_riesgo_pct,
+                    peso_objetivo_pct: r.peso_objetivo_pct } : {}),
+          en_orden: true,
+        }
+      }
+      return {
       ticker: a.ticker,
       nombre: a.nombre,
       sector: a.sector,
@@ -723,8 +781,9 @@ export function armarDatosTesis(cart, estres, candidatos = [], scores = {},
       // ── MOTOR B: lo que la posicion le hace a la CARTERA, no a si misma ──
       // Sin esto el informe solo sabia decir "excede el tope". Con esto puede
       // decir "pesa 30% pero aporta el 60% del riesgo", que es otra cosa.
-      ...(riesgoDe(riesgo, a.ticker) || {}),
-    })),
+      ...(r || {}),
+      en_orden: false,
+    }}),
 
     // Los candidatos, con lo que le APORTAN A ESTA CARTERA cuando se puede
     // medir. Sin el delta de volatilidad, el unico criterio era el puntaje
@@ -752,6 +811,135 @@ export function armarDatosTesis(cart, estres, candidatos = [], scores = {},
       posiciones_sin_datos: (riesgo.sin_datos || []).map(s => s.ticker),
       topes_insuficientes: riesgo.topes_insuficientes,
     } : { disponible: false, motivo: riesgo?.motivo || 'no se calculo' },
+
+    // ── El plan, ya en numeros operables ────────────────────────────────────
+    // EL MISMO objeto que se dibuja en la tabla del informe. Van solo los
+    // movimientos (las que quedan como estan ya viajan en `posiciones`), asi
+    // que cuesta poco y le saca al modelo la unica cuenta que podria hacer mal:
+    // cuanto mover. Su trabajo es el ORDEN y el porque, no la aritmetica.
+    plan: (() => {
+      const pl = planDePesos(cart, riesgo)
+      if (!pl) return null
+      return {
+        umbral_pp: pl.umbralPP,
+        volatilidad_actual_pct: pl.volActual,
+        volatilidad_si_se_ejecuta_pct: pl.volObjetivo,
+        mejora_puntos: pl.mejoraVol,
+        comprar_usd: pl.comprarUSD,
+        vender_usd: pl.venderUSD,
+        movimientos: pl.filas
+          .filter(f => f.movimiento !== 'mantener')
+          .map(f => ({
+            ticker: f.ticker,
+            movimiento: f.movimiento,
+            de_pct: f.peso, a_pct: f.objetivo, delta_pp: f.delta,
+            monto_usd: f.montoUSD, acciones: f.acciones,
+            aporte_al_riesgo_pct: f.aporteRiesgo,
+            limitado_por_tope: f.limitadoPorTope,
+          })),
+      }
+    })(),
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LA TABLA ACTUAL vs OBJETIVO
+//
+// Todo lo que hace falta para ejecutar ya estaba calculado y repartido en dos
+// lugares: el peso y el tope en `analizarCartera()`, el peso objetivo y el
+// aporte al riesgo en `riesgo.js`. Lo que faltaba era cruzarlos y decir el
+// número que se opera: cuántos puntos porcentuales sobran o faltan, cuántos
+// dólares son y —cuando se sabe el precio— cuántas acciones.
+//
+// Es determinístico A PROPÓSITO. Es la mitad del Motor B, y si lo escribiera el
+// modelo tendríamos dos fuentes de verdad: el texto diría un monto y la tabla
+// otro. Acá se calcula una vez, se dibuja y se manda al prompt EL MISMO objeto.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Por debajo de esto no se mueve nada. No es por el costo de operar —Marcos
+// paga una cuota fija mensual, así que el monto nunca justifica no operar— sino
+// porque medio punto de diferencia está adentro del error del propio modelo de
+// riesgo: la covarianza es histórica y no tiene esa precisión. Mover por 0,4 pp
+// es ruido con cara de decisión.
+export const UMBRAL_AJUSTE_PP = 1.0
+
+export function planDePesos(cart, riesgo) {
+  if (!cart || !Array.isArray(cart.activos)) return null
+  if (!riesgo || !riesgo.disponible) return null
+
+  // El denominador es la cartera COMPLETA, igual que los pesos: si los montos
+  // se calcularan sobre lo analizado, un ajuste de 3 pp saldría inflado en la
+  // proporción exacta en que la cartera está sin cubrir.
+  const valor = cart.valorTotalCartera ?? cart.valorTotal ?? null
+  const porTicker = cart.porTicker || {}
+
+  const filas = (riesgo.posiciones || []).map(p => {
+    const a = porTicker[p.ticker] || {}
+    const peso = a.peso ?? null
+    const obj = p.peso_objetivo_pct ?? null
+    const delta = (peso != null && obj != null) ? round1(obj - peso) : null
+    const montoUSD = (delta != null && valor > 0)
+      ? Math.round(delta / 100 * valor) : null
+    // El precio sale de lo que ya está cargado, no de una llamada nueva.
+    const precio = (a.cantidad > 0 && a.valorActual > 0)
+      ? a.valorActual / a.cantidad : null
+    // Acciones ENTERAS y hacia abajo en valor absoluto: redondear para arriba
+    // haría vender más de lo que hay o comprar más de lo que se decidió.
+    const acciones = (montoUSD != null && precio > 0)
+      ? Math.trunc(montoUSD / precio) : null
+
+    const mueve = delta != null && Math.abs(delta) >= UMBRAL_AJUSTE_PP
+    return {
+      ticker: p.ticker,
+      sector: a.sector || null,
+      clase: a.clase || null,
+      peso, objetivo: obj, delta,
+      montoUSD, acciones,
+      precio: precio != null ? Math.round(precio * 100) / 100 : null,
+      aporteRiesgo: p.aporte_al_riesgo_pct ?? null,
+      volatilidad: p.volatilidad_pct ?? null,
+      correlacion: p.correlacion_media ?? null,
+      limitadoPorTope: !!p.limitado_por_tope,
+      topeClase: a.topeClase ?? null,
+      accionCartera: a.accion || null,
+      // Un papel puede pesar de más y aportar POCO riesgo (o al revés). Marcar
+      // los dos por separado es lo que deja ver la diferencia entre las dos
+      // lecturas en vez de promediarlas.
+      concentraRiesgo: (p.aporte_al_riesgo_pct != null && peso > 0
+                        && p.aporte_al_riesgo_pct > peso * 1.5),
+      movimiento: !mueve ? 'mantener' : (delta > 0 ? 'comprar' : 'vender'),
+    }
+  })
+
+  // Se ordena por tamaño del ajuste: lo primero que se lee es lo primero que
+  // hay que hacer.
+  filas.sort((x, y) => Math.abs(y.delta ?? 0) - Math.abs(x.delta ?? 0))
+
+  const compras = filas.filter(f => f.movimiento === 'comprar')
+  const ventas = filas.filter(f => f.movimiento === 'vender')
+  const suma = (arr) => arr.reduce((acc, f) => acc + Math.abs(f.montoUSD || 0), 0)
+
+  return {
+    filas,
+    // Las que no tienen histórico no se esconden ni se les inventa un objetivo:
+    // se nombran aparte, igual que las métricas fundamentales que faltan.
+    sinDatos: (riesgo.sin_datos || []).map(s => s.ticker),
+    valorReferencia: valor,
+    umbralPP: UMBRAL_AJUSTE_PP,
+    nMovimientos: compras.length + ventas.length,
+    comprarUSD: Math.round(suma(compras)),
+    venderUSD: Math.round(suma(ventas)),
+    // El único número que dice si todo esto vale la pena. Si mover diez
+    // posiciones baja la volatilidad 0,3 puntos, la respuesta honesta es no
+    // hacer nada — y el informe tiene que poder decirlo.
+    volActual: riesgo.volatilidad_cartera_pct ?? null,
+    volObjetivo: riesgo.volatilidad_si_objetivo_pct ?? null,
+    mejoraVol: (riesgo.volatilidad_cartera_pct != null
+                && riesgo.volatilidad_si_objetivo_pct != null)
+      ? round1(riesgo.volatilidad_cartera_pct - riesgo.volatilidad_si_objetivo_pct)
+      : null,
+    coberturaPct: riesgo.cobertura_pct ?? null,
+    topesInsuficientes: riesgo.topes_insuficientes || null,
   }
 }
 

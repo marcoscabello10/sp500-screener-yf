@@ -1579,6 +1579,21 @@ Reglas sobre esto, y son las más importantes del análisis:
   · Si `riesgo.disponible` es falso, NO inventes nada de esto: decí que el
     análisis de riesgo no está disponible y hacé el resto.
 
+EL BLOQUE `plan` — LA ARITMÉTICA YA ESTÁ HECHA, Y YA ESTÁ IMPRESA
+Cuando venga `plan`, trae los movimientos ya calculados: de qué peso a qué peso,
+cuántos puntos porcentuales, cuántos dólares y cuántas ACCIONES ENTERAS. Esos
+mismos números están en una tabla, en la misma página que va a leer el usuario.
+  · Usá ESOS montos, tal cual. No los recalcules ni los redondees distinto: si
+    el texto dice un monto y la tabla dice otro, las dos cifras pierden valor.
+  · `mejora_puntos` es cuánto baja la volatilidad si se ejecuta TODO el plan.
+    Es el número que dice si vale la pena. Si es menor a 0,5 puntos, la
+    recomendación honesta es que no hay urgencia — decilo, no fabriques
+    entusiasmo.
+  · Las posiciones que no están en `movimientos` quedan como están porque el
+    desvío es menor al umbral, no porque falten datos.
+  · Tu trabajo sobre el plan es el ORDEN (qué primero, qué puede esperar) y el
+    PORQUÉ. La cuenta no.
+
 EL RETORNO ESPERADO ES DÉBIL Y HAY QUE TRATARLO ASÍ
 El único retorno esperado disponible es el precio objetivo de los analistas a
 12 meses. Es un predictor pobre. Usalo como contexto, nunca como el motivo
@@ -1589,6 +1604,15 @@ LA COVARIANZA ES HISTÓRICA
 Mira 3 años para atrás. Las correlaciones cambian, y suelen subir justo en las
 caídas — que es cuando la diversificación haría falta. El escenario de estrés
 que te dan es el complemento, no un adorno.
+
+DOS NIVELES DE DETALLE — NO LOS CONFUNDAS CON DATOS FALTANTES
+Las posiciones que no requieren ninguna decisión vienen con `en_orden: true` y
+menos campos, a propósito: ya se verificó que están bien y mandar su ficha
+completa sería gastar en lo que no hay que decidir.
+  · A esas las nombrás en su línea de la sección 3 y seguís. NO digas que les
+    faltan datos: no les falta nada, no hacía falta mandarlo.
+  · Las que vienen con `en_orden: false` traen todo, porque hay algo que
+    resolver. Ahí va el análisis.
 
 DATOS FALTANTES
 Cada activo trae `metricas_usadas` (ej. "4/6") y qué reemplazos se usaron
@@ -1647,6 +1671,11 @@ nada urgente, decilo en una línea.
 Cada acción, cuando haya datos de riesgo, dice A DÓNDE va la plata y CUÁNTO
 baja la volatilidad. Sin el número, es una opinión.
 
+Cerrá esta sección con una línea que empiece con «Esto estaría mal si…»: qué
+tendría que pasar para que este plan sea la decisión equivocada. Una o dos
+condiciones concretas y observables (un dato que cambie, un supuesto que se
+caiga), no advertencias genéricas sobre la volatilidad del mercado.
+
 ## 2. Cómo está la cartera
 Concentración, clases, encaje con el objetivo y el horizonte declarados, y qué
 pasa en el escenario de estrés que te dan.
@@ -1660,6 +1689,8 @@ UNA LÍNEA por posición, en este formato exacto y sin párrafos:
   TICKER · peso% → objetivo% · aporta X% del riesgo · ACCIÓN · motivo · confianza
 
 (si no hay datos de riesgo, se omiten el objetivo y el aporte, no se inventan)
+(si la posición está en `plan.movimientos`, agregá el monto y las acciones tal
+como vienen ahí: es lo único que hace la línea ejecutable)
 
 Ampliá a dos o tres líneas SOLO las que tengan una acción distinta de
 "mantener". Las que están en orden se despachan en su línea y listo: repetir
@@ -1728,9 +1759,25 @@ def _filtrar_candidatos(candidatos, posiciones, sectores):
         por_sector[sec] = por_sector.get(sec, 0) + 1
         # Sin `nombre`: para elegir un reemplazo alcanza el ticker y el sector,
         # y los nombres largos son puro peso.
-        out.append({'ticker': c.get('ticker'), 'sector': sec,
-                    'puntaje': c.get('puntaje'),
-                    'metricas': c.get('metricas')})
+        fila = {'ticker': c.get('ticker'), 'sector': sec,
+                'puntaje': c.get('puntaje'),
+                'metricas': c.get('metricas')}
+        # ⚠️ ESTOS TRES CAMPOS SON EL MOTOR B DE LA ROTACION. Estuvieron
+        # ausentes hasta el 31/08/2026 porque esta funcion reconstruia el
+        # candidato a mano con cuatro claves. El prompt pedia elegir por
+        # correlacion y delta de volatilidad, y esos numeros no llegaban:
+        # al modelo solo le quedaba el puntaje fundamental, que es justo el
+        # criterio que la auditoria midio como el peor de cuatro.
+        for k in ('volatilidad_pct', 'correlacion_media_con_la_cartera',
+                  'delta_volatilidad_cartera'):
+            if c.get(k) is not None:
+                fila[k] = c[k]
+        out.append(fila)
+
+    # Primero los que MAS bajan la volatilidad de esta cartera. Los que no se
+    # pudieron medir van al final, no adelante: no se premia la falta de dato.
+    out.sort(key=lambda x: (x.get('delta_volatilidad_cartera') is None,
+                            x.get('delta_volatilidad_cartera') or 0))
     return out
 
 
@@ -1752,6 +1799,14 @@ def _resumen_cartera(c):
         'sectores': sectores,
         'posiciones': pos,
         'candidatos': _filtrar_candidatos(c.get('candidatos') or [], pos, sectores),
+        # ⚠️ `riesgo` y `plan` son whitelist: esta funcion arma el payload clave
+        # por clave, asi que una clave que no se nombra ACA no llega nunca, sin
+        # error y sin aviso. `riesgo` faltaba: la volatilidad de la cartera, la
+        # cobertura del calculo y `topes_insuficientes` se calculaban en el
+        # navegador y se tiraban a la basura antes de la llamada.
+        'riesgo': c.get('riesgo') or {'disponible': False},
+        # El plan son ~200 tokens y es lo unico ejecutable del payload.
+        'plan': c.get('plan'),
     }
 
 

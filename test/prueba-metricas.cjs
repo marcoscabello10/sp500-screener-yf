@@ -14,9 +14,46 @@
 'use strict';
 const fs = require('fs');
 const path = require('path');
+
+// ── DÓNDE ESTÁN LOS ARCHIVOS ────────────────────────────────────────────────
+// ⚠️ Todo se resuelve desde ESTE archivo, nunca desde el directorio en el que
+// se corre ni desde una ruta absoluta.
+//
+// Las seis pruebas .cjs tenían clavada la ruta del contenedor de Claude
+// (`/mnt/user-data/uploads/...`) y además cargaban los módulos desde `test/`,
+// donde no viven. O sea: NUNCA pudieron correr en la máquina de Marcos. Es el
+// mismo error que se arregló en las pruebas de Python el 28/08 y que se repitió
+// acá — una prueba que solo corre en la máquina de quien la escribió no es una
+// prueba, es una demostración.
+const RAIZ = path.resolve(__dirname, '..');
+const DATA = path.join(RAIZ, 'public', 'data') + path.sep;
+
+// Los módulos viven repartidos: App.jsx en src/, el informe en src/informe/,
+// el endpoint en api/. Se busca en ese orden y si no está, se dice cuál falta.
+function ruta(nombre) {
+  const posibles = [
+    path.join(RAIZ, 'src', 'informe', nombre),
+    path.join(RAIZ, 'src', nombre),
+    path.join(RAIZ, 'api', nombre),
+    path.join(__dirname, nombre),
+  ];
+  for (const p of posibles) if (fs.existsSync(p)) return p;
+  throw new Error(`No encuentro "${nombre}". Esta prueba se corre desde la `
+                + `raiz del repo: node test/${path.basename(__filename)}`);
+}
+
+// ⚠️ HAY DOS `App.jsx` EN ESTE REPO, Y SON DE PROYECTOS DISTINTOS:
+//   src/App.jsx          -> el SCREENER   (es el que prueba este archivo)
+//   src/informe/App.jsx  -> el INFORME
+// Por eso acá NO se usa `ruta()`, que buscaría primero en src/informe/ y
+// devolvería el equivocado sin decir nada. La separación entre los dos
+// proyectos es la regla #1 del proyecto, y también vale para las pruebas.
+const APP_SCREENER = path.join(RAIZ, 'src', 'App.jsx');
+
 const vm = require('vm');
 
-const SRC = fs.readFileSync(path.join(__dirname, 'App.jsx'), 'utf8');
+
+const SRC = fs.readFileSync(APP_SCREENER, 'utf8');
 
 function bloque(desde, hasta) {
   const a = SRC.indexOf(desde);
@@ -49,9 +86,9 @@ function chequear(nombre, cond, detalle) {
 
 // ── El snapshot real, transformado como lo va a dejar el bot parcheado ──────
 const FUND = JSON.parse(fs.readFileSync(
-  '/mnt/user-data/uploads/sp500-screener-yf/public/data/sp500_fundamentals.json', 'utf8'));
+  DATA + 'sp500_fundamentals.json', 'utf8'));
 const CONS = JSON.parse(fs.readFileSync(
-  '/mnt/user-data/uploads/sp500-screener-yf/public/data/informe_consenso.json', 'utf8')).consenso;
+  DATA + 'informe_consenso.json', 'utf8')).consenso;
 
 function comoLoDejaElBot(s) {
   const c = CONS[s.symbol] || {};

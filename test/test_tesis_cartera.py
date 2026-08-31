@@ -401,6 +401,37 @@ chequear(not faltan, f'estas claves se pierden en _resumen_cartera: {faltan}')
 print(f'  Motor B completo    -> riesgo + plan + {len(d2["candidatos"])} '
       f'candidatos con delta, mejor primero')
 
+# ── 13. El estimador no puede mentir para abajo ───────────────────────────
+# El boton existe para que Marcos decida ANTES de gastar. Un estimador que
+# subestima es peor que no tenerlo. Estuvo 23-41% bajo desde que se agregaron
+# `plan`, `riesgo` y los campos de riesgo de los candidatos, y ademas tenia el
+# tamano del prompt clavado en 1249 mientras el prompt crecia al doble.
+#
+# Los valores de abajo se midieron sobre `_resumen_cartera()` con carteras
+# reales el 31/08/2026. Si se agrega un bloque nuevo al payload, esta prueba
+# falla y hay que volver a calibrar — que es exactamente lo que queremos.
+MEDIDO = {3: 955, 5: 1520, 10: 2374, 15: 2913, 20: 3602, 25: 4275}
+for n_pos, real in MEDIDO.items():
+    est = I.estimar_cartera(n_pos, 'anthropic')['tokens_estimados']['entrada']
+    chequear(est >= real,
+             f'{n_pos} posiciones: el estimador dice {est} y el payload real '
+             f'son {real} tokens — subestima {round((real-est)/real*100)}%')
+    # Tampoco puede irse al doble: un techo absurdo asusta y no informa.
+    chequear(est <= real * 1.45,
+             f'{n_pos} posiciones: el estimador exagera ({est} vs {real})')
+
+# El tamano de las reglas se MIDE. Si alguien vuelve a clavarlo, esto lo caza.
+e = I.estimar_cartera(15, 'anthropic')
+chequear(e['tokens_estimados']['reglas_cacheadas'] == len(I.SISTEMA_CARTERA) // 4,
+         'el tamano del prompt cacheado no sale del prompt real')
+chequear(e['costo_primera_vez_usd'] > e['costo_estimado_usd'],
+         'la primera llamada tiene que costar mas: paga las reglas completas')
+chequear(e['entra_en_el_limite'],
+         f'15 posiciones ya no entran en los {I.TIMEOUT_CARTERA}s: '
+         f'{e["segundos_estimados"]}s estimados')
+print(f'  estimador            -> nunca por debajo del payload real '
+      f'({len(MEDIDO)} tamanos), reglas medidas del prompt')
+
 print('=' * 74)
 if fallos:
     print(f'  {len(fallos)} FALLAS:')

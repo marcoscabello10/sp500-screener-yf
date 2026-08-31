@@ -1848,21 +1848,40 @@ def estimar_cartera(n_posiciones, proveedor='anthropic', modo=None):
     modo = modo or MODO_CARTERA_POR_DEFECTO
     modelo = modelo_cartera(proveedor, modo)
     n = max(0, int(n_posiciones or 0))
-    # Medido sobre payloads reales: ~85 tokens por posicion + ~35 por candidato
-    # + el resto del encabezado.
-    entrada = 120 + 85 * n + 35 * min(n * 2, 24)
-    salida = 1050 + 50 * n
+    # ⚠️ ESTA FORMULA SE CALIBRA CONTRA PAYLOADS REALES, Y SE CALIBRA HACIA
+    # ARRIBA A PROPOSITO.
+    #
+    # La version anterior (120 + 85n + 35·candidatos) quedo vieja el 31/08 al
+    # agregarse el bloque `plan`, el bloque `riesgo` y los tres campos de riesgo
+    # de cada candidato: subestimaba la entrada entre 23% y 41%. Un estimador
+    # que miente para abajo es peor que no tenerlo — el boton existe para que
+    # Marcos decida si gasta, y para eso el numero tiene que ser el techo, no
+    # una ilusion.
+    #
+    # Medido el 31/08 sobre `_resumen_cartera()` con carteras reales de 3, 5,
+    # 10, 15, 20 y 25 posiciones (955, 1.520, 2.374, 2.913, 3.602 y 4.275
+    # tokens). La recta de abajo queda por ENCIMA de las seis.
+    entrada = 800 + 160 * n
+    # La salida crecio un poco: la seccion 1 cierra con los invalidation points
+    # y las lineas de la seccion 3 llevan monto y acciones.
+    salida = 1150 + 55 * n
     pe, ps = PRECIOS.get(modelo, (None, None))
     costo = (round(entrada * pe / 1e6 + salida * ps / 1e6, 4)
              if pe is not None else None)
     # La primera llamada paga las reglas completas; de ahi en mas salen del
     # cache a 0,1x.
-    costo_primera = (round(costo + 1249 * pe / 1e6, 4)
+    # ⚠️ El tamano se MIDE, no se escribe a mano. Estuvo clavado en 1249 mientras
+    # el prompt crecia a casi el doble, asi que el "costo la primera vez" que
+    # veia Marcos era la mitad del real. Un numero hardcodeado sobre algo que se
+    # edita seguido se desactualiza sin que nadie se entere.
+    tokens_reglas = len(SISTEMA_CARTERA) // 4
+    costo_primera = (round(costo + tokens_reglas * pe / 1e6, 4)
                      if costo is not None else None)
     velocidad = 150 if 'haiku' in modelo or 'luna' in modelo else 60
     return {
         'modo': modo, 'modelo': modelo, 'n_posiciones': n,
-        'tokens_estimados': {'entrada': entrada, 'salida': salida},
+        'tokens_estimados': {'entrada': entrada, 'salida': salida,
+                             'reglas_cacheadas': len(SISTEMA_CARTERA) // 4},
         'costo_estimado_usd': costo,
         'costo_primera_vez_usd': costo_primera,
         'segundos_estimados': round((salida + 1500) / velocidad),

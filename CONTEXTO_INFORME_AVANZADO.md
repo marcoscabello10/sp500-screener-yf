@@ -3561,10 +3561,181 @@ prueba-plan           62 ✅  NUEVO
 
 ---
 
+## 🔢 EL ESTIMADOR DE COSTO MENTÍA PARA ABAJO (31/08/2026)
+
+Chequeo previo antes de apretar el botón. **El número que el botón muestra
+antes de gastar estaba mal, y mal para el lado peligroso.**
+
+### Dos causas
+
+1. **La fórmula de entrada quedó vieja.** Era `120 + 85·n + 35·candidatos`,
+   calibrada antes de que existieran el bloque `plan`, el bloque `riesgo` y los
+   tres campos de riesgo por candidato. Medido contra `_resumen_cartera()` con
+   carteras reales:
+
+   | posiciones | payload real | fórmula vieja | error |
+   |---|---|---|---|
+   | 3 | 955 | 585 | **−39%** |
+   | 5 | 1.520 | 895 | **−41%** |
+   | 10 | 2.374 | 1.670 | −30% |
+   | 15 | 2.913 | 2.235 | −23% |
+   | 20 | 3.602 | 2.660 | −26% |
+   | 25 | 4.275 | 3.085 | −28% |
+
+2. **El tamaño del prompt estaba clavado en `1249`** dentro del cálculo de
+   `costo_primera_vez_usd`, mientras el prompt crecía a 2.475 tokens. El "cuánto
+   sale la primera vez" que se mostraba era **la mitad del real**.
+
+### El arreglo
+
+La recta nueva es `800 + 160·n`, calibrada para quedar **por encima de las seis
+mediciones**. Un estimador que subestima es peor que no tenerlo: el botón existe
+para decidir si se gasta, y para eso el número tiene que ser el techo, no una
+ilusión. Y el tamaño de las reglas ahora **se mide del prompt real**
+(`len(SISTEMA_CARTERA) // 4`), no se escribe a mano — un número hardcodeado
+sobre algo que se edita seguido se desactualiza sin que nadie se entere.
+
+`test_tesis_cartera.py` tiene ahora las seis mediciones adentro: si se agrega un
+bloque nuevo al payload, la prueba falla y obliga a recalibrar. Es la compuerta,
+no el arreglo.
+
+### Los números reales, cartera de 15 posiciones
+
+| | rápido (Haiku) | profundo (Sonnet) |
+|---|---|---|
+| por llamada | USD 0,0131 | USD 0,0261 |
+| la primera vez (paga las reglas) | USD 0,0156 | USD 0,0311 |
+| tiempo | 23s | **58s ⚠️** |
+
+⚠️ **El modo profundo no entra en los 60s de Vercel arriba de ~11 posiciones.**
+El estimador ya lo marca (`entra_en_el_limite: false`) y el botón ya muestra el
+aviso, así que no hay nada que arreglar — pero conviene saberlo: **para carteras
+grandes, el modo rápido no es una economía, es el único que termina.**
+
+### Verificación de build
+
+Se bundleó el informe entero (`main.jsx` → todo el grafo de imports) con esbuild
+antes de dar el visto bueno. Un error de importación —un `export` que no existe,
+un nombre repetido— **rompe la página completa, no solo la sección nueva**, y no
+lo caza ninguna de las suites. Compila limpio: 213 KB.
+
+⚠️ `const plan` ya existía en `Cartera.jsx` (`planRotacion`). La tabla nueva usa
+`planPesos`. Se detectó al escribirlo, no al romperlo.
+
+---
+
+## 🔴 LAS 6 PRUEBAS .cjs NUNCA PUDIERON CORRER EN LA PC DE MARCOS (31/08/2026)
+
+**Es el mismo error que se arregló en las pruebas de Python el 28/08, repetido
+en las de JavaScript.** Marcos lo encontró apenas instaló Node:
+
+```
+Error: ENOENT: no such file or directory, open
+'C:\mnt\user-data\uploads\sp500-screener-yf\public\data\historico_precios.json'
+```
+
+Dos rutas mal, no una:
+
+1. **Los datos** estaban clavados en `/mnt/user-data/uploads/...`, que es el
+   contenedor de Claude. En Windows eso se resuelve a `C:\mnt\...` y no existe.
+2. **Los módulos** se cargaban con `path.join(__dirname, 'cartera.js')`, o sea
+   desde `test/` — donde no vive ninguno. Viven en `src/informe/`.
+
+O sea que las seis pruebas solo podían correr en la máquina de quien las
+escribió. **Una prueba que no corre donde está el código no es una prueba, es
+una demostración** — y encima da una falsa sensación de cobertura, que es peor
+que no tenerla.
+
+### El arreglo
+
+Cada archivo resuelve todo desde `__dirname`:
+
+```js
+const RAIZ = path.resolve(__dirname, '..');
+const DATA = path.join(RAIZ, 'public', 'data') + path.sep;
+
+function ruta(nombre) {           // busca src/informe/, src/, api/, test/
+  ...
+  throw new Error(`No encuentro "${nombre}". Esta prueba se corre desde la
+                   raiz del repo: node test/${path.basename(__filename)}`);
+}
+```
+
+⚠️ **`prueba-snapshot` y `prueba-metricas` NO usan `ruta()`.** Hay dos `App.jsx`
+en el repo y son de proyectos distintos:
+
+```
+src/App.jsx           -> el SCREENER   (es el que prueban esas dos)
+src/informe/App.jsx   -> el INFORME
+```
+
+`ruta()` buscaría primero en `src/informe/` y devolvería el equivocado **sin
+decir nada**. Usan una constante explícita, `APP_SCREENER`. La separación entre
+los dos proyectos es la regla #1 y también vale para las pruebas.
+
+### Verificado como corresponde
+
+Se armó una copia con la estructura REAL del repo (`src/informe/`, `src/`,
+`api/`, `test/`, `public/data/`) y se corrieron las nueve suites desde ahí — y
+además **desde otro directorio**, que es lo que las rompía. Las nueve pasan.
+
+---
+
+## 🔒 REGLA REFORZADA: NI SIQUIERA `git status` DESDE EL PUENTE
+
+Ya existía la regla de no correr git desde el puente al escritorio. **La violé el
+31/08 corriendo `git status`**, creyendo que era de solo lectura. No lo es:
+`git status` refresca el índice y para eso escribe `.git/index.lock`. El puente
+crea el archivo con su propio usuario y **no puede borrarlo**, así que quedó un
+lock de 0 bytes bloqueando todos los `git add` y `git commit` de Marcos:
+
+```
+fatal: Unable to create '.../.git/index.lock': File exists.
+```
+
+Se destraba borrándolo a mano desde PowerShell:
+
+```powershell
+Remove-Item "C:\Users\otero\Desktop\sp500-screener-yf\.git\index.lock"
+```
+
+**Desde el puente: `git log` sí, leer `.git/config` sí, `git status` NO, y
+cualquier cosa que escriba, tampoco.** Para saber qué cambió sin tocar el índice
+se puede usar `git --no-optional-locks status`, pero lo más seguro es
+preguntárselo a Marcos.
+
+---
+
 ## 📦 PENDIENTE DE PUSH — lista acumulada
 
 Todo esto está escrito en la carpeta y **todavía no subido**. Verificar con
 `git status` antes de asumir.
+
+### Tanda de ahora (31/08) — tercera parte: las pruebas ahora corren en Windows
+
+```
+test/prueba-snapshot.cjs     rutas desde __dirname + APP_SCREENER explicito
+test/prueba-metricas.cjs     idem
+test/prueba-sugerencias.cjs  rutas desde __dirname
+test/prueba-datos-tesis.cjs  idem
+test/prueba-riesgo.cjs       idem
+test/prueba-plan.cjs         idem
+CONTEXTO_INFORME_AVANZADO.md
+```
+
+⚠️ Antes de cualquier `git add`: borrar `.git/index.lock` (lo dejo un
+`git status` corrido desde el puente, ver la regla reforzada mas arriba).
+
+### Tanda de ahora (31/08) — segunda parte: el estimador
+
+```
+api/informe.py               estimar_cartera recalibrado (subestimaba 23-41%)
+                             + el tamano del prompt se MIDE, no se hardcodea
+test/test_tesis_cartera.py   +11 casos: el estimador nunca por debajo del real
+CONTEXTO_INFORME_AVANZADO.md
+```
+
+Build del informe verificado con esbuild: compila limpio.
 
 ### Tanda de ahora (31/08) — tabla ACTUAL vs OBJETIVO + 2 bugs del Motor B
 
@@ -3987,4 +4158,4 @@ y recargar. Si no, seguís viendo datos cacheados de antes.
 
 ---
 
-*Actualizado: 31 de agosto de 2026 · Tabla ACTUAL vs OBJETIVO en el informe · Dos bugs que tiraban el Motor B antes de la llamada · 314 comprobaciones en verde · Anterior: 21 de agosto de 2026 · Sonda corrida y analizada · Tesis híbrida y estética clara confirmadas · Pendiente: alcance del histórico y deploy*
+*Actualizado: 31 de agosto de 2026 · Tabla ACTUAL vs OBJETIVO en el informe · Dos bugs que tiraban el Motor B antes de la llamada · Estimador de costo recalibrado · Build verificado · Las 9 suites corren por fin en Windows · 325 comprobaciones en verde · Anterior: 21 de agosto de 2026 · Sonda corrida y analizada · Tesis híbrida y estética clara confirmadas · Pendiente: alcance del histórico y deploy*

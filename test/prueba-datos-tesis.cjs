@@ -13,10 +13,39 @@
 'use strict';
 const fs = require('fs');
 const path = require('path');
+
+// ── DÓNDE ESTÁN LOS ARCHIVOS ────────────────────────────────────────────────
+// ⚠️ Todo se resuelve desde ESTE archivo, nunca desde el directorio en el que
+// se corre ni desde una ruta absoluta.
+//
+// Las seis pruebas .cjs tenían clavada la ruta del contenedor de Claude
+// (`/mnt/user-data/uploads/...`) y además cargaban los módulos desde `test/`,
+// donde no viven. O sea: NUNCA pudieron correr en la máquina de Marcos. Es el
+// mismo error que se arregló en las pruebas de Python el 28/08 y que se repitió
+// acá — una prueba que solo corre en la máquina de quien la escribió no es una
+// prueba, es una demostración.
+const RAIZ = path.resolve(__dirname, '..');
+const DATA = path.join(RAIZ, 'public', 'data') + path.sep;
+
+// Los módulos viven repartidos: App.jsx en src/, el informe en src/informe/,
+// el endpoint en api/. Se busca en ese orden y si no está, se dice cuál falta.
+function ruta(nombre) {
+  const posibles = [
+    path.join(RAIZ, 'src', 'informe', nombre),
+    path.join(RAIZ, 'src', nombre),
+    path.join(RAIZ, 'api', nombre),
+    path.join(__dirname, nombre),
+  ];
+  for (const p of posibles) if (fs.existsSync(p)) return p;
+  throw new Error(`No encuentro "${nombre}". Esta prueba se corre desde la `
+                + `raiz del repo: node test/${path.basename(__filename)}`);
+}
+
 const vm = require('vm');
 
+
 function cargarESM(archivo, extra = {}) {
-  let src = fs.readFileSync(path.join(__dirname, archivo), 'utf8');
+  let src = fs.readFileSync(ruta(archivo), 'utf8');
   const exportados = [];
   src = src.replace(/^export (function|const|let) (\w+)/gm, (_, k, n) => {
     exportados.push(n); return `${k} ${n}`;
@@ -72,9 +101,9 @@ const estres = C.stressTest(cart);
 
 // Los scores, como los produce sugerencias.js sobre el snapshot real.
 const FUND = JSON.parse(fs.readFileSync(
-  '/mnt/user-data/uploads/sp500-screener-yf/public/data/sp500_fundamentals.json', 'utf8'));
+  DATA + 'sp500_fundamentals.json', 'utf8'));
 const CONS = JSON.parse(fs.readFileSync(
-  '/mnt/user-data/uploads/sp500-screener-yf/public/data/informe_consenso.json', 'utf8')).consenso;
+  DATA + 'informe_consenso.json', 'utf8')).consenso;
 const STOCKS = FUND.stocks.filter(s => s.sector).map(s => {
   const c = CONS[s.symbol] || {};
   const neg = s.pb != null && s.pb < 0;
@@ -149,7 +178,7 @@ console.log(`     "${datos.estres.peor_escenario}": ${datos.estres.caida_pct}%`)
 console.log('\n5. Contrato con api/informe.py y con el prompt');
 // El informe.py de AL LADO, no una copia vieja en uploads: si la prueba lee un
 // archivo que no es el que se despliega, verifica un contrato que ya no existe.
-const PY = fs.readFileSync(path.join(__dirname, 'informe.py'), 'utf8');
+const PY = fs.readFileSync(ruta('informe.py'), 'utf8');
 
 // 5a. Las claves que _resumen_cartera lee del nivel superior.
 // ⚠️ SOLO del cuerpo de esa funcion: `_filtrar_candidatos` usa la misma

@@ -4,7 +4,8 @@ import TesisCartera from './tesisCartera.jsx'
 import { analizarRiesgo } from './riesgo.js'
 import { planRotacion, concentracionPorSector, SECTOR_PESADO_PCT,
          candidatosRotacion } from './sugerencias.js'
-import { analizarCartera, stressTest, exposicion, CLASE_TEXTO, ESTADO_TEXTO,
+import { analizarCartera, stressTest, exposicion, concentracionPorIndustria,
+         CLASE_TEXTO, ESTADO_TEXTO,
          ACCION_PESO_TEXTO, ORIGEN_PESOS, PERFIL_POR_DEFECTO,
          OBJETIVO_POR_DEFECTO, HORIZONTE_POR_DEFECTO,
          armarDatosTesis, planDePesos } from './cartera.js'
@@ -84,6 +85,9 @@ export default function Cartera({ informes, meta, stocks, scores, conAnexo,
   // montos distintos. Si el historico no esta, `plan` queda null y la seccion
   // no se dibuja: el resto del informe no cambia.
   const planPesos = planDePesos(cart, riesgo)
+  // El nivel fino de la concentracion: "Financials 80%" puede ser cuatro bancos
+  // o tres bancos y una aseguradora, y la tabla de sectores los dibuja igual.
+  const industrias = concentracionPorIndustria(cart)
 
   const concentracion = concentracionPorSector(
     validos.map(i => ({ sector: i.sector })))
@@ -108,7 +112,7 @@ export default function Cartera({ informes, meta, stocks, scores, conAnexo,
       {stress && <Stress cart={cart} stress={stress} />}
       <Rotacion plan={plan} total={validos.length} cart={cart} mercado={mercado} />
       <Resumen informes={validos} plan={plan} />
-      <Composicion datos={concentracion} />
+      <Composicion datos={concentracion} industrias={industrias} />
       {riesgosAltos.length > 0 && <PuntosDeAtencion riesgos={riesgosAltos} />}
 
       <Seccion titulo="Análisis por activo">
@@ -878,7 +882,7 @@ function Resumen({ informes, plan }) {
   )
 }
 
-function Composicion({ datos }) {
+function Composicion({ datos, industrias = null }) {
   const colores = [C.acento, C.subtitulo, C.verde, C.ambar, C.acentoClaro,
                    C.titulo, C.tenue]
   return (
@@ -905,6 +909,56 @@ function Composicion({ datos }) {
         <p style={{ marginTop: 12, fontSize: 13.5, color: C.ambar }}>
           Más de la mitad de la cartera está en {datos[0].sector}. Una caída
           sectorial impactaría de forma desproporcionada.
+        </p>
+      )}
+
+      {/* El nivel fino. "Financials 80%" puede ser cuatro bancos —una sola
+          apuesta con cuatro nombres— o tres bancos y una aseguradora. Arriba
+          se dibujan idénticos. */}
+      {industrias?.confiable && industrias.concentradas.length > 0 && (
+        <div className="evitar-corte" style={{ marginTop: 16 }}>
+          <h4 style={{ fontSize: 14.5, color: C.subtitulo, margin: '0 0 6px' }}>
+            Dentro de cada sector
+          </h4>
+          <p style={{ fontSize: 13.5, marginTop: 0, marginBottom: 8 }}>
+            Un sector puede parecer repartido y no estarlo. Estas industrias
+            juntan dos o más posiciones:
+          </p>
+          <table style={{ maxWidth: 620 }}>
+            <thead>
+              <tr>
+                <th>Industria</th><th>Sector</th>
+                <th className="n">Peso</th><th>Posiciones</th>
+              </tr>
+            </thead>
+            <tbody>
+              {industrias.concentradas.map(g => (
+                <tr key={g.industry}>
+                  <td style={{ color: C.titulo, fontWeight: 600 }}>{g.industry}</td>
+                  <td style={{ fontSize: 13, color: C.tenue }}>{g.sector}</td>
+                  <td className="n" style={{ fontWeight: 600, color: C.ambar }}>
+                    {num(g.pct, 1)}%
+                  </td>
+                  <td style={{ fontFamily: F.num, fontSize: 13 }}>
+                    {g.tickers.join(' · ')}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Faltar el dato NO es lo mismo que no haber concentración, y callarse
+          se lee como lo segundo. */}
+      {industrias && !industrias.confiable && (
+        <p style={{ marginTop: 12, fontSize: 12.5, color: C.tenue }}>
+          No se puede analizar la concentración por industria: solo{' '}
+          {num(industrias.cobertura_pct, 0)}% de las posiciones traen ese dato
+          {industrias.sin_dato.length > 0
+            && ` (faltan en ${industrias.sin_dato.slice(0, 8).join(', ')}`
+               + `${industrias.sin_dato.length > 8 ? '…' : ''})`}.
+          Se completa corriendo <code>fetch_informe.py</code> de nuevo.
         </p>
       )}
     </Seccion>
@@ -973,6 +1027,29 @@ function ActualVsObjetivo({ plan }) {
         </p>
       )}
 
+      {/* La explicación que hace falta ANTES de la tabla: si no, el lector ve
+          cuatro bancos recortados y ninguno excedía su tope individual. */}
+      {plan.gruposLimitantes && plan.gruposLimitantes.length > 0 && (
+        <div style={{ background: C.ambarFondo, borderRadius: 7,
+                      padding: '10px 13px', marginBottom: 14 }}>
+          <div style={{ fontSize: 13.5, color: C.ambar, fontWeight: 600,
+                        marginBottom: 5 }}>
+            Hay recortes que no son por el papel, son por el grupo
+          </div>
+          {plan.gruposLimitantes.map(g => (
+            <div key={`${g.tipo}-${g.nombre}`}
+                 style={{ fontSize: 13.5, marginTop: 3 }}>
+              <b>{g.nombre}</b> {g.tipo === 'industria' ? '(industria)' : '(sector)'}
+              {' '}pesa {num(g.actual_pct, 1)}% y el máximo es {num(g.tope_pct, 1)}%,
+              así que baja a {num(g.objetivo_pct, 1)}%. Se achican{' '}
+              <span style={{ fontFamily: F.num }}>{g.tickers.join(', ')}</span> —
+              no porque estén mal, sino porque juntos pesan de más. Se recorta
+              más al que más riesgo aporta.
+            </div>
+          ))}
+        </div>
+      )}
+
       <table>
         <thead>
           <tr>
@@ -993,7 +1070,11 @@ function ActualVsObjetivo({ plan }) {
                 <span style={{ fontFamily: F.num, fontWeight: 600, color: C.titulo }}>
                   {f.ticker}
                 </span>
-                {f.limitadoPorTope && (
+                {f.limitadoPorGrupo?.length > 0 ? (
+                  <span style={{ fontSize: 11.5, color: C.ambar }}>
+                    {' '}· por {f.limitadoPorGrupo[0]}
+                  </span>
+                ) : f.limitadoPorTope && (
                   <span style={{ fontSize: 11.5, color: C.tenue }}> · en el tope</span>
                 )}
               </td>

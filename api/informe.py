@@ -1311,7 +1311,7 @@ def armar_datos(ticker):
         fund = {k: detalle.get(k) for k in
                 ('symbol', 'name', 'sector', 'price', 'changePercent', 'marketCap',
                  'pe', 'pb', 'roe', 'de', 'evEbitda', 'netMargin', 'roa',
-                 'revGrowth', 'priceToSales', 'hasCedear')}
+                 'revGrowth', 'priceToSales', 'hasCedear', 'industry')}
     cons = (detalle or {}).get('consenso') or cons_all.get(ticker) or {}
 
     completo = detalle is not None
@@ -1334,6 +1334,14 @@ def armar_datos(ticker):
         'ticker': ticker,
         'nombre': fund.get('name'),
         'sector': fund.get('sector'),
+        # El nivel fino. Un sector "Financials" al 80% puede ser tres bancos y
+        # una aseguradora —diversificado— o cuatro bancos, que es una sola
+        # apuesta con cuatro nombres. Sin este campo el informe no podia
+        # distinguir los dos casos.
+        # Puede venir vacio: los CEDEAR de afuera del indice no lo traen hasta
+        # que se vuelva a correr `fetch_informe.py`. Vacio significa
+        # "no sabemos", NO "no tiene", y el informe lo dice asi.
+        'industry': fund.get('industry') or (detalle or {}).get('industry'),
         'enSp500': ticker in porsym,
         'hasCedear': fund.get('hasCedear'),
         'nivel': 'completo' if completo else 'reducido',
@@ -1606,6 +1614,37 @@ retorno sobre volatilidad de los dos.
   · ⚠️ Es retorno HISTÓRICO de la ventana, NO una proyección. Decilo cada vez
     que lo menciones. Que haya rendido 24% no significa que vaya a rendir 24%.
 
+POR QUÉ SE RECORTA ALGO QUE ESTABA BIEN — `riesgo.grupos_limitantes`
+El peso objetivo respeta TRES topes: el de la posición, el del sector y el de
+la industria. Cuando un sector o una industria excede, TODOS sus papeles se
+achican aunque ninguno exceda su tope individual.
+  · Eso hay que EXPLICARLO, porque es contraintuitivo: el cliente ve que le
+    recortás un banco que estaba perfecto. La frase correcta es "no es por este
+    papel, es porque el sector pesa X% y el máximo es Y%".
+  · `grupos_limitantes` te da el grupo, su peso actual, su objetivo y sus
+    tickers. Cada posición trae además `limitado_por_grupo`.
+  · El reparto DENTRO del grupo no es parejo a propósito: se recorta más al que
+    más riesgo aporta. Si te preguntan "¿por qué a este más que a aquel?", la
+    respuesta es el `aporte_al_riesgo_pct`, no el puntaje fundamental.
+  · Distinguí SIEMPRE `limitado_por_tope` (el papel pesa de más por sí mismo)
+    de `limitado_por_grupo` (el papel está bien, el grupo no). Son dos motivos
+    de recorte distintos y el segundo NO es una crítica a la empresa.
+
+CONCENTRACIÓN POR INDUSTRIA — EL NIVEL QUE EL SECTOR NO MUESTRA
+`industrias.concentradas` lista las industrias donde hay DOS O MÁS posiciones
+pesando juntas 15% o más.
+  · "Financials 80%" puede ser tres bancos y una aseguradora, o cuatro bancos.
+    Son cosas distintas y la tabla de sectores las dibuja igual. Cuando venga
+    una industria concentrada, nombrala con sus tickers.
+  · Es OTRA lectura que los pares correlacionados, y ninguna reemplaza a la
+    otra: la industria mira la ETIQUETA, la correlación mira el
+    COMPORTAMIENTO. Dos bancos de países distintos comparten industria y
+    pueden correlacionar poco; dos papeles de industrias distintas pueden
+    moverse como uno solo.
+  · Si `industrias.disponible` es falso, NO opines de industrias: significa que
+    falta el dato en la mayoría de las posiciones, y hay que decir eso, no
+    quedarse callado —el silencio se lee como "no hay concentración".
+
 PARES QUE SON UNA SOLA APUESTA
 `riesgo.pares_que_son_una_apuesta` lista los pares con correlación ≥ 0,70, con
 su `peso_combinado_pct`.
@@ -1830,6 +1869,8 @@ def _resumen_cartera(c):
         # cobertura del calculo y `topes_insuficientes` se calculaban en el
         # navegador y se tiraban a la basura antes de la llamada.
         'riesgo': c.get('riesgo') or {'disponible': False},
+        # Otra clave que se perderia en silencio si no se nombra aca.
+        'industrias': c.get('industrias'),
         # El plan son ~200 tokens y es lo unico ejecutable del payload.
         'plan': c.get('plan'),
     }
@@ -1886,16 +1927,22 @@ def estimar_cartera(n_posiciones, proveedor='anthropic', modo=None):
     # Medido el 31/08 sobre `_resumen_cartera()` con carteras reales de 3, 5,
     # 10, 15, 20 y 25 posiciones. La recta queda por ENCIMA de las seis.
     #
-    #   sin benchmark ni pares:  955 · 1.520 · 2.374 · 2.913 · 3.602 · 4.275
-    #   con los dos (actual)  : 1.050 · 1.616 · 2.469 · 3.031 · 3.720 · 4.422
+    #   base                 :   955 · 1.520 · 2.374 · 2.913 · 3.602 · 4.275
+    #   + benchmark y pares   : 1.050 · 1.616 · 2.469 · 3.031 · 3.720 · 4.422
+    #   + industrias (actual) : 1.082 · 1.651 · 2.512 · 3.083 · 3.781 · 4.492
     #
-    # ⚠️ Los bloques `benchmark` (82 tokens) y `pares_que_son_una_apuesta` (24)
-    # movieron el payload ~110 tokens y la recta anterior (800 + 160n) pasó a
-    # subestimar en 5 y 10 posiciones. La guarda de `test_tesis_cartera.py`
-    # NO lo cazó porque tenía adentro las mediciones viejas: una guarda cuyos
-    # numeros no se actualizan junto con el payload deja de guardar nada.
-    # Al tocar el payload hay que volver a medir Y actualizar los dos lugares.
-    entrada = 850 + 165 * n
+    # ⚠️ ESTA RECTA SE QUEDÓ CORTA DOS VECES EN UN DÍA. Primero `benchmark`
+    # (82 tokens) y `pares_que_son_una_apuesta` (24); despues `industrias` (48).
+    # Cada bloque nuevo son 30-80 tokens y la recta anterior iba con 1-3% de
+    # margen, o sea que CUALQUIER agregado la volvia mentirosa.
+    #
+    # Por eso ahora va con ~5% de holgura en el punto mas ajustado en vez de
+    # pegada a la medicion: un estimador que se pasa un poco es util, uno que
+    # se queda corto no sirve para decidir si gastar. Y aun asi, al tocar el
+    # payload hay que VOLVER A MEDIR y actualizar tambien el `MEDIDO` de
+    # `test_tesis_cartera.py` — la guarda no avisa sola: sus numeros viejos son
+    # mas bajos que la realidad nueva, asi que sigue pasando en verde.
+    entrada = 880 + 175 * n
     # La salida crecio un poco: la seccion 1 cierra con los invalidation points
     # y las lineas de la seccion 3 llevan monto y acciones.
     salida = 1150 + 55 * n

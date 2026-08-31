@@ -3884,10 +3884,273 @@ elegir uno**, no después de que compile.
 
 ---
 
+## 🏦 CONCENTRACIÓN POR INDUSTRIA — la pregunta de Marcos (31/08/2026)
+
+> *"Si tengo WFC que está en el S&P y otro banco, por ejemplo Itaú que está
+> como CEDEAR pero no en el S&P, ¿no nos marcaría que ambos suman para la misma
+> concentración de sector?"*
+
+La respuesta tiene dos mitades, y **la primera es tranquilizadora**.
+
+### Por SECTOR ya los sumaba, y siempre lo hizo
+
+El peso por sector sale del campo `sector` de cada **posición de la cartera**,
+no del universo del screener. Da igual de qué archivo salió el papel.
+Verificado con una cartera de prueba:
+
+```
+  WFC   36%  Financials      <- del S&P 500
+  BBD   24%  Financials      <- CEDEAR, fuera del indice
+  BBVA  20%  Financials      <- CEDEAR, fuera del indice
+  KO    20%  Consumer Staples
+
+  Financials  80%  (tope 65%)  ⚠️ EXCEDE   [3 papeles]
+```
+
+### Lo que NO existía: el nivel fino
+
+`Financials 80%` puede ser dos cosas completamente distintas:
+
+```
+  cuatro bancos                  -> UNA apuesta con cuatro nombres
+  tres bancos y una aseguradora  -> concentrado, pero repartido
+```
+
+y la tabla de sectores **las dibuja idénticas**. Eso es lo que faltaba, y es lo
+que ahora resuelve `concentracionPorIndustria()` en `cartera.js`.
+
+La prueba tiene el caso exacto: dos carteras con **Financials 80% las dos**, y
+solo la de cuatro bancos marca concentración por industria.
+
+### Se complementa con los pares correlacionados, no los reemplaza
+
+Son dos preguntas distintas y ninguna implica la otra:
+
+| | qué mira | ejemplo |
+|---|---|---|
+| **industria** | la ETIQUETA | dos bancos son dos bancos, aunque uno sea brasileño y correlacionen poco |
+| **correlación** | el COMPORTAMIENTO | dos papeles de industrias distintas que se mueven como uno |
+
+Hacen falta las dos lecturas.
+
+### El dato: capturado en el screener, faltaba en el informe
+
+`industry` lo captura `fetch_fundamentals.py` desde hace días (`WFC` →
+*Banks - Diversified*). `fetch_informe.py` **no lo capturaba**, así que los 130
+CEDEAR de afuera del índice llegaban sin él.
+
+Se agregó: es **un solo campo de `.info`, ya descargado** — no suma ni una
+llamada ni un segundo al bot. Yahoo lo devuelve en inglés y sin normalizar
+("Banks - Diversified", "Banks - Regional"); **no se traduce a propósito**,
+porque el screener guarda el mismo string crudo y dos taxonomías para el mismo
+campo serían peor que tenerlo en inglés.
+
+⚠️ **Hasta que se vuelva a correr `fetch_informe.py`**, los CEDEAR de afuera
+llegan sin industria. El informe **lo dice** en vez de callarse: con menos de la
+mitad de las posiciones cubiertas, `confiable` es falso y la sección explica que
+falta el dato y en qué papeles. Callarse se leería como "no hay concentración".
+
+---
+
+## 🔴 16 CEDEARs COMUNES QUE NO ESTÁN EN EL UNIVERSO (31/08/2026)
+
+Apareció mirando bancos: **ITUB (Itaú) no está en ningún archivo** — ni en
+`TRADUCCION`, ni en `DIRECTOS`, ni en `EXCLUIDOS`. Es el banco más grande de
+Brasil y uno de los CEDEAR más operados acá.
+
+`cedears_informe.py` dice *"ninguno se descarta en silencio"*, y estos 16 sí:
+
+```
+ITUB  Itau Unibanco        NU    Nu Holdings (Nubank)     TS    Tenaris
+GGAL  Grupo Galicia        BMA   Banco Macro              YPF   YPF
+PAM   Pampa Energia        TEO   Telecom Argentina        CRESY Cresud
+SUPV  Supervielle          LOMA  Loma Negra               IRS   IRSA
+EDN   Edenor               CEPU  Central Puerto           DESP  Despegar
+```
+
+**Son dos grupos distintos y la decisión no es la misma:**
+
+1. **ITUB y NU** son CEDEAR de empresas extranjeras, igual que BBD o VALE.
+   Parecen un olvido y deberían entrar.
+2. **Los 11 argentinos** (GGAL, BMA, YPF, PAM, TEO, CRESY, SUPV, LOMA, IRS,
+   EDN, CEPU) son ADR de empresas locales: acá se compra la acción directamente,
+   no un CEDEAR. Excluirlos de un universo de CEDEARs es defendible — pero es
+   una decisión de Marcos, no algo para que el archivo resuelva solo.
+
+`TX` (Ternium) sí está, vía `TRADUCCION['TXR']`. `TS` (Tenaris) no.
+
+**No se tocó nada**: agregar tickers al universo depende de saber cuáles tienen
+CEDEAR de verdad, y eso lo sabe Marcos. Queda anotado para que lo decida.
+
+---
+
+## 🔁 Y EL ESTIMADOR SE QUEDÓ CORTO POR TERCERA VEZ
+
+El bloque `industrias` (48 tokens) volvió a pasar la recta en 10 posiciones.
+Van tres veces en un día: `benchmark` (82), `pares` (24), `industrias` (48).
+
+El patrón es claro: **cada bloque nuevo son 30-80 tokens, y la recta iba con
+1-3% de margen**, o sea que cualquier agregado la volvía mentirosa. Ahora va con
+~5% de holgura en el punto más ajustado (`880 + 175·n`) en vez de pegada a la
+medición.
+
+```
+  n     real   estimador   margen
+  3    1.082     1.405       30%
+  5    1.651     1.755        6%
+ 10    2.512     2.630        5%
+ 15    3.083     3.505       14%
+ 25    4.492     5.255       17%
+```
+
+> Un estimador que se pasa un poco es útil. Uno que se queda corto no sirve
+> para decidir si gastar.
+
+**Y la prueba de contrato hizo su trabajo**: `test_contrato.py` cazó la clave
+`industry` al instante, porque congela el set exacto de claves raíz. Una clave
+nueva tiene que ser una decisión, no un accidente — se declaró a mano con el
+motivo escrito al lado.
+
+---
+
+## 🔴 EL OBJETIVO SE CONTRADECÍA CON SU PROPIO TOPE DE SECTOR (31/08/2026)
+
+> *"Si tengo 50 Financials, 25 en bancos y 25 en financieras/brokers, ¿no me va
+> a recomendar rotar? Yo quiero que sí, solamente que me diga cuánto reducir de
+> cada uno y de cuál me conviene sacar."*
+
+Antes de contestar se midió el caso exacto. **Y había una contradicción real.**
+
+### Lo que hacía
+
+Con cuatro bancos al 12,5% (Financials 50%, tope 35%):
+
+```
+  la tabla de sectores decia:   "Financials 50%, tope 35%  ⚠️ EXCEDE"
+  el peso objetivo proponia:     41,3%   <- que TAMBIEN excede el 35%
+```
+
+Los dos números salían del mismo sistema y se desmentían entre ellos. El motivo:
+**`aplicarTopes()` solo conocía el tope POR POSICIÓN.** Un sector es una
+restricción de grupo y el optimizador no sabía que existía.
+
+Sí reducía algo (50% → 41,3%) y sí repartía el recorte por riesgo, pero se
+quedaba a mitad de camino y encima quedaba por encima de su propio límite.
+
+### Lo que hace ahora
+
+El peso objetivo respeta **tres** topes: posición, sector e industria.
+
+```
+  ticker   pesa    deberia     Δ      aporta al riesgo
+  BBD     12.5%      7.6%   -4.9pp        20.8%
+  BSBR    12.5%      7.9%   -4.6pp        19.6%
+  WFC     12.5%      9.1%   -3.4pp        15.7%
+  JPM     12.5%     10.3%   -2.2pp        13.6%
+
+  Financials: 50% -> 34.9%   (tope 35%)  ✅
+  lo recortado va a KO (+9pp), XOM (+4,1) y MSFT (+1,9)
+```
+
+Que es exactamente lo pedido: **cuánto sacar de cada uno, y de cuál más.**
+
+### Cómo se reparte el recorte dentro del grupo, y por qué
+
+**Proporcional al peso que la paridad de riesgo ya había asignado.** No es una
+comodidad: la paridad ya le dio menos peso al que aporta más riesgo, así que
+recortar proporcional CONSERVA ese orden y el que más arriesga termina cortado
+más en términos absolutos. BBD aporta 20,8% del riesgo y se lleva el recorte más
+grande; JPM aporta 13,6% y el más chico. Repartir el recorte en partes iguales
+lo habría roto.
+
+### El tope de industria
+
+`FACTOR_TOPE_INDUSTRIA = 0.7` sobre el tope de sector. **Es un juicio, no una
+ley**, y por eso es una constante con nombre y no un número escondido en una
+cuenta: una industria es un corte más fino, así que su techo tiene que ser más
+bajo. 0,7 deja lugar a dos o tres industrias por sector sin volverlo inoperable.
+
+Medido con los tres casos que importan:
+
+| cartera | qué aprieta | resultado |
+|---|---|---|
+| 4 bancos, 2 industrias | solo el sector | 50% → 34,9% |
+| 4 bancos, 1 industria | la industria (más fina) | 50% → 24,4% |
+| repartida | nada | sin falsos positivos |
+
+⚠️ **Si falta `industry` en alguna posición, NO se agrupa por industria.**
+Agrupar a medias sería peor que no agrupar: limitaría a los que sí tienen el
+dato y dejaría libres a los que no. El tope de sector se sigue aplicando igual.
+
+### Dos motivos de recorte que no hay que confundir
+
+El informe ahora los distingue, y el prompt lo exige:
+
+- **`limitado_por_tope`** — el papel pesa de más por sí mismo.
+- **`limitado_por_grupo`** — el papel está bien; el sector o la industria no.
+
+El segundo es contraintuitivo y hay que explicarlo: el cliente ve que le
+recortan un banco que estaba perfecto. El informe lo dice arriba de la tabla:
+*"no porque estén mal, sino porque juntos pesan de más"*.
+
+### Y el faltante ahora aconseja distinto
+
+Si los topes no dejan lugar al 100%, `topes_insuficientes` ya existía. Pero
+desde que hay topes de grupo el consejo cambia: **con los sectores llenos,
+sumar otro papel del mismo sector no resuelve nada** — hace falta uno de OTRO
+sector. El aviso lo dice, y hay una prueba que lo exige.
+
+### El estimador, por primera vez, aguantó solo
+
+El bloque nuevo sumó 6 tokens y **la holgura del 5% lo absorbió sin recalibrar**.
+Es la primera vez en el día que agregar algo no rompe el estimador — la lección
+de la mañana (dejar margen en vez de pegarse a la medición) funcionó.
+
+*(Cuarta colisión de nombre del día: `sumaObj` ya existía en `prueba-riesgo.cjs`.
+Van `plan`, `DATA`, `universo` y esta. Mirar los nombres que ya existen ANTES
+de elegir uno sigue siendo más barato que descubrirlo al ejecutar.)*
+
+---
+
 ## 📦 PENDIENTE DE PUSH — lista acumulada
 
 Todo esto está escrito en la carpeta y **todavía no subido**. Verificar con
 `git status` antes de asumir.
+
+### Tanda de ahora (31/08) — sexta parte: topes de grupo en el optimizador
+
+```
+src/informe/riesgo.js        aplicarTopes() ahora acepta topes de GRUPO
+                             (sector e industria) + FACTOR_TOPE_INDUSTRIA
+                             + grupos_limitantes + limitado_por_grupo
+                             + el aviso de faltante distingue grupo de perfil
+src/informe/cartera.js       los grupos limitantes al payload y a la tabla
+src/informe/Cartera.jsx      aviso "esto se recorta por el grupo, no por el papel"
+api/informe.py               regla en el prompt: no confundir los dos motivos
+test/prueba-riesgo.cjs       +14: los tres casos (sector aprieta, industria
+                             aprieta, cartera sana) y el faltante por grupo
+test/test_tesis_cartera.py   mediciones del estimador al dia
+CONTEXTO_INFORME_AVANZADO.md
+```
+
+Once suites: 312 comprobaciones en JS + las tres de Python. Build: 239,4 KB.
+
+### Tanda de ahora (31/08) — quinta parte: concentracion por industria
+
+```
+local_bot/fetch_informe.py   captura `industry` (un campo de .info, 0 llamadas nuevas)
+                             ⚠️ HAY QUE VOLVER A CORRERLO para llenarlo
+api/informe.py               `industry` viaja en el informe por activo + al payload
+                             + reglas en el prompt + estimador 880 + 175n
+src/informe/cartera.js       concentracionPorIndustria() + bloque `industrias`
+src/informe/Cartera.jsx      tabla "Dentro de cada sector" en Composicion
+test/prueba-industria.cjs    NUEVO — 19 comprobaciones
+test/test_contrato.py        declara `industry` (la prueba lo cazo sola)
+test/test_tesis_cartera.py   mediciones del estimador otra vez
+CONTEXTO_INFORME_AVANZADO.md
+```
+
+Once suites: 298 comprobaciones en JS + las tres de Python. Build: 233,7 KB.
 
 ### Tanda de ahora (31/08) — cuarta parte: universo operable + capas 3 y 6
 
@@ -4357,4 +4620,4 @@ y recargar. Si no, seguís viendo datos cacheados de antes.
 
 ---
 
-*Actualizado: 31 de agosto de 2026 · Tabla ACTUAL vs OBJETIVO en el informe · Dos bugs que tiraban el Motor B antes de la llamada · Estimador de costo recalibrado · Build verificado · Universo operable: 268 papeles, 28 candidatos nuevos · Benchmark vs SPY y pares correlacionados · 279 comprobaciones en JS + 3 suites de Python · Anterior: 21 de agosto de 2026 · Sonda corrida y analizada · Tesis híbrida y estética clara confirmadas · Pendiente: alcance del histórico y deploy*
+*Actualizado: 31 de agosto de 2026 · Tabla ACTUAL vs OBJETIVO en el informe · Dos bugs que tiraban el Motor B antes de la llamada · Estimador de costo recalibrado · Build verificado · Universo operable: 268 papeles, 28 candidatos nuevos · Benchmark vs SPY y pares correlacionados · Concentracion por industria · Topes de sector e industria en el optimizador · 312 comprobaciones en JS + 3 suites de Python · Anterior: 21 de agosto de 2026 · Sonda corrida y analizada · Tesis híbrida y estética clara confirmadas · Pendiente: alcance del histórico y deploy*

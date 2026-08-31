@@ -164,10 +164,40 @@ function paridadRiesgo(cov, iteraciones = 200) {
  * "esta posición está limitada por el tope de su clase" es una explicación
  * distinta de "esta posición es riesgosa".
  */
-function aplicarTopes(w, topes, iteraciones = 40) {
+// Un sector es una restricción de GRUPO, no de posición, y hasta el 31/08 el
+// optimizador no lo sabía: solo aplicaba el tope por papel.
+//
+// El resultado era una contradicción dentro del mismo informe. Con cuatro
+// bancos al 12,5% (Financials 50%, tope 35%), la tabla decía "Financials excede
+// el 35%" y dos filas más abajo proponía un objetivo de 41,3% — que también lo
+// excede. Los dos números salían del sistema y se desmentían entre ellos.
+//
+// El factor de la industria es un JUICIO, no una ley, y por eso es una
+// constante con nombre y no un número escondido en una cuenta. La idea: una
+// industria es un corte más fino que el sector, así que su techo tiene que ser
+// más bajo — cuatro bancos no son lo mismo que dos bancos, una aseguradora y
+// un gestor de fondos, aunque los cuatro sean "Financials". 0,7 deja lugar a
+// dos o tres industrias por sector sin volverlo inoperable.
+export const FACTOR_TOPE_INDUSTRIA = 0.7
+
+/**
+ * Proyecta los pesos sobre los topes: por posición Y por grupo.
+ *
+ * @param grupos  [{ nombre, tipo, idx: [i...], tope }] con `tope` en la misma
+ *                escala que `topes` (fracción de la parte de acciones).
+ *
+ * Dentro de un grupo que hay que achicar, el recorte se reparte
+ * PROPORCIONALMENTE al peso que la paridad de riesgo ya le había asignado a
+ * cada miembro. Eso no es una comodidad: la paridad ya le dio menos peso al que
+ * aporta más riesgo, así que recortar proporcional CONSERVA ese orden y el que
+ * más arriesga termina cortado más en términos absolutos. Repartir el recorte
+ * en partes iguales lo rompería.
+ */
+function aplicarTopes(w, topes, grupos = [], iteraciones = 80) {
   const n = w.length
   let x = w.slice()
   const topeados = new Set()
+  const gruposActivos = new Set()
   for (let k = 0; k < iteraciones; k++) {
     let excedente = 0
     const libres = []
@@ -181,10 +211,32 @@ function aplicarTopes(w, topes, iteraciones = 40) {
         libres.push(i)
       }
     }
+
+    // ── Los topes de GRUPO ────────────────────────────────────────────────
+    // Se aplican DESPUÉS de los de posición: un papel que ya toca su propio
+    // techo no puede además absorber el sobrante de su sector.
+    const enGrupoLleno = new Set()
+    for (const g of (grupos || [])) {
+      if (!(g.tope > 0) || !g.idx?.length) continue
+      const suma = g.idx.reduce((a, i) => a + x[i], 0)
+      if (suma > g.tope + 1e-9) {
+        const factor = g.tope / suma
+        for (const i of g.idx) x[i] *= factor
+        excedente += suma - g.tope
+        gruposActivos.add(g.nombre)
+      }
+      // Aunque no exceda, si está al ras no puede recibir el excedente de otro:
+      // hacerlo lo pondría por encima en la vuelta siguiente y el bucle
+      // oscilaría entre dos estados sin converger nunca.
+      if (suma >= g.tope - 1e-9) for (const i of g.idx) enGrupoLleno.add(i)
+    }
+
     if (excedente < 1e-9) break
-    const base = libres.reduce((a, i) => a + x[i], 0)
-    if (!(base > 0)) break     // todo topeado: se sale y se avisa abajo
-    for (const i of libres) x[i] += excedente * (x[i] / base)
+    // Solo reciben los que no tocan su tope propio NI están en un grupo lleno.
+    const receptores = libres.filter(i => !enGrupoLleno.has(i))
+    const base = receptores.reduce((a, i) => a + x[i], 0)
+    if (!(base > 0)) break     // no hay dónde poner el excedente: se avisa abajo
+    for (const i of receptores) x[i] += excedente * (x[i] / base)
   }
   // ⚠️ EL CASO QUE NO SE PUEDE TAPAR
   // Si TODAS las posiciones tocan su tope, los pesos objetivo no llegan a
@@ -197,7 +249,10 @@ function aplicarTopes(w, topes, iteraciones = 40) {
   // de posiciones, los topes del perfil son inalcanzables. Hacen falta mas
   // papeles o un perfil mas concentrado.
   const suma = x.reduce((a, b) => a + b, 0)
-  return { pesos: x, topeados: [...topeados], sumaAlcanzada: suma }
+  return { pesos: x, topeados: [...topeados], sumaAlcanzada: suma,
+           // Qué grupos tuvieron que achicarse. Es lo que le permite al informe
+           // decir POR QUÉ se recorta un papel que, mirado solo, estaba bien.
+           gruposLimitantes: [...gruposActivos] }
 }
 
 // ── La función que usa el informe ───────────────────────────────────────────
@@ -316,6 +371,10 @@ function paresCorrelacionados(con, cov, w) {
 }
 
 export async function analizarRiesgo(cart, candidatos = []) {
+  // El tope de sector lo calcula `analizarCartera()` y viaja en cada fila de
+  // `cart.sectores`. Es el MISMO numero que el informe ya imprime: si acá se
+  // recalculara, la tabla y el objetivo podrian discrepar.
+  const topeSector = (cart?.sectores || [])[0]?.tope ?? null
   const snap = await cargarHistorico()
   if (!snap) return { disponible: false, motivo: 'no está el histórico de precios' }
 
@@ -381,7 +440,42 @@ export async function analizarRiesgo(cart, candidatos = []) {
   // la parte de acciones, así que se convierten.
   const topes = con.map(c => c.topeClase != null
     ? (c.topeClase / 100) / (pesoAcciones / 100) : null)
-  const { pesos: objFrac, topeados, sumaAlcanzada } = aplicarTopes(erc, topes)
+
+  // ── LOS TOPES DE GRUPO ────────────────────────────────────────────────────
+  // El tope de sector ya existía en `analizarCartera()` y el informe lo mostraba
+  // —"Financials excede el 35%"— pero el optimizador no lo conocía, así que
+  // proponía objetivos que también lo excedían. Dos números del mismo sistema
+  // desmintiéndose. Acá entran como restricción de verdad.
+  const aEscala = pct => (pct / 100) / (pesoAcciones / 100)
+  const grupos = []
+  const juntarPor = (campo, tope, tipo) => {
+    if (!(tope > 0)) return
+    const idx = {}
+    con.forEach((c, i) => {
+      const v = c[campo]
+      if (!v) return                    // sin el dato no se puede agrupar
+      ;(idx[v] ||= []).push(i)
+    })
+    for (const [nombre, ids] of Object.entries(idx)) {
+      // Un grupo de UNO ya está cubierto por el tope de posición; agregarlo
+      // como grupo solo duplicaría la restricción.
+      if (ids.length < 2) continue
+      grupos.push({ nombre: `${tipo}:${nombre}`, tipo, nombre_corto: nombre,
+                    idx: ids, tope: aEscala(tope) })
+    }
+  }
+  juntarPor('sector', topeSector, 'sector')
+  // La industria solo entra si el dato está. Los CEDEAR de afuera del índice
+  // llegan sin `industry` hasta que se vuelva a correr `fetch_informe.py`, y
+  // agrupar a medias sería peor que no agrupar: limitaría a los que SÍ tienen
+  // el dato y dejaría libres a los que no.
+  const conIndustria = con.filter(c => c.industry).length
+  if (conIndustria === con.length && topeSector > 0) {
+    juntarPor('industry', topeSector * FACTOR_TOPE_INDUSTRIA, 'industria')
+  }
+
+  const { pesos: objFrac, topeados, sumaAlcanzada, gruposLimitantes } =
+    aplicarTopes(erc, topes, grupos)
   // Y de vuelta a % de la cartera completa, que es la escala de toda la app.
   const objetivo = objFrac.map(x => Math.round(x * pesoAcciones * 10) / 10)
 
@@ -393,11 +487,21 @@ export async function analizarRiesgo(cart, candidatos = []) {
         acciones_pct: Math.round(pesoAcciones * 10) / 10,
         n_posiciones: n,
         // El consejo concreto, en vez de un numero que no cierra.
-        nota: `Con ${n} posiciones y los topes del perfil, el maximo que se `
-            + `puede asignar es ${Math.round(sumaAlcanzada * pesoAcciones)}% `
-            + `de la cartera, pero las acciones pesan `
-            + `${Math.round(pesoAcciones)}%. Para respetar los topes hacen `
-            + `falta mas posiciones, o bajar la exposicion a acciones.` }
+        // Desde que hay topes de GRUPO, el faltante puede venir de dos lados y
+        // el consejo es distinto en cada caso: si sobra plata porque los
+        // sectores estan llenos, agregar otro papel del MISMO sector no
+        // resuelve nada — hace falta un sector nuevo.
+        por_grupo: (gruposLimitantes || []).length > 0,
+        nota: `Con ${n} posiciones el maximo que se puede asignar es `
+            + `${Math.round(sumaAlcanzada * pesoAcciones)}% de la cartera, `
+            + `pero las acciones pesan ${Math.round(pesoAcciones)}%. `
+            + ((gruposLimitantes || []).length > 0
+               ? `Los topes de ${gruposLimitantes.map(g => g.split(':')[1])
+                    .join(' y ')} estan llenos, asi que hace falta un papel de `
+                 + `OTRO sector —sumar otro del mismo no cambia nada— o bajar `
+                 + `la exposicion a acciones.`
+               : `Hacen falta mas posiciones, o bajar la exposicion a `
+                 + `acciones.`) }
     : null
 
   // La volatilidad objetivo se calcula sobre los pesos NORMALIZADOS, para que
@@ -456,10 +560,32 @@ export async function analizarRiesgo(cart, candidatos = []) {
       correlacion_media: corrMedia[i] == null ? null : Math.round(corrMedia[i] * 100) / 100,
       peso_objetivo_pct: objetivo[i],
       limitado_por_tope: topeados.includes(i),
+      // "Te recorto porque VOS pesas de mas" y "te recorto porque TU SECTOR
+      // pesa de mas" son dos explicaciones distintas, y la segunda es la que
+      // el cliente no entiende si no se la dicen: el papel puede estar
+      // perfecto y aun asi tener que achicarse.
+      limitado_por_grupo: (gruposLimitantes || [])
+        .filter(g => grupos.find(x => x.nombre === g)?.idx.includes(i))
+        .map(g => grupos.find(x => x.nombre === g).nombre_corto),
     })),
     candidatos: aporteCandidatos,
     // Las dos lecturas que faltaban, y las dos son cuentas sobre la misma
     // matriz que ya se calculo: no cuestan una llamada nueva ni un token.
+    // Los grupos que OBLIGARON a recortar. Sin esto, el objetivo baja cuatro
+    // bancos y no hay forma de explicar por que: cada uno mirado solo estaba
+    // dentro de su tope.
+    grupos_limitantes: (gruposLimitantes || []).map(g => {
+      const def = grupos.find(x => x.nombre === g)
+      return {
+        tipo: def.tipo, nombre: def.nombre_corto,
+        tope_pct: Math.round(def.tope * pesoAcciones * 10) / 10,
+        actual_pct: Math.round(
+          def.idx.reduce((a, i) => a + con[i].peso, 0) * 10) / 10,
+        objetivo_pct: Math.round(
+          def.idx.reduce((a, i) => a + objetivo[i], 0) * 10) / 10,
+        tickers: def.idx.map(i => con[i].ticker),
+      }
+    }),
     benchmark: contraBenchmark(snap, desde, largo, w, con, cov, varActual),
     pares_correlacionados: paresCorrelacionados(con, cov, w),
   }

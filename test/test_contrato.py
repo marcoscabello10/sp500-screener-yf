@@ -35,7 +35,13 @@ I.estatico = lambda n: REAL[n]
 I.historico_edgar = lambda t: {'disponible': False, 'avisos': [],
                                'cagr': {}, 'series': {}}
 
-RAIZ = {'ticker', 'nombre', 'sector', 'nivel', 'enSp500', 'hasCedear',
+# ⚠️ 'industry' se agrego el 31/08/2026 y esta prueba lo CAZO al instante, que
+# es exactamente para lo que existe: el front lee estas claves por nombre, asi
+# que una clave nueva o renombrada tiene que ser una decision, no un accidente.
+# Sirve para la concentracion por industria — "Financials 80%" puede ser cuatro
+# bancos o tres bancos y una aseguradora. Puede venir en None para los CEDEAR
+# de afuera del indice hasta que se vuelva a correr fetch_informe.py.
+RAIZ = {'ticker', 'nombre', 'sector', 'industry', 'nivel', 'enSp500', 'hasCedear',
         'fundamentales', 'consenso', 'historico', 'senales', 'riesgos',
         'veredicto', 'hechos', 'avisos', 'fuentes', 'sector_contexto',
         'sentimiento', 'consenso_forward', 'descargo', 'generado_en'}

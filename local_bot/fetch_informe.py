@@ -323,6 +323,28 @@ def traer_activo(sym, sp500_map):
         r['sector'] = SECTOR_YF_MAP.get(info.get('sector'), info.get('sector'))
     r['sectorYahoo'] = info.get('sector')
 
+    # `industry` — el nivel FINO de la clasificacion, y el que contesta la
+    # pregunta que el sector no contesta.
+    #
+    # Todos los bancos son "Financials", pero tambien lo son las aseguradoras,
+    # los gestores de fondos y las bolsas. Una cartera con WFC + BBD + BBVA +
+    # ING esta 100% en bancos; la tabla de sectores muestra "Financials 80%" y
+    # eso se lee como "diversificado dentro del sector". No lo esta.
+    #
+    # El bot del screener lo captura desde hace dias; este no, asi que los 130
+    # CEDEAR de afuera del indice llegaban sin el y la concentracion por
+    # industria solo podia cubrir la mitad de la cartera. Es un solo campo de
+    # `.info`, ya descargado: no agrega ni una llamada ni un segundo.
+    #
+    # Yahoo lo devuelve en ingles y sin normalizar ("Banks - Diversified",
+    # "Banks - Regional"). No se traduce a proposito: el screener guarda el
+    # mismo string crudo, y dos taxonomias distintas para el mismo campo serian
+    # peor que tenerlo en ingles.
+    if en_sp500 and sp500_map[sym].get('industry'):
+        r['industry'] = sp500_map[sym]['industry']
+    else:
+        r['industry'] = info.get('industry')
+
     # marketCap: Yahoo NO lo pone en .info para muchos ADR (Nokia, Ternium,
     # Sea, JD, ICICI...). Vuelve todo lo demas —precio, sector, P/E, ROE,
     # margenes, precio objetivo— y falta solo este campo. No es un problema de

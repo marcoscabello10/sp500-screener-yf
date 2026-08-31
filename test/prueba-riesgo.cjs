@@ -301,6 +301,137 @@ async function main() {
     rp.pares_correlacionados.every((p, i) => i === 0
       || rp.pares_correlacionados[i - 1].peso_combinado_pct >= p.peso_combinado_pct));
 
+  // ── 9. TOPES DE GRUPO (31/08/2026) ──────────────────────────────────────
+  // La contradiccion que esto arregla: con cuatro bancos al 12,5% el informe
+  // decia "Financials excede el 35%" y a la vez proponia un objetivo de 41,3%,
+  // que tambien lo excede. El optimizador solo conocia el tope POR POSICION.
+  console.log('\n9. Los topes de sector e industria entran al optimizador');
+
+  const banco = (t, ind) => ({ ticker: t, peso: 12.5, topeClase: 20,
+                               sector: 'Financials', industry: ind });
+  const otro = (t, sec, ind, peso) => ({ ticker: t, peso, topeClase: 20,
+                                         sector: sec, industry: ind });
+  // `analizarRiesgo` lee el tope de `cart.sectores[0].tope`, igual que el
+  // informe: si lo recalculara, la tabla y el objetivo podrian discrepar.
+  const conTope = (activos, tope = 35) => ({ activos, sectores: [{ tope }] });
+
+  const MIXTO = conTope([
+    banco('WFC',  'Banks - Diversified'),
+    banco('JPM',  'Banks - Diversified'),
+    banco('BBD',  'Banks - Regional'),
+    banco('BSBR', 'Banks - Regional'),
+    otro('KO',   'Consumer Staples', 'Beverages', 16.7),
+    otro('MSFT', 'Technology',       'Software',  16.7),
+    otro('XOM',  'Energy',           'Oil & Gas', 16.6),
+  ]);
+  const rm = await Rg.analizarRiesgo(MIXTO, []);
+  const BANCOS = ['WFC', 'JPM', 'BBD', 'BSBR'];
+  const objBancos = rm.posiciones
+    .filter(p => BANCOS.includes(p.ticker))
+    .reduce((a, p) => a + p.peso_objetivo_pct, 0);
+  console.log(`     Financials 50% -> ${Math.round(objBancos * 10) / 10}% (tope 35%)`);
+  for (const p of rm.posiciones.filter(x => BANCOS.includes(x.ticker))) {
+    console.log(`       ${p.ticker.padEnd(5)} 12.5% -> ${p.peso_objetivo_pct}%  `
+              + `aporta ${p.aporte_al_riesgo_pct}% del riesgo`);
+  }
+  chequear('el objetivo del sector YA NO excede su propio tope',
+    objBancos <= 35.1, `${objBancos}%`);
+  chequear('y baja de verdad (no se queda en 50)', objBancos < 40, `${objBancos}`);
+  chequear('el grupo limitante se nombra',
+    rm.grupos_limitantes.some(g => g.tipo === 'sector' && g.nombre === 'Financials'),
+    JSON.stringify(rm.grupos_limitantes));
+  chequear('cada banco dice que lo limito el grupo, no su propio tope',
+    rm.posiciones.filter(p => BANCOS.includes(p.ticker))
+      .every(p => (p.limitado_por_grupo || []).includes('Financials')));
+  // EL PUNTO DE TODO: se recorta MAS al que MAS riesgo aporta. Si el recorte
+  // fuera parejo, la paridad de riesgo no habria servido de nada.
+  const orden = rm.posiciones.filter(p => BANCOS.includes(p.ticker))
+    .slice().sort((a, b) => b.aporte_al_riesgo_pct - a.aporte_al_riesgo_pct);
+  chequear('el que mas riesgo aporta queda con el objetivo mas chico',
+    orden[0].peso_objetivo_pct < orden[orden.length - 1].peso_objetivo_pct,
+    `${orden[0].ticker} ${orden[0].peso_objetivo_pct}% vs `
+    + `${orden[orden.length - 1].ticker} ${orden[orden.length - 1].peso_objetivo_pct}%`);
+  // ⚠️ La primera version de esta prueba exigia que los objetivos sumaran 100%
+  // y fallaba con 94,9%. El codigo estaba BIEN: en esta cartera de prueba los
+  // topes por posicion son 20% y el de Financials 35%, asi que 3x20 + 35 = 95%
+  // y el 5% restante NO TIENE DONDE IR. Lo importante no es que sume 100 —a
+  // veces no se puede— sino que cuando no suma, el sistema lo DIGA.
+  const sumaGrupos = rm.posiciones.reduce((a, p) => a + p.peso_objetivo_pct, 0);
+  const cierra = Math.abs(sumaGrupos - 100) < 0.5;
+  chequear('o los objetivos suman el 100%, o se declara el faltante',
+    cierra || rm.topes_insuficientes != null,
+    `suman ${sumaGrupos.toFixed(1)}% y topes_insuficientes es `
+    + `${JSON.stringify(rm.topes_insuficientes)}`);
+  if (!cierra) {
+    console.log(`     (suman ${sumaGrupos.toFixed(1)}%: los topes no dejan lugar `
+              + `al resto, y se informa)`);
+    chequear('el faltante informado coincide con lo que falta',
+      Math.abs(rm.topes_insuficientes.faltan_pct - (100 - sumaGrupos)) < 0.6,
+      `dice ${rm.topes_insuficientes.faltan_pct}, faltan ${(100 - sumaGrupos).toFixed(1)}`);
+    // Y el consejo tiene que ser el correcto: con los sectores llenos, sumar
+    // otro papel del mismo sector no resuelve nada.
+    chequear('avisa que el faltante es por los topes de grupo',
+      rm.topes_insuficientes.por_grupo === true);
+    chequear('y el consejo dice que hace falta OTRO sector',
+      /OTRO sector/.test(rm.topes_insuficientes.nota),
+      rm.topes_insuficientes.nota);
+  }
+
+  // Cuando TODOS son de la misma industria, aprieta la industria (mas fina).
+  const MISMA = conTope([
+    banco('WFC', 'Banks - Diversified'), banco('JPM', 'Banks - Diversified'),
+    banco('BAC', 'Banks - Diversified'), banco('C',   'Banks - Diversified'),
+    otro('KO',   'Consumer Staples', 'Beverages', 16.7),
+    otro('MSFT', 'Technology',       'Software',  16.7),
+    otro('XOM',  'Energy',           'Oil & Gas', 16.6),
+  ]);
+  const ri = await Rg.analizarRiesgo(MISMA, []);
+  const objInd = ri.posiciones
+    .filter(p => ['WFC', 'JPM', 'BAC', 'C'].includes(p.ticker))
+    .reduce((a, p) => a + p.peso_objetivo_pct, 0);
+  const topeInd = 35 * Rg.FACTOR_TOPE_INDUSTRIA;
+  console.log(`     cuatro bancos de la MISMA industria -> `
+            + `${Math.round(objInd * 10) / 10}% (tope industria ${topeInd}%)`);
+  chequear('la industria aprieta mas que el sector cuando corresponde',
+    objInd <= topeInd + 0.2, `${objInd} vs ${topeInd}`);
+  chequear('y se nombra como grupo limitante de tipo industria',
+    ri.grupos_limitantes.some(g => g.tipo === 'industria'));
+
+  // Control: una cartera repartida NO puede disparar ningun grupo.
+  const SANA = conTope([
+    otro('AAPL', 'Technology',       'Consumer Electronics', 20),
+    otro('JPM',  'Financials',       'Banks - Diversified',  20),
+    otro('KO',   'Consumer Staples', 'Beverages',            20),
+    otro('XOM',  'Energy',           'Oil & Gas',            20),
+    otro('JNJ',  'Healthcare',       'Drug Manufacturers',   20),
+  ]);
+  const rs = await Rg.analizarRiesgo(SANA, []);
+  chequear('una cartera repartida no dispara ningun grupo (sin falsos positivos)',
+    rs.grupos_limitantes.length === 0,
+    JSON.stringify(rs.grupos_limitantes));
+
+  // Sin `industry` NO se agrupa a medias: limitaria a los que tienen el dato y
+  // dejaria libres a los que no, que es peor que no agrupar.
+  const SIN_IND = conTope([
+    { ticker: 'WFC', peso: 12.5, topeClase: 20, sector: 'Financials',
+      industry: 'Banks - Diversified' },
+    { ticker: 'JPM', peso: 12.5, topeClase: 20, sector: 'Financials',
+      industry: 'Banks - Diversified' },
+    { ticker: 'BBD', peso: 12.5, topeClase: 20, sector: 'Financials',
+      industry: null },
+    { ticker: 'BSBR', peso: 12.5, topeClase: 20, sector: 'Financials',
+      industry: null },
+    otro('KO',   'Consumer Staples', 'Beverages', 16.7),
+    otro('MSFT', 'Technology',       'Software',  16.7),
+    otro('XOM',  'Energy',           'Oil & Gas', 16.6),
+  ]);
+  const rn = await Rg.analizarRiesgo(SIN_IND, []);
+  chequear('con industrias incompletas NO se agrupa por industria',
+    !rn.grupos_limitantes.some(g => g.tipo === 'industria'),
+    JSON.stringify(rn.grupos_limitantes.map(g => g.tipo)));
+  chequear('pero el tope de SECTOR se sigue aplicando igual',
+    rn.grupos_limitantes.some(g => g.tipo === 'sector'));
+
   resumen();
 }
 

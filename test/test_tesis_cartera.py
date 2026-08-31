@@ -415,7 +415,7 @@ print(f'  Motor B completo    -> riesgo + plan + {len(d2["candidatos"])} '
 # esos dos bloques, y como eran MAS BAJOS que la realidad nueva, esta guarda
 # pasaba en verde mientras el estimador subestimaba de verdad. Si tocas el
 # payload: volve a medir esto, no alcanza con que la prueba siga pasando.
-MEDIDO = {3: 1050, 5: 1616, 10: 2469, 15: 3031, 20: 3720, 25: 4422}
+MEDIDO = {3: 1088, 5: 1658, 10: 2519, 15: 3089, 20: 3787, 25: 4498}
 for n_pos, real in MEDIDO.items():
     est = I.estimar_cartera(n_pos, 'anthropic')['tokens_estimados']['entrada']
     chequear(est >= real,

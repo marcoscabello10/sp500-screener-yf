@@ -333,6 +333,9 @@ export function analizarCartera(informes, posiciones, perfilClave,
         ? round1(fit - puntajeBase) : null,
       nombre: i.nombre,
       sector: i.sector || null,
+      // El nivel FINO. Puede venir null y eso NO es lo mismo que "no tiene":
+      // es "todavia no lo sabemos". Se distingue en `concentracionPorIndustria`.
+      industry: i.industry || null,
       clase,
       etiqueta,
       puntajeFundamental: i.veredicto?.puntaje ?? null,
@@ -726,6 +729,29 @@ export function armarDatosTesis(cart, estres, candidatos = [], scores = {},
       caida_usd: peor.caidaUSD,
     } : null,
 
+    // El nivel FINO de la concentracion. Solo viajan las industrias que son un
+    // hallazgo (2+ papeles pesando >= 15%), no las 12 filas: el modelo no
+    // necesita el listado, necesita saber donde hay una sola apuesta con
+    // varios nombres.
+    industrias: (() => {
+      const ind = concentracionPorIndustria(cart)
+      if (!ind || !ind.confiable) {
+        return ind ? { disponible: false,
+                       motivo: `solo ${ind.cobertura_pct}% de las posiciones `
+                             + `traen industria`,
+                       sin_dato: ind.sin_dato } : null
+      }
+      return {
+        disponible: true,
+        cobertura_pct: ind.cobertura_pct,
+        sin_dato: ind.sin_dato,
+        concentradas: ind.concentradas.map(g => ({
+          industria: g.industry, sector: g.sector,
+          pct: g.pct, denominador: g.denominador, tickers: g.tickers,
+        })),
+      }
+    })(),
+
     sectores: (cart.sectores || [])
       .filter(s => s.pct > 0)
       .map(s => ({
@@ -813,6 +839,9 @@ export function armarDatosTesis(cart, estres, candidatos = [], scores = {},
       // Capa 3: contra que se compara todo esto. Sin benchmark, "rinde 12% con
       // 16% de volatilidad" no se puede juzgar.
       benchmark: riesgo.benchmark,
+      // Por que se recorta un papel que, mirado solo, estaba dentro de su tope.
+      // Sin esto el objetivo baja cuatro bancos y no hay forma de explicarlo.
+      grupos_limitantes: riesgo.grupos_limitantes,
       // La "concentracion tematica": pares que se mueven juntos y por lo tanto
       // son UNA apuesta con dos nombres. No lo muestra ninguna tabla de pesos
       // por sector, porque pueden estar en sectores distintos.
@@ -846,6 +875,86 @@ export function armarDatosTesis(cart, estres, candidatos = [], scores = {},
           })),
       }
     })(),
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CONCENTRACIÓN POR INDUSTRIA — lo que el sector no muestra
+//
+// Pregunta de Marcos (31/08): si tengo WFC del S&P y un banco brasileño que
+// solo existe como CEDEAR, ¿me los suma?
+//
+// Por SECTOR sí, y siempre lo hizo: el peso sale del `sector` de cada posición
+// de la cartera, no del universo, así que WFC + BBD + BBVA dan "Financials 80%"
+// y marca el exceso. Verificado con una cartera de prueba.
+//
+// Lo que NO mostraba es el nivel fino. "Financials 80%" puede ser:
+//
+//     tres bancos y una aseguradora   -> concentrado, pero repartido
+//     cuatro bancos                   -> UNA apuesta con cuatro nombres
+//
+// y la tabla de sectores los dibuja idénticos. Eso es lo que esto resuelve.
+//
+// ⚠️ SE COMPLEMENTA CON LOS PARES CORRELACIONADOS, NO LOS REEMPLAZA.
+// Son dos preguntas distintas y ninguna implica la otra:
+//   · la industria mira la ETIQUETA (dos bancos son dos bancos)
+//   · la correlación mira el COMPORTAMIENTO (dos papeles que se mueven juntos,
+//     aunque uno sea minero y el otro industrial)
+// Un banco brasileño y uno estadounidense comparten industria y pueden
+// correlacionar poco. Dos mineras de oro de industrias distintas se mueven
+// como una. Hacen falta las dos lecturas.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Con menos de dos posiciones no hay concentración de la que hablar, y por
+// debajo de este peso tampoco: una industria con 4% no es un hallazgo.
+export const INDUSTRIA_PESO_MINIMO = 15
+
+export function concentracionPorIndustria(cart) {
+  if (!cart || !Array.isArray(cart.activos)) return null
+  const hayPesos = !!cart.hayPesos
+  const activos = cart.activos
+
+  const grupos = {}
+  const sinDato = []
+  for (const a of activos) {
+    if (!a.industry) { sinDato.push(a.ticker); continue }
+    const g = (grupos[a.industry] ||= {
+      industry: a.industry, sector: a.sector || null, tickers: [], pct: 0, n: 0,
+    })
+    g.tickers.push(a.ticker)
+    g.n += 1
+    g.pct += (a.peso || 0)
+  }
+
+  const total = Object.values(grupos)
+    .map(g => ({
+      ...g,
+      // El denominador viaja SIEMPRE, igual que en los sectores: sin montos
+      // esto es un CONTEO de papeles y leerlo como plata es la alarma falsa
+      // que ya nos comimos una vez.
+      pct: hayPesos ? round1(g.pct) : round1((g.n / activos.length) * 100),
+      denominador: hayPesos ? 'valor de la cartera' : 'cantidad de posiciones',
+    }))
+    .sort((a, b) => b.pct - a.pct)
+
+  // Solo se marca lo que es una concentración de verdad: dos o más papeles de
+  // la misma industria pesando junto más que el umbral. Un solo papel al 20%
+  // ya lo dice la tabla de pesos; repetirlo acá sería ruido.
+  const concentradas = total.filter(g =>
+    g.n >= 2 && hayPesos && g.pct >= INDUSTRIA_PESO_MINIMO)
+
+  return {
+    industrias: total,
+    concentradas,
+    // Los que no tienen el dato se NOMBRAN. Sin esto, una cartera donde falta
+    // la mitad de las industrias se vería igual que una repartida de verdad, y
+    // el silencio se leería como "no hay concentración".
+    sin_dato: sinDato,
+    cobertura_pct: activos.length
+      ? round1(((activos.length - sinDato.length) / activos.length) * 100) : 0,
+    // Sin este dato en la mayoría de las posiciones, la lectura no se sostiene
+    // y es mejor decirlo que dibujar una tabla a medias.
+    confiable: activos.length > 0 && sinDato.length <= activos.length / 2,
   }
 }
 
@@ -907,6 +1016,7 @@ export function planDePesos(cart, riesgo) {
       volatilidad: p.volatilidad_pct ?? null,
       correlacion: p.correlacion_media ?? null,
       limitadoPorTope: !!p.limitado_por_tope,
+      limitadoPorGrupo: p.limitado_por_grupo || [],
       topeClase: a.topeClase ?? null,
       accionCartera: a.accion || null,
       // Un papel puede pesar de más y aportar POCO riesgo (o al revés). Marcar
@@ -952,6 +1062,7 @@ export function planDePesos(cart, riesgo) {
     // caminos hacia el mismo dato y uno se olvidaría de actualizar.
     benchmark: riesgo.benchmark || null,
     pares: riesgo.pares_correlacionados || [],
+    gruposLimitantes: riesgo.grupos_limitantes || [],
   }
 }
 

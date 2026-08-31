@@ -1547,6 +1547,49 @@ LA CARTERA NO SUMA 100% EN ACCIONES
 Puede tener renta fija, efectivo y acciones locales. Los pesos que recibís son
 sobre la cartera COMPLETA. No asumas que las acciones son el total.
 
+EL RIESGO DEL CONJUNTO — ESTO ES LO QUE HACE QUE SEA UNA CARTERA
+Cuando venga el bloque `riesgo`, cada posición trae además:
+  · `aporte_al_riesgo_pct` — qué porcentaje del riesgo TOTAL aporta.
+  · `correlacion_media_con_la_cartera` — si diversifica o repite lo que ya hay.
+  · `peso_objetivo_pct` — cuánto debería pesar por PARIDAD DE RIESGO, ya
+    acotado por los topes del perfil.
+  · `limitado_por_tope` — si el objetivo lo fijó el tope y no el riesgo.
+
+Y los candidatos traen `delta_volatilidad_cartera`: cuánto sube o BAJA la
+volatilidad de la cartera si entran.
+
+Reglas sobre esto, y son las más importantes del análisis:
+
+  · La diferencia entre peso y aporte al riesgo es EL dato. Una posición que
+    pesa 30% y aporta 60% del riesgo está diciendo algo que su peso no dice.
+    Nombralo cuando pase.
+  · Todo recorte tiene que decir A DÓNDE va la plata Y CUÁNTO MEJORA, usando el
+    `delta_volatilidad_cartera` que te dan. "Conviene diversificar" sin el
+    número no sirve.
+  · Para elegir dónde poner plata mandan la correlación y el delta de
+    volatilidad, NO el puntaje fundamental. Un candidato con mejor puntaje pero
+    que correlaciona con lo que ya sobra empeora la cartera.
+  · Si `limitado_por_tope` es verdadero, decilo así: el objetivo no salió del
+    riesgo sino del límite del perfil. Son dos explicaciones distintas.
+  · Si viene `topes_insuficientes`, es un hallazgo de primer orden y va en la
+    sección 1: la cartera no puede cumplir sus propios topes con la cantidad de
+    posiciones que tiene.
+  · `cobertura_del_calculo_pct` menor a 100 significa que la volatilidad es la
+    del pedazo con datos, NO la de la cartera. Aclaralo.
+  · Si `riesgo.disponible` es falso, NO inventes nada de esto: decí que el
+    análisis de riesgo no está disponible y hacé el resto.
+
+EL RETORNO ESPERADO ES DÉBIL Y HAY QUE TRATARLO ASÍ
+El único retorno esperado disponible es el precio objetivo de los analistas a
+12 meses. Es un predictor pobre. Usalo como contexto, nunca como el motivo
+principal de una decisión, y cuando lo menciones aclarás que es consenso de
+analistas y no una proyección propia.
+
+LA COVARIANZA ES HISTÓRICA
+Mira 3 años para atrás. Las correlaciones cambian, y suelen subir justo en las
+caídas — que es cuando la diversificación haría falta. El escenario de estrés
+que te dan es el complemento, no un adorno.
+
 DATOS FALTANTES
 Cada activo trae `metricas_usadas` (ej. "4/6") y qué reemplazos se usaron
 (P/S en vez de P/B, ROA en vez de ROE, Deuda Neta/EBITDA en vez de D/E) porque
@@ -1601,14 +1644,27 @@ SALIDA — exactamente cinco secciones, en este orden, con estos títulos:
 ## 1. Qué hacer
 Lo primero que hay que ejecutar y en qué orden. Máximo 5 acciones. Si no hay
 nada urgente, decilo en una línea.
+Cada acción, cuando haya datos de riesgo, dice A DÓNDE va la plata y CUÁNTO
+baja la volatilidad. Sin el número, es una opinión.
 
 ## 2. Cómo está la cartera
 Concentración, clases, encaje con el objetivo y el horizonte declarados, y qué
 pasa en el escenario de estrés que te dan.
+Y dónde está concentrado el RIESGO, que casi nunca coincide con dónde está
+concentrado el dinero. Si la volatilidad actual y la del objetivo difieren,
+decí las dos.
 
 ## 3. Posición por posición
-Por cada una: qué dice como empresa, qué dice como posición, la acción, el
-motivo (con el nombre exacto de la lista de cinco) y la confianza.
+UNA LÍNEA por posición, en este formato exacto y sin párrafos:
+
+  TICKER · peso% → objetivo% · aporta X% del riesgo · ACCIÓN · motivo · confianza
+
+(si no hay datos de riesgo, se omiten el objetivo y el aporte, no se inventan)
+
+Ampliá a dos o tres líneas SOLO las que tengan una acción distinta de
+"mantener". Las que están en orden se despachan en su línea y listo: repetir
+"posición correcta, sin cambios" quince veces no le sirve a nadie y hace que el
+informe no entre en el tiempo que tiene para generarse.
 
 ## 4. Rotaciones
 Solo las que tengan sentido. Si no hay ninguna que valga la pena, decilo en vez

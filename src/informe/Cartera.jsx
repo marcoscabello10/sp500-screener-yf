@@ -1,6 +1,7 @@
 import React from 'react'
 import Informe, { QueRevisar } from './Informe.jsx'
 import TesisCartera from './tesisCartera.jsx'
+import { analizarRiesgo } from './riesgo.js'
 import { planRotacion, concentracionPorSector, SECTOR_PESADO_PCT,
          candidatosRotacion } from './sugerencias.js'
 import { analizarCartera, stressTest, exposicion, CLASE_TEXTO, ESTADO_TEXTO,
@@ -52,7 +53,31 @@ export default function Cartera({ informes, meta, stocks, scores, conAnexo,
   // calculo arriba: si acá se calculara algo, habría dos fuentes de verdad y el
   // texto podría contradecir la tabla que está en esta misma página.
   const candidatos = candidatosRotacion(stocks, scores, validos.map(i => i.ticker))
-  const datosTesis = armarDatosTesis(cart, stress, candidatos, scores)
+
+  // ── MOTOR B ───────────────────────────────────────────────────────────────
+  // Baja el historico de precios (un estatico del mismo origen) y calcula
+  // covarianza, aporte al riesgo y peso objetivo. Es asincrono porque el
+  // archivo pesa ~9 MB, asi que el informe se dibuja primero SIN esto y los
+  // campos de riesgo aparecen cuando estan.
+  //
+  // Si el historico no esta, `riesgo` queda null y todo lo demas funciona
+  // igual: el Motor A no depende del B. Es el mismo interruptor de la fase B2.
+  const [riesgo, setRiesgo] = React.useState(null)
+  React.useEffect(() => {
+    let vivo = true
+    analizarRiesgo(cart, candidatos)
+      .then(r => { if (vivo) setRiesgo(r) })
+      .catch(e => {
+        // No se silencia: si el calculo de riesgo falla, el informe sigue
+        // andando pero hay que poder saber por que falto.
+        console.warn('No se pudo calcular el riesgo de cartera:', e)
+        if (vivo) setRiesgo({ disponible: false, motivo: String(e) })
+      })
+    return () => { vivo = false }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cart.activos.map(a => `${a.ticker}:${a.peso}`).join(',')])
+
+  const datosTesis = armarDatosTesis(cart, stress, candidatos, scores, riesgo)
 
   const concentracion = concentracionPorSector(
     validos.map(i => ({ sector: i.sector })))

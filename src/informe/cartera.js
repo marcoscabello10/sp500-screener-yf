@@ -626,10 +626,25 @@ const r1 = v => (v == null || !isFinite(v)) ? null : Math.round(v * 10) / 10
 // pasarlos, esos dos campos salen null, el modelo no sabe de qué papeles tiene
 // pocos datos, y la CONFIANZA que declara deja de estar atada a nada medido.
 // Y no daría ningún error: daría una tesis con confianza "alta" en todo.
-export function armarDatosTesis(cart, estres, candidatos = [], scores = {}) {
+export function armarDatosTesis(cart, estres, candidatos = [], scores = {},
+                                riesgo = null) {
   if (!cart || !Array.isArray(cart.activos)) return null
 
   const exp = exposicion(cart)
+  // Los campos del Motor B por ticker. Si no hay historico, no salen: NO se
+  // rellenan con ceros, que se leerian como "no aporta riesgo".
+  const riesgoDe = (r, sym) => {
+    if (!r?.disponible) return null
+    const p = (r.posiciones || []).find(x => x.ticker === sym)
+    if (!p) return { sin_datos_de_riesgo: true }
+    return {
+      volatilidad_pct: p.volatilidad_pct,
+      aporte_al_riesgo_pct: p.aporte_al_riesgo_pct,
+      correlacion_media_con_la_cartera: p.correlacion_media,
+      peso_objetivo_pct: p.peso_objetivo_pct,
+      limitado_por_tope: p.limitado_por_tope,
+    }
+  }
   const cob = sym => {
     const s = scores[sym]
     if (!s || s.nUsadas == null) return { metricas: null, reemplazos: [] }
@@ -705,12 +720,38 @@ export function armarDatosTesis(cart, estres, candidatos = [], scores = {}) {
       accion_calculada: a.accion,
       toma_ganancia: !!a.tomaGanancia,
       beta: a.beta,
+      // ── MOTOR B: lo que la posicion le hace a la CARTERA, no a si misma ──
+      // Sin esto el informe solo sabia decir "excede el tope". Con esto puede
+      // decir "pesa 30% pero aporta el 60% del riesgo", que es otra cosa.
+      ...(riesgoDe(riesgo, a.ticker) || {}),
     })),
 
-    candidatos: (candidatos || []).map(c => ({
-      ticker: c.ticker, sector: c.sector,
-      puntaje: c.puntaje, metricas: c.metricas,
-    })),
+    // Los candidatos, con lo que le APORTAN A ESTA CARTERA cuando se puede
+    // medir. Sin el delta de volatilidad, el unico criterio era el puntaje
+    // fundamental — y medido, eso elegia la PEOR de cuatro opciones.
+    candidatos: (candidatos || []).map(c => {
+      const r = riesgo?.disponible
+        ? (riesgo.candidatos || []).find(x => x.ticker === c.ticker) : null
+      return {
+        ticker: c.ticker, sector: c.sector,
+        puntaje: c.puntaje, metricas: c.metricas,
+        ...(r ? { volatilidad_pct: r.volatilidad,
+                  correlacion_media_con_la_cartera: r.correlacion_media,
+                  delta_volatilidad_cartera: r.delta_volatilidad } : {}),
+      }
+    }),
+
+    // ── Riesgo del conjunto ─────────────────────────────────────────────────
+    riesgo: riesgo?.disponible ? {
+      volatilidad_cartera_pct: riesgo.volatilidad_cartera_pct,
+      volatilidad_si_se_llega_al_objetivo_pct: riesgo.volatilidad_si_objetivo_pct,
+      ventana_dias: riesgo.ventana_dias,
+      // Si no todas las posiciones tienen historico, la volatilidad es la del
+      // pedazo que si lo tiene. Se dice.
+      cobertura_del_calculo_pct: riesgo.cobertura_pct,
+      posiciones_sin_datos: (riesgo.sin_datos || []).map(s => s.ticker),
+      topes_insuficientes: riesgo.topes_insuficientes,
+    } : { disponible: false, motivo: riesgo?.motivo || 'no se calculo' },
   }
 }
 

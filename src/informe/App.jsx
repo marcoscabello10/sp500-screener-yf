@@ -228,6 +228,7 @@ export default function App() {
         </>
       ) : (
         <Selector universo={universo} completos={completos} onElegir={pedir}
+                  precios={mercado.porSymbol}
                   onCartera={(ts, pos) => { setPosiciones(pos || {}); setPendientes(ts) }}
                   cargando={cargando} />
       )}

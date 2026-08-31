@@ -109,6 +109,37 @@ function esColumnaTicker(h) {
       || s.includes('activo') || s === 'accion' || s === 'acción' || s === 'symbol'
 }
 
+// Sin tildes y sin mayusculas, para que "Precio de Compra", "PRECIO DE COMPRA"
+// y "precio compra" sean lo mismo. Es la unica forma de que la plantilla
+// aguante que alguien la retoque a mano.
+const sinTilde = h => String(h || '').toLowerCase().trim()
+  .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+
+/**
+ * Un numero de una celda de Excel, en cualquiera de las formas en que llega.
+ *
+ * xlsx devuelve numeros de verdad cuando la celda es numerica, pero si el
+ * cliente la formateo como texto llega "1.234,56" o "US$ 288,61". Sin esto,
+ * `parseFloat("1.234,56")` da 1.234 — mil veces menos, sin ningun error.
+ */
+function aNumero(v) {
+  if (v == null || v === '') return null
+  if (typeof v === 'number') return Number.isFinite(v) ? v : null
+  let s = String(v).trim().replace(/[^\d.,\-]/g, '')
+  if (!s) return null
+  const coma = s.lastIndexOf(','), punto = s.lastIndexOf('.')
+  if (coma > -1 && punto > -1) {
+    // El ultimo separador es el decimal; el otro es de miles.
+    s = coma > punto ? s.replace(/\./g, '').replace(',', '.')
+                     : s.replace(/,/g, '')
+  } else if (coma > -1) {
+    // Una sola coma: decimal si deja 1 o 2 digitos ("1,5"), miles si deja 3.
+    s = /,\d{3}$/.test(s) ? s.replace(/,/g, '') : s.replace(',', '.')
+  }
+  const n = parseFloat(s)
+  return Number.isFinite(n) ? n : null
+}
+
 function filasAActivos(filas, encabezado) {
   const iTicker = encabezado.findIndex(esColumnaTicker)
   if (iTicker < 0) return []
@@ -116,6 +147,27 @@ function filasAActivos(filas, encabezado) {
   const iSector = encabezado.findIndex(h => norm(h).includes('sector'))
   const iNombre = encabezado.findIndex(h => norm(h).includes('nombre') || norm(h) === 'name')
   const iScore  = encabezado.findIndex(h => norm(h).includes('score') || norm(h).includes('puntaje'))
+
+  // ── LAS TRES COLUMNAS QUE LA PLANTILLA PROMETE Y NADIE LEIA ──────────────
+  // ⚠️ Hasta el 31/08/2026 esta funcion leia ticker, sector, nombre y score, y
+  // NADA MAS. La plantilla que Marcos le manda al cliente pide Cantidad,
+  // Precio de compra y % Posicion, la hoja "Instrucciones" explica las tres...
+  // y el informe las tiraba. Las posiciones salian UNICAMENTE de las carteras
+  // que F5 deja en localStorage, asi que subir el Excel daba una lista de
+  // tickers sin pesos y el informe entero se degradaba a "cartera propuesta"
+  // sin decir por que.
+  const iCant   = encabezado.findIndex(h => /^cantidad|nominal/.test(sinTilde(h)))
+  const iPrecio = encabezado.findIndex(h => {
+    const x = sinTilde(h)
+    return x.includes('precio') && (x.includes('compra') || x.includes('costo'))
+  })
+  const iPct = encabezado.findIndex(h => {
+    const x = sinTilde(h)
+    return (x.includes('%') || x.includes('porcentaje') || x.includes('peso'))
+        && (x.includes('posicion') || x.includes('cartera') || x.includes('peso')
+            || x.trim() === '%')
+  })
+
   const vistos = new Set()
   const out = []
   for (const f of filas) {
@@ -127,9 +179,36 @@ function filasAActivos(filas, encabezado) {
       sector: iSector >= 0 ? f[iSector] : null,
       nombre: iNombre >= 0 ? f[iNombre] : null,
       score:  iScore  >= 0 ? parseFloat(f[iScore]) : null,
+      cantidad:     iCant   >= 0 ? aNumero(f[iCant])   : null,
+      precioCompra: iPrecio >= 0 ? aNumero(f[iPrecio]) : null,
+      pctCrudo:     iPct    >= 0 ? aNumero(f[iPct])    : null,
     })
   }
-  return out
+  return normalizarPorcentajes(out)
+}
+
+/**
+ * El % Posicion llega en DOS escalas distintas segun como se cargo la celda.
+ *
+ * Si el cliente la formateo como porcentaje, Excel guarda 0,216 para "21,6%".
+ * Si la escribio como numero suelto, guarda 21,6. Las dos son validas y hay
+ * que distinguirlas, porque leer 0,216 como "0,216%" haria que el informe crea
+ * que esa posicion es el 0,2% de la cartera: los pesos saldrian ~100 veces mas
+ * chicos y NO se dispararia ninguna alerta de sobrepeso. Silencioso y total.
+ *
+ * La regla: si NINGUN valor pasa de 1 y la suma no llega a 1,5, son fracciones.
+ * Un 1,5 en escala 0-100 seria una cartera del 1,5%, que no existe.
+ */
+function normalizarPorcentajes(activos) {
+  const vals = activos.map(a => a.pctCrudo).filter(v => v != null && v > 0)
+  if (!vals.length) return activos.map(a => ({ ...a, pctExcel: null }))
+  const suma = vals.reduce((a, b) => a + b, 0)
+  const esFraccion = vals.every(v => v <= 1) && suma <= 1.5
+  return activos.map(a => ({
+    ...a,
+    pctExcel: a.pctCrudo == null || !(a.pctCrudo > 0) ? null
+      : Math.round((esFraccion ? a.pctCrudo * 100 : a.pctCrudo) * 1000) / 1000,
+  }))
 }
 
 async function leerExcel(file) {
@@ -175,7 +254,8 @@ function nombreDe(universo, ticker) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-export default function Selector({ universo, completos, onElegir, onCartera, cargando }) {
+export default function Selector({ universo, completos, onElegir, onCartera,
+                                  cargando, precios = null }) {
   const [seleccion, setSeleccion] = useState(() => new Set())
 
   const alternar = t => setSeleccion(s => {
@@ -210,6 +290,45 @@ export default function Selector({ universo, completos, onElegir, onCartera, car
     for (const c of carteras) Object.assign(m, c.posiciones || {})
     return m
   }, [carteras])
+
+  // ── Las posiciones que vienen del ARCHIVO ────────────────────────────────
+  // El Excel trae cantidad y precio de compra; el valor de mercado sale del
+  // precio de HOY, que ya esta en el universo. Sin este cruce, `cantidad` sola
+  // no alcanza: la capa de pesos necesita plata, no nominales.
+  const posicionesArchivo = useMemo(() => {
+    const m = {}
+    for (const a of (subidos?.activos || [])) {
+      const tienePeso = a.cantidad > 0 || a.pctExcel > 0
+      if (!tienePeso) continue
+      const precioHoy = precios?.[a.ticker]?.price ?? null
+      const valorActual = (a.cantidad > 0 && precioHoy > 0)
+        ? Math.round(a.cantidad * precioHoy * 100) / 100 : null
+      const costoBase = (a.cantidad > 0 && a.precioCompra > 0)
+        ? Math.round(a.cantidad * a.precioCompra * 100) / 100 : null
+      const gananciaUSD = (valorActual != null && costoBase != null)
+        ? Math.round((valorActual - costoBase) * 100) / 100 : null
+      m[a.ticker] = {
+        cantidad: a.cantidad ?? null,
+        precioCompra: a.precioCompra ?? null,
+        valorActual,
+        costoBase,
+        gananciaUSD,
+        gananciaPct: (gananciaUSD != null && costoBase > 0)
+          ? Math.round(gananciaUSD / costoBase * 1000) / 10 : null,
+        // El % del Excel es el ANCLA del denominador: dice cuanto pesa esto
+        // sobre la cartera COMPLETA, incluyendo lo que no se subio.
+        pctExcel: a.pctExcel ?? null,
+        pctActual: null,
+        origen: 'excel',
+      }
+    }
+    return m
+  }, [subidos, precios])
+
+  // El archivo gana sobre F5: es lo que Marcos acaba de subir.
+  const posicionesTodas = useMemo(
+    () => ({ ...posicionesF5, ...posicionesArchivo }),
+    [posicionesF5, posicionesArchivo])
 
   async function procesar(file) {
     setErrorArchivo(null); setSubidos(null)
@@ -368,8 +487,8 @@ export default function Selector({ universo, completos, onElegir, onCartera, car
                      fontSize: 13.5 }}>Limpiar</button>
           <button onClick={() => onCartera([...seleccion],
                     Object.fromEntries([...seleccion]
-                      .filter(t => posicionesF5[t])
-                      .map(t => [t, posicionesF5[t]])))} disabled={cargando}
+                      .filter(t => posicionesTodas[t])
+                      .map(t => [t, posicionesTodas[t]])))} disabled={cargando}
             style={{ marginLeft: 'auto', background: C.acento, color: '#fff',
                      border: 'none', borderRadius: 7, padding: '9px 18px',
                      fontSize: 14, fontWeight: 600, opacity: cargando ? .5 : 1 }}>

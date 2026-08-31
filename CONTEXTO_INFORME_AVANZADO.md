@@ -4112,10 +4112,157 @@ de elegir uno sigue siendo más barato que descubrirlo al ejecutar.)*
 
 ---
 
+## 🐛 CUATRO COSAS DE LA PRIMERA PRUEBA REAL DEL BOTÓN (31/08/2026)
+
+### 1. 🔴 El Excel: las cantidades se tiraban a la basura
+
+Marcos subió **su propia plantilla**, la que le manda al cliente, con Cantidad,
+Precio de compra y % Posición cargados. El informe salió sin pesos.
+
+`filasAActivos()` en `Selector.jsx` leía **ticker, sector, nombre y score. Y
+nada más.** Las tres columnas que la plantilla pide —y que su hoja
+"Instrucciones" explica una por una— no se leían nunca. Las posiciones salían
+ÚNICAMENTE de las carteras que F5 deja en `localStorage`.
+
+No daba error: el informe se degradaba solo a "cartera propuesta" y ninguna
+alerta de sobrepeso podía dispararse, porque no había pesos que comparar.
+
+Ahora se leen las tres, y de ahí sale `valorActual` cruzando la cantidad con el
+precio de HOY (que ya está en el universo). **El archivo gana sobre F5**: es lo
+que Marcos acaba de subir.
+
+⚠️ **La escala del porcentaje era una trampa.** Excel guarda `0,216` cuando la
+celda está formateada como "21,6%", pero `21,6` si se escribió como número
+suelto. Las dos son válidas. Leer 0,216 como "0,216%" habría hecho que el
+informe crea que esa posición es el 0,2% de la cartera: **los pesos saldrían
+~100 veces más chicos y no se dispararía ninguna alerta.** Silencioso y total.
+La regla: si ningún valor pasa de 1 y la suma no llega a 1,5, son fracciones.
+
+También se agregó `aNumero()`, porque una celda formateada como texto llega
+`"1.234,56"` y `parseFloat` da **1,234** — mil veces menos, sin ningún error.
+
+Su archivo real quedó como fixture en `test/fixtures/cartera_ejemplo.xlsx` y la
+prueba corre el parser REAL contra él. Sus 7 activos son el **67,1%** de la
+cartera del cliente, así que el informe ahora lo dice en vez de repartir 100%.
+
+### 2. 🔴 El modo profundo: el pensamiento se comió TODO el tope
+
+```
+stop_reason: max_tokens · tipos_de_bloque: ["thinking"]
+tokens_salida: 3440 · tope_pedido: 3440
+```
+
+Los 3.440 tokens se fueron enteros en el bloque de pensamiento y no quedó ni una
+línea de texto. **La llamada se cobró igual.**
+
+Es la SEGUNDA vez: el 28/08 la primera llamada real falló igual con 900 tokens.
+Entonces se subió el tope. Ahora queda claro que **subir el tope no alcanza,
+porque el pensamiento crece con el espacio que le des.**
+
+Y aunque alcanzara, no entra en el tiempo: el modo profundo ya estaba en 58s
+para 15 posiciones contra un límite de 60, y los tokens de pensamiento se
+generan a la misma velocidad. Pensar 3.000 tokens antes de escribir garantiza
+el 504.
+
+**Se apaga explícitamente** (`thinking: {type: 'disabled'}`), con un reintento
+sin el parámetro si algún modelo no lo acepta — un 400 no genera tokens, así que
+ese reintento es el único que no rompe la regla de costo.
+
+Qué se pierde: poco, y es medible. Este prompt no le pide al modelo que razone
+sobre números —llegan calculados— sino que ORDENE y REDACTE. El modo profundo
+sigue valiendo por el modelo, no por el pensamiento.
+
+**7 posiciones en profundo: 51s, entra.** Antes: sin texto y cobrado.
+
+### 3. 🔴 La afinidad ignoraba el perfil de riesgo
+
+> *"Recomienda más afinidad RGTI para una cartera conservadora, cuando es una
+> opción extremadamente arriesgada, alto beta."*
+
+`afinidad()` repesaba los cinco bloques por OBJETIVO y HORIZONTE… y **nunca
+miraba el PERFIL**, que es la única variable que dice cuánto riesgo tolera el
+cliente. Medía *"¿es buena para este objetivo?"* y no *"¿es apropiada para esta
+tolerancia?"*, que son dos preguntas y solo una estaba contestada.
+
+```
+                    base    conservador   moderado   agresivo
+  RGTI               74          11          31         61
+  KO                48,3        48,3        48,3       48,3
+
+  antes: RGTI daba 74 para los TRES perfiles por igual
+```
+
+Para un conservador, **ahora KO (48,3) le gana a RGTI (11)**, y RGTI queda
+marcado `incompatible`. Para un agresivo sigue siendo la mejor opción — un
+perfil agresivo *tolera* el riesgo, no lo premia, así que el castigo baja mucho
+pero no llega a cero.
+
+El descuento se muestra **motivo por motivo** en el informe:
+
+```
+  −30  beta 2,6 contra 0,95 que tolera este perfil
+  −25  es un papel especulativo
+  − 8  1 riesgo de severidad alta
+```
+
+Un número que baja de 74 a 11 sin decir por qué es indistinguible de un error, y
+lo primero que hace quien lo lee es desconfiar de todo el informe.
+
+⚠️ El castigo por beta lleva **techo** (`CASTIGO_BETA_MAXIMO = 30`). Sin él, beta
+2,6 daba 57,8 puntos, aplastaba a los otros dos motivos y clavaba el score en 0
+— y un 0 no distingue "inapropiado" de "catastrófico".
+
+⚠️ **Sin beta NO se asume que es tranquilo.** Es el caso de los CEDEAR nuevos,
+que suelen ser justo los más volátiles. Se marca en vez de premiar la falta de
+dato.
+
+Los números de `TOLERANCIA` son un **juicio declarado**, no una ley de mercado.
+Están arriba del archivo y con nombre para poder discutirlos.
+
+### 4. La tesis salió del informe del cliente
+
+Estaba arriba de todo, que era correcto mientras el informe era para Marcos.
+Pero **el documento se le entrega AL CLIENTE**, y la lectura interna —qué rotar,
+qué está sobrevaluado, el razonamiento del analista— no es para esos ojos.
+
+Ahora hay un botón discreto al pie (*"Análisis interno de la cartera →"*) que
+abre un **panel lateral**, y todo lo que sale de ahí lleva `no-imprimir`: no
+existe para el PDF por más que uno imprima todo.
+
+> Confiar en "elijo las páginas al imprimir" es confiar en no equivocarse una
+> sola vez. Esto lo hace imposible, no improbable.
+
+Es un panel y no un `window.open` a propósito: una ventana nueva perdería todo
+el estado ya calculado —tendría que rehacer el análisis— y encima la bloquean
+la mitad de los navegadores. Cierra con Escape, con el botón o clickeando fuera.
+
+---
+
 ## 📦 PENDIENTE DE PUSH — lista acumulada
 
 Todo esto está escrito en la carpeta y **todavía no subido**. Verificar con
 `git status` antes de asumir.
+
+### Tanda de ahora (31/08) — septima parte: los 4 hallazgos de la prueba real
+
+```
+src/informe/Selector.jsx     🔴 lee Cantidad, Precio y % Posicion del Excel
+                             + aNumero() para celdas de texto
+                             + normalizarPorcentajes() (0,216 vs 21,6)
+src/informe/App.jsx          le pasa los precios de hoy al Selector
+src/informe/cartera.js       TOLERANCIA por perfil + afinidadDetalle()
+                             + CASTIGO_BETA_MAXIMO
+src/informe/Cartera.jsx      <TesisAparte> (panel no-imprimir) + columna
+                             "descuento por riesgo" en Afinidad
+api/informe.py               🔴 thinking apagado + reintento sin el parametro
+                             + tope por posicion 120 -> 140
+test/prueba-excel.cjs        NUEVO — 22 comprobaciones sobre el archivo REAL
+test/fixtures/cartera_ejemplo.xlsx   NUEVO — la plantilla de Marcos
+test/prueba-datos-tesis.cjs  +12: la afinidad por perfil
+CONTEXTO_INFORME_AVANZADO.md
+```
+
+Doce suites: 346 comprobaciones en JS + las tres de Python. Build: 251,2 KB.
 
 ### Tanda de ahora (31/08) — sexta parte: topes de grupo en el optimizador
 
@@ -4620,4 +4767,4 @@ y recargar. Si no, seguís viendo datos cacheados de antes.
 
 ---
 
-*Actualizado: 31 de agosto de 2026 · Tabla ACTUAL vs OBJETIVO en el informe · Dos bugs que tiraban el Motor B antes de la llamada · Estimador de costo recalibrado · Build verificado · Universo operable: 268 papeles, 28 candidatos nuevos · Benchmark vs SPY y pares correlacionados · Concentracion por industria · Topes de sector e industria en el optimizador · 312 comprobaciones en JS + 3 suites de Python · Anterior: 21 de agosto de 2026 · Sonda corrida y analizada · Tesis híbrida y estética clara confirmadas · Pendiente: alcance del histórico y deploy*
+*Actualizado: 31 de agosto de 2026 · Tabla ACTUAL vs OBJETIVO en el informe · Dos bugs que tiraban el Motor B antes de la llamada · Estimador de costo recalibrado · Build verificado · Universo operable: 268 papeles, 28 candidatos nuevos · Benchmark vs SPY y pares correlacionados · Concentracion por industria · Topes de sector e industria en el optimizador · Excel con cantidades · Afinidad por perfil de riesgo · Tesis fuera del informe del cliente · 346 comprobaciones en JS + 3 suites de Python · Anterior: 21 de agosto de 2026 · Sonda corrida y analizada · Tesis híbrida y estética clara confirmadas · Pendiente: alcance del histórico y deploy*

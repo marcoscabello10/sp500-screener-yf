@@ -1500,8 +1500,13 @@ def diagnostico():
 # vea un 504 despues de haber pagado la llamada.
 TIMEOUT_CARTERA = 55
 
+# ⚠️ Este tope es SOLO texto desde el 31/08: el pensamiento extendido esta
+# apagado explicitamente (ver `_llamar_cartera`). Antes competia con el, y por
+# eso 3.440 tokens no alcanzaban para una sola linea con 7 posiciones.
+#
+# Las lineas de la seccion 3 crecieron: ahora llevan monto y acciones enteras.
 MAX_TOKENS_CARTERA_BASE = 2600
-MAX_TOKENS_CARTERA_POR_POSICION = 120
+MAX_TOKENS_CARTERA_POR_POSICION = 140
 MAX_TOKENS_CARTERA_TOPE = 8000
 
 # Mas de esto no entra en un documento que alguien vaya a leer, y el costo
@@ -1986,15 +1991,53 @@ def _llamar_cartera(proveedor, clave, modelo, datos):
         cuerpo = {
             'model': modelo,
             'max_tokens': tope,
+            # ⚠️ EL PENSAMIENTO EXTENDIDO SE APAGA A PROPOSITO.
+            #
+            # 31/08/2026: el modo profundo con 7 posiciones devolvio ESTO:
+            #   stop_reason: max_tokens · tipos_de_bloque: ["thinking"]
+            #   tokens_salida: 3440 · tope_pedido: 3440
+            # Los 3.440 tokens se fueron enteros en el bloque de pensamiento y
+            # no quedo ni una linea de texto. La llamada se cobro igual.
+            #
+            # Es la SEGUNDA vez que pasa: el 28/08 la primera llamada real
+            # fallo igual con 900 tokens. Entonces se subio el tope; ahora
+            # queda claro que subir el tope no alcanza, porque el pensamiento
+            # crece con el espacio que le des.
+            #
+            # Y aunque alcanzara, no entraria en el tiempo: el modo profundo ya
+            # estaba en 58s para 15 posiciones contra un limite de 60, y los
+            # tokens de pensamiento se generan a la misma velocidad que los de
+            # texto. Pensar 3.000 tokens antes de escribir garantiza el 504.
+            #
+            # Que se pierde: poco, y es medible. Este prompt no le pide al
+            # modelo que razone sobre numeros —los numeros llegan calculados—
+            # sino que ORDENE y REDACTE. El modo profundo sigue valiendo por el
+            # modelo, no por el pensamiento.
+            'thinking': {'type': 'disabled'},
             'system': [{'type': 'text', 'text': SISTEMA_CARTERA,
                         'cache_control': {'type': 'ephemeral'}}],
             'messages': [{'role': 'user', 'content': usuario}],
         }
-        r = _post_json(PROVEEDORES['anthropic']['url'], {
+        cabeceras = {
             'x-api-key': clave,
             'anthropic-version': '2023-06-01',
             'content-type': 'application/json',
-        }, cuerpo, timeout=TIMEOUT_CARTERA)
+        }
+        try:
+            r = _post_json(PROVEEDORES['anthropic']['url'], cabeceras, cuerpo,
+                           timeout=TIMEOUT_CARTERA)
+        except urllib.error.HTTPError as e:
+            # Si un modelo no acepta el parametro, se reintenta sin el. Un 400
+            # NO genera tokens, asi que este reintento no gasta: es el unico
+            # caso en que reintentar no rompe la regla de costo del proyecto.
+            if e.code != 400:
+                raise
+            detalle = e.read().decode('utf-8', 'replace')
+            if 'thinking' not in detalle.lower():
+                raise urllib.error.HTTPError(e.url, e.code, detalle, e.hdrs, None)
+            cuerpo.pop('thinking', None)
+            r = _post_json(PROVEEDORES['anthropic']['url'], cabeceras, cuerpo,
+                           timeout=TIMEOUT_CARTERA)
         bloques = r.get('content') or []
         texto = ''.join(b.get('text', '') for b in bloques if b.get('type') == 'text')
         u = r.get('usage') or {}

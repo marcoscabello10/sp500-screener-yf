@@ -50,6 +50,54 @@ export const PERFILES = {
 }
 export const PERFIL_POR_DEFECTO = 'moderado'
 
+// ─────────────────────────────────────────────────────────────────────────────
+// CUÁNTO RIESGO TOLERA CADA PERFIL
+//
+// ⚠️ EL AGUJERO QUE ESTO TAPA (31/08/2026, lo encontró Marcos)
+// `afinidad()` repesaba los cinco bloques de señales según el OBJETIVO (renta /
+// equilibrado / crecimiento) y el HORIZONTE… y **nunca miraba el PERFIL**. O
+// sea: la única variable que expresa cuánto riesgo tolera el cliente no entraba
+// en el número que dice "¿esto le sirve a ESTE cliente?".
+//
+// El resultado que lo delató: **RGTI le salía con alta afinidad a una cartera
+// conservadora.** Es un papel especulativo de beta altísima. La función medía
+// "¿es buena para este objetivo?" y no "¿es apropiada para esta tolerancia?",
+// que son dos preguntas y solo una estaba contestada.
+//
+// Los números son un JUICIO declarado, no una ley de mercado. Están acá arriba
+// y con nombre justamente para poder discutirlos.
+// ─────────────────────────────────────────────────────────────────────────────
+// Techo del castigo por beta. Es el único de los tres que puede crecer sin
+// límite (la beta no tiene tope), así que sin esto se comía a los otros dos.
+export const CASTIGO_BETA_MAXIMO = 30
+
+export const TOLERANCIA = {
+  conservador: {
+    // Beta a partir de la cual el papel empieza a "pasarse" para este perfil.
+    betaTolerada: 0.95,
+    // Cuántos puntos de afinidad cuesta cada 0,1 de beta por encima.
+    castigoPorBeta: 3.5,
+    // Un especulativo en una cartera conservadora no es "un poco peor": es
+    // otra categoría de producto. El castigo es grande a propósito.
+    castigoEspeculativo: 25,
+    castigoGrowth: 6,
+    // Cada bandera roja del activo.
+    castigoPorBandera: 8,
+    // Por debajo de esto la afinidad se marca como incompatible, no solo baja.
+    corteIncompatible: 40,
+  },
+  moderado: {
+    betaTolerada: 1.20, castigoPorBeta: 2.0, castigoEspeculativo: 10,
+    castigoGrowth: 0, castigoPorBandera: 5, corteIncompatible: 30,
+  },
+  agresivo: {
+    // Un perfil agresivo NO premia el riesgo: lo tolera. Por eso el castigo
+    // baja mucho pero no llega a cero — beta 2,5 sigue siendo beta 2,5.
+    betaTolerada: 1.60, castigoPorBeta: 1.0, castigoEspeculativo: 0,
+    castigoGrowth: 0, castigoPorBandera: 3, corteIncompatible: 20,
+  },
+}
+
 // Cuánto puede pesar cada clase, como fracción del tope general. Una
 // especulativa con el mismo tope que una Coca-Cola no tendría sentido.
 export const TOPE_POR_CLASE = { core: 1, growth: 0.75, especulativo: 0.4 }
@@ -313,7 +361,11 @@ export function analizarCartera(informes, posiciones, perfilClave,
 
     const etiqueta = i.veredicto?.etiqueta
     const excesoPct = (peso != null && peso > topeClase) ? peso - topeClase : null
-    const fit = afinidad(i, objetivoClave, horizonteClave)
+    // ⚠️ EL PERFIL VIAJA. Sin este cuarto argumento la afinidad ignoraba la
+    // tolerancia al riesgo del cliente, que es justo lo que la hace distinta
+    // del puntaje fundamental.
+    const fitDet = afinidadDetalle(i, objetivoClave, horizonteClave, perfilClave)
+    const fit = fitDet ? fitDet.score : null
     // ⚠️ Se llamaba `base` y TAPABA al `base` de afuera (el que resuelve el
     // denominador de los pesos) durante todo el callback — incluida la linea
     // de arriba, que quedaba leyendo una constante todavia sin inicializar.
@@ -326,6 +378,9 @@ export function analizarCartera(informes, posiciones, perfilClave,
       // Afinidad con el objetivo: los MISMOS bloques, otra balanza. Va al lado
       // del puntaje fundamental, nunca en lugar de el.
       afinidad: fit,
+      // La cuenta a la vista: cuanto salio del objetivo y cuanto se descontó
+      // por riesgo, con el motivo de cada descuento.
+      afinidadDetalle: fitDet,
       // Cuanto cambia la lectura al mirarla con el objetivo puesto. Si la
       // diferencia es grande, el informe lo dice: significa que la empresa es
       // buena pero para otra cosa.
@@ -509,7 +564,20 @@ export const HORIZONTE_POR_DEFECTO = 'medio'
  * Devuelve null si no hay bloques con puntaje: mejor no decir nada que dar un
  * número construido sobre aire.
  */
-export function afinidad(inf, objetivoClave, horizonteClave) {
+export function afinidad(inf, objetivoClave, horizonteClave, perfilClave) {
+  const d = afinidadDetalle(inf, objetivoClave, horizonteClave, perfilClave)
+  return d ? d.score : null
+}
+
+/**
+ * La afinidad, pero mostrando la cuenta.
+ *
+ * Devuelve el puntaje del OBJETIVO, el castigo por RIESGO y el motivo de cada
+ * descuento. El detalle no es un lujo: un número que baja de 71 a 38 sin decir
+ * por qué es indistinguible de un error, y lo primero que hace quien lo lee es
+ * desconfiar de todo el informe.
+ */
+export function afinidadDetalle(inf, objetivoClave, horizonteClave, perfilClave) {
   const obj = OBJETIVOS[objetivoClave] || OBJETIVOS[OBJETIVO_POR_DEFECTO]
   const hor = HORIZONTES[horizonteClave] || HORIZONTES[HORIZONTE_POR_DEFECTO]
   let suma = 0, pesos = 0
@@ -521,7 +589,68 @@ export function afinidad(inf, objetivoClave, horizonteClave) {
     pesos += w
   }
   if (!pesos) return null
-  return Math.round((suma / pesos) * 10) / 10
+  const base = (suma / pesos)
+
+  // ── El castigo por riesgo, que es lo que faltaba ─────────────────────────
+  const tol = TOLERANCIA[perfilClave] || TOLERANCIA[PERFIL_POR_DEFECTO]
+  const clase = clasificar(inf)
+  const beta = inf?.consenso?.beta
+  const banderas = (inf?.riesgos || []).filter(r => r.severidad === 'alta').length
+  const motivos = []
+  let castigo = 0
+
+  if (beta != null && beta > tol.betaTolerada) {
+    const exceso = beta - tol.betaTolerada
+    // ⚠️ CON TECHO. Sin él, una beta de 2,6 contra una tolerancia de 0,95 daba
+    // 57,8 puntos de castigo: se llevaba puesto el puntaje entero, aplastaba a
+    // los otros dos motivos y el resultado quedaba clavado en 0. Un 0 no
+    // distingue "inapropiado" de "catastrófico", y perder esa diferencia hace
+    // que el número deje de servir para ordenar.
+    // El techo mantiene los tres castigos en escalas comparables.
+    const c = Math.min(CASTIGO_BETA_MAXIMO, (exceso / 0.1) * tol.castigoPorBeta)
+    castigo += c
+    motivos.push({ codigo: 'beta', puntos: round1(c),
+                   texto: `beta ${round1(beta)} contra ${tol.betaTolerada} `
+                        + `que tolera este perfil` })
+  }
+  if (clase === 'especulativo' && tol.castigoEspeculativo > 0) {
+    castigo += tol.castigoEspeculativo
+    motivos.push({ codigo: 'especulativo', puntos: tol.castigoEspeculativo,
+                   texto: 'es un papel especulativo (poca capitalización, sin '
+                        + 'ganancias o beta muy alta)' })
+  }
+  if (clase === 'growth' && tol.castigoGrowth > 0) {
+    castigo += tol.castigoGrowth
+    motivos.push({ codigo: 'growth', puntos: tol.castigoGrowth,
+                   texto: 'es un papel de crecimiento, más volátil que un core' })
+  }
+  if (banderas > 0 && tol.castigoPorBandera > 0) {
+    const c = banderas * tol.castigoPorBandera
+    castigo += c
+    motivos.push({ codigo: 'banderas', puntos: c,
+                   texto: `${banderas} riesgo${banderas > 1 ? 's' : ''} de `
+                        + `severidad alta` })
+  }
+  // ⚠️ Sin beta NO se asume que es tranquilo. Es el caso de los CEDEAR nuevos
+  // y de los papeles recién listados, que suelen ser justo los más volátiles.
+  // Se avisa en vez de premiarlos por falta de dato.
+  const sinBeta = beta == null
+
+  const score = Math.max(0, Math.min(100, base - castigo))
+  return {
+    score: round1(score),
+    base: round1(base),
+    castigo: round1(castigo),
+    motivos,
+    clase,
+    beta: beta ?? null,
+    sinBeta,
+    // "Baja" y "no corresponde para este perfil" son cosas distintas. Un papel
+    // puede tener afinidad 45 por ser mediocre, o 45 por ser una ruleta: la
+    // segunda es una respuesta cualitativa, no un lugar en un ranking.
+    incompatible: castigo > 0 && score < tol.corteIncompatible,
+    perfil: (PERFILES[perfilClave] || PERFILES[PERFIL_POR_DEFECTO]).clave,
+  }
 }
 
 /** Los riesgos del activo que de verdad importan para este horizonte. */

@@ -264,6 +264,83 @@ console.log(`     ${tok} tokens con ${datos.posiciones.length} posiciones y `
           + `${datos.candidatos.length} candidatos`);
 chequear('el bloque no se va de escala', tok < 3000, `${tok} tokens`);
 
+
+// ── 8. La afinidad mira el PERFIL, no solo el objetivo (31/08/2026) ────────
+// Lo encontro Marcos: RGTI —especulativo, beta 2,6, sin ganancias— salia con
+// ALTA afinidad para una cartera conservadora. `afinidad()` repesaba los cinco
+// bloques por objetivo y horizonte y NUNCA miraba el perfil, que es la unica
+// variable que dice cuanto riesgo tolera el cliente.
+console.log('\n8. La afinidad descuenta el riesgo que el perfil no tolera');
+const RGTI = {
+  ticker: 'RGTI', nombre: 'Rigetti', sector: 'Technology',
+  fundamentales: { marketCap: 1.2e9, pe: null, roe: -45 },
+  consenso: { beta: 2.6 },
+  riesgos: [{ severidad: 'alta', codigo: 'sin_ganancias', texto: 'no gana plata' }],
+  senales: [{ bloque: 'valuacion', puntaje: 55 }, { bloque: 'crecimiento', puntaje: 95 },
+            { bloque: 'salud_financiera', puntaje: 40 }, { bloque: 'dividendos', puntaje: 0 },
+            { bloque: 'consenso', puntaje: 80 }],
+};
+const KO2 = {
+  ticker: 'KO', nombre: 'Coca-Cola', sector: 'Consumer Staples',
+  fundamentales: { marketCap: 2.6e11, pe: 24, roe: 40 },
+  consenso: { beta: 0.6 }, riesgos: [],
+  senales: [{ bloque: 'valuacion', puntaje: 50 }, { bloque: 'crecimiento', puntaje: 35 },
+            { bloque: 'salud_financiera', puntaje: 70 }, { bloque: 'dividendos', puntaje: 85 },
+            { bloque: 'consenso', puntaje: 55 }],
+};
+const af = (inf, perfil) => C.afinidadDetalle(inf, 'crecimiento', 'medio', perfil);
+const rCons = af(RGTI, 'conservador'), rMod = af(RGTI, 'moderado'),
+      rAgr = af(RGTI, 'agresivo'), koCons = af(KO2, 'conservador');
+console.log(`     RGTI  base ${rCons.base} -> conservador ${rCons.score} · `
+          + `moderado ${rMod.score} · agresivo ${rAgr.score}`);
+console.log(`     KO    conservador ${koCons.score} (sin descuento)`);
+
+chequear('el mismo papel da distinta afinidad segun el perfil',
+  rCons.score < rMod.score && rMod.score < rAgr.score,
+  `${rCons.score} / ${rMod.score} / ${rAgr.score}`);
+// ESTE es el caso que reporto Marcos.
+chequear('para un conservador, KO le gana a RGTI',
+  koCons.score > rCons.score, `KO ${koCons.score} vs RGTI ${rCons.score}`);
+chequear('y RGTI queda marcado como incompatible con el perfil conservador',
+  rCons.incompatible === true);
+chequear('pero NO es incompatible para un agresivo (lo tolera, no lo premia)',
+  rAgr.incompatible === false && rAgr.castigo > 0,
+  `castigo ${rAgr.castigo}`);
+chequear('un papel tranquilo no recibe ningun descuento',
+  koCons.castigo === 0 && koCons.score === koCons.base);
+chequear('el descuento viene explicado motivo por motivo',
+  rCons.motivos.length === 3
+  && rCons.motivos.every(m => m.texto && m.puntos > 0),
+  JSON.stringify(rCons.motivos));
+// El castigo por beta es el unico que puede crecer sin limite: con beta 2,6 y
+// tolerancia 0,95 daba 57,8 puntos, aplastaba a los otros dos y clavaba el
+// score en 0 — que no distingue "inapropiado" de "catastrofico".
+chequear('el castigo por beta tiene techo y no se come a los demas',
+  rCons.motivos.find(m => m.codigo === 'beta').puntos <= C.CASTIGO_BETA_MAXIMO,
+  `${rCons.motivos.find(m => m.codigo === 'beta').puntos}`);
+chequear('y el score no queda clavado en 0', rCons.score > 0, `${rCons.score}`);
+chequear('la suma de los motivos es el castigo total',
+  Math.abs(rCons.motivos.reduce((a, m) => a + m.puntos, 0) - rCons.castigo) < 0.11);
+// Sin beta NO se asume que es tranquilo: se marca.
+const sinBeta = af({ ...RGTI, consenso: {} }, 'conservador');
+chequear('sin beta se marca en vez de premiar la falta de dato',
+  sinBeta.sinBeta === true && !sinBeta.motivos.some(m => m.codigo === 'beta'));
+// Y la cadena real: analizarCartera tiene que pasar el perfil.
+const cartCons = C.analizarCartera([RGTI, KO2],
+  { RGTI: { cantidad: 10, precioCompra: 100, valorActual: 1000, gananciaPct: 0 },
+    KO:   { cantidad: 10, precioCompra: 50,  valorActual: 1000, gananciaPct: 0 } },
+  'conservador', 'crecimiento', 'medio', null);
+const cartAgr = C.analizarCartera([RGTI, KO2],
+  { RGTI: { cantidad: 10, precioCompra: 100, valorActual: 1000, gananciaPct: 0 },
+    KO:   { cantidad: 10, precioCompra: 50,  valorActual: 1000, gananciaPct: 0 } },
+  'agresivo', 'crecimiento', 'medio', null);
+chequear('analizarCartera PASA el perfil (si no, esto daria igual)',
+  cartCons.porTicker.RGTI.afinidad < cartAgr.porTicker.RGTI.afinidad,
+  `${cartCons.porTicker.RGTI.afinidad} vs ${cartAgr.porTicker.RGTI.afinidad}`);
+chequear('y el detalle viaja en el activo, para poder mostrar la cuenta',
+  cartCons.porTicker.RGTI.afinidadDetalle?.motivos?.length > 0);
+
 console.log(`\n${'-'.repeat(64)}`);
-console.log(fail === 0 ? `TODO BIEN -- ${ok} comprobaciones` : `${fail} FALLAS de ${ok + fail}`);
+console.log(fail === 0 ? `TODO BIEN -- ${ok} comprobaciones`
+                       : `${fail} FALLAS de ${ok + fail}`);
 process.exit(fail === 0 ? 0 : 1);

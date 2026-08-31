@@ -100,10 +100,15 @@ export default function Cartera({ informes, meta, stocks, scores, conAnexo,
     <div style={{ maxWidth: 940, margin: '0 auto', padding: '26px 22px 70px' }}>
       <Portada meta={meta} n={validos.length} cart={cart} />
 
-      {/* Va ARRIBA de todo y NO depende de `conAnexo`: es la lectura del
-          conjunto, que es lo primero que se quiere leer. Los botones por activo
-          siguen viviendo en el anexo, para profundizar en uno. */}
-      <TesisCartera datos={datosTesis} />
+      {/* ⚠️ LA TESIS YA NO VIVE ADENTRO DEL INFORME (31/08/2026).
+          Estaba arriba de todo, que era lo correcto mientras el informe era
+          para Marcos. Pero el documento se le entrega AL CLIENTE, y la lectura
+          interna —qué rotar, qué está sobrevaluado, el razonamiento del
+          analista— no es para esos ojos. Confiar en "elijo las páginas al
+          imprimir" es confiar en no equivocarse una sola vez.
+          Ahora se abre en un panel aparte, marcado `no-imprimir`, así que no
+          existe para el PDF por más que uno imprima todo. */}
+      <TesisAparte datos={datosTesis} />
 
       {cart.hayPesos && expo && <Exposicion cart={cart} expo={expo} />}
       {cart.hayPesos && <Pesos cart={cart} />}
@@ -436,21 +441,25 @@ function Pesos({ cart }) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 function Afinidad({ cart }) {
-  const { objetivo, horizonte, activos } = cart
+  const { objetivo, horizonte, activos, perfil } = cart
   const conAmbos = activos.filter(a => a.afinidad != null && a.puntajeFundamental != null)
   if (!conAmbos.length) return null
   const desalineados = conAmbos.filter(a => Math.abs(a.brechaObjetivo) >= 8)
     .sort((a, b) => a.brechaObjetivo - b.brechaObjetivo)
 
   return (
-    <Seccion titulo={`Qué tan bien encaja con el objetivo: ${objetivo.nombre.toLowerCase()}`}
+    <Seccion titulo={`Qué tan bien encaja: objetivo ${objetivo.nombre.toLowerCase()}, `
+                    + `perfil ${perfil.nombre.toLowerCase()}`}
              nota={`${objetivo.resumen} Horizonte: ${horizonte.nombre.toLowerCase()}.
                     ${horizonte.nota}`}>
 
       <p style={{ fontSize: 13.5, marginTop: 0, marginBottom: 12, color: C.tenue }}>
         La afinidad usa exactamente los mismos bloques del análisis, con otra
         ponderación. No hay datos nuevos: hay otra balanza. Por eso el puntaje
-        fundamental no cambia — se muestran los dos al lado.
+        fundamental no cambia — se muestran los dos al lado.{' '}
+        <b>Y después se descuenta el riesgo que este perfil no tolera</b>: la
+        misma empresa puede encajar con un perfil agresivo y no con uno
+        conservador, y ese descuento se muestra en la última columna.
       </p>
 
       <table>
@@ -460,6 +469,7 @@ function Afinidad({ cart }) {
             <th className="n">Fundamental</th>
             <th className="n">Afinidad</th>
             <th className="n">Diferencia</th>
+            <th>Descuento por riesgo</th>
           </tr>
         </thead>
         <tbody>
@@ -478,6 +488,21 @@ function Afinidad({ cart }) {
                     color: a.brechaObjetivo > 0 ? C.verde
                          : a.brechaObjetivo < 0 ? C.rojo : C.tenue }}>
                 {pct(a.brechaObjetivo, 0, true).replace('%', '')}
+              </td>
+              {/* Un número que baja de 74 a 11 sin decir por qué es
+                  indistinguible de un error. Acá va la cuenta. */}
+              <td style={{ fontSize: 12.5 }}>
+                {!a.afinidadDetalle || a.afinidadDetalle.castigo === 0 ? (
+                  <span style={{ color: C.tenue }}>—</span>
+                ) : (
+                  <span style={{ color: a.afinidadDetalle.incompatible
+                                        ? C.rojo : C.ambar }}>
+                    <b>−{num(a.afinidadDetalle.castigo, 0)}</b>{' '}
+                    {a.afinidadDetalle.motivos.map(m => m.texto).join('; ')}
+                    {a.afinidadDetalle.incompatible
+                      && <b> · no corresponde para este perfil</b>}
+                  </span>
+                )}
               </td>
             </tr>
           ))}
@@ -1240,6 +1265,83 @@ function UnaSolaApuesta({ pares }) {
         </tbody>
       </table>
     </div>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LA TESIS, EN UN PANEL APARTE
+//
+// Dos motivos, y el segundo es el que manda:
+//   1. El botón queda LEJOS del cuerpo del informe, al pie, donde no interrumpe
+//      la lectura del documento.
+//   2. Todo lo que sale de acá lleva `no-imprimir`. El PDF que se le manda al
+//      cliente NO puede contener esto ni por accidente, y "me acuerdo de sacar
+//      esas páginas al imprimir" no es una garantía: es una costumbre que falla
+//      el día que uno está apurado.
+//
+// Es un panel dentro de la misma página y no un `window.open` a propósito: una
+// ventana nueva perdería todo el estado ya calculado —tendría que rehacer el
+// análisis— y encima la bloquean la mitad de los navegadores.
+// ─────────────────────────────────────────────────────────────────────────────
+function TesisAparte({ datos }) {
+  const [abierto, setAbierto] = React.useState(false)
+
+  // Escape cierra. Es lo que espera cualquiera frente a algo que tapa la
+  // pantalla, y sin esto la única salida es el botón de arriba a la derecha.
+  React.useEffect(() => {
+    if (!abierto) return
+    const alTecla = e => { if (e.key === 'Escape') setAbierto(false) }
+    window.addEventListener('keydown', alTecla)
+    return () => window.removeEventListener('keydown', alTecla)
+  }, [abierto])
+
+  return (
+    <>
+      <div className="no-imprimir" style={{
+        display: 'flex', justifyContent: 'flex-end', margin: '4px 0 18px' }}>
+        <button onClick={() => setAbierto(true)}
+          style={{ background: '#fff', color: C.subtitulo,
+                   border: `1px solid ${C.bordeFuerte}`, borderRadius: 7,
+                   padding: '7px 14px', fontSize: 13, fontWeight: 600 }}>
+          Análisis interno de la cartera →
+        </button>
+      </div>
+
+      {abierto && (
+        <div className="no-imprimir"
+             onClick={e => { if (e.target === e.currentTarget) setAbierto(false) }}
+             style={{ position: 'fixed', inset: 0, zIndex: 50,
+                      background: 'rgba(11,46,79,.35)',
+                      display: 'flex', justifyContent: 'flex-end' }}>
+          <div style={{ background: '#fff', width: 'min(760px, 100%)',
+                        height: '100%', overflowY: 'auto',
+                        boxShadow: '-4px 0 24px rgba(11,46,79,.18)' }}>
+            <div style={{ position: 'sticky', top: 0, background: '#fff',
+                          borderBottom: `1px solid ${C.borde}`, zIndex: 1,
+                          padding: '13px 20px', display: 'flex',
+                          alignItems: 'center', gap: 12 }}>
+              <div>
+                <div style={{ fontSize: 15, fontWeight: 700, color: C.titulo }}>
+                  Análisis interno
+                </div>
+                <div style={{ fontSize: 12.5, color: C.tenue }}>
+                  Esto <b>no</b> sale en el informe impreso ni en el PDF del cliente.
+                </div>
+              </div>
+              <button onClick={() => setAbierto(false)}
+                style={{ marginLeft: 'auto', background: 'none',
+                         border: `1px solid ${C.borde}`, borderRadius: 6,
+                         padding: '6px 12px', fontSize: 13, color: C.tenue }}>
+                Cerrar
+              </button>
+            </div>
+            <div style={{ padding: '4px 20px 40px' }}>
+              <TesisCartera datos={datos} />
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   )
 }
 

@@ -4238,10 +4238,154 @@ la mitad de los navegadores. Cierra con Escape, con el botón o clickeando fuera
 
 ---
 
+## 🔴 EL FILTRO DE CANDIDATOS IMPEDÍA DIVERSIFICAR, POR CONSTRUCCIÓN (31/08/2026)
+
+> *"Me está diciendo que siga sumando posición de tecnología y no que
+> diversifique, ¿por qué? Porque no me da opciones más defensivas, del estilo
+> MCD, BMY, MO, GOOGL. Y ¿por qué para RGTI no analiza darme GOOGL?"*
+
+Las dos preguntas tienen **la misma causa**, y es un bug del filtro de Python.
+
+### El bug
+
+`_filtrar_candidatos()` armaba su lista de sectores permitidos así:
+
+```python
+saliendo   = sectores de posiciones que se recortan
+con_lugar  = sectores que no exceden su tope
+utiles     = saliendo | con_lugar
+```
+
+Los dos conjuntos salen de `sectores`, que son **los sectores QUE YA ESTÁN EN
+LA CARTERA**. Un sector donde el cliente no tiene nada no estaba en ninguno de
+los dos, así que se filtraba **entero**.
+
+Medido sobre la cartera real de Marcos (AMD, CAT, MSFT, LRCX, AAPL, RGTI, HIMS):
+
+```
+  el navegador producía   51 candidatos de 11 sectores
+  llegaban al modelo      10 candidatos de  3 sectores
+
+  SECTORES QUE DESAPARECÍAN ENTEROS:
+    Consumer Staples        MO ABEV KOF PG TGT
+    Communication Services  TIMB T GOOG GOOGL META
+    Consumer Discretionary  DECK ANF CCL URBN ARCO
+    Energy · Financials · Materials · Real Estate · Utilities
+```
+
+> **El filtro estaba construido para elegir DENTRO de lo que ya tenés, y por
+> construcción impedía diversificar.** Es lo contrario de lo que el informe dice
+> que hace, y explica las dos preguntas de una sola vez: MO, PG y GOOGL **sí
+> estaban** en la lista del navegador; el filtro de Python los borraba.
+
+Un sector donde NO hay nada es el **mejor** destino posible para diversificar,
+no el peor.
+
+### Además: los candidatos no tenían ninguna señal de riesgo
+
+Se ordenaban por **puntaje fundamental puro**. Una cartera con 33% de
+volatilidad que hay que bajar recibía exactamente las mismas sugerencias que una
+tranquila, porque el puntaje no sabe nada de riesgo.
+
+Ahora cada candidato viaja con:
+
+- **`beta`** — sale de `informe_detalle.json`, que cubre a los 268 operables.
+- **`defensivo`** — beta < 0,9. No es una opinión: es una medición contra el índice.
+- **`sector_nuevo`** — el cliente no tiene nada de ese sector.
+
+Y el orden ya no es por puntaje: primero los que más bajan la volatilidad
+medida, y entre los no medidos, **los de menor beta primero**.
+
+### El resultado, sobre su cartera
+
+```
+  23 candidatos de 11 sectores · 16 defensivos
+
+  NUEVO Communication Services   TIMB(0,11)·def  T(0,42)·def
+  NUEVO Consumer Staples         ABEV(0,26)·def  MO(0,50)·def
+  NUEVO Energy                   PBR(−0,22)·def  GPRK(0,37)·def
+  NUEVO Utilities                SBS(0,09)·def   KEP(0,82)·def
+  NUEVO Real Estate              O(0,72)·def
+        Healthcare               BMY(0,23)·def   GSK(0,30)·def   NVO(0,35)·def
+        Technology               ZM(1,04)  FSLR(1,75)      <- al tope: cupo 2
+```
+
+**MO y BMY, los dos que Marcos nombró, ahora llegan.** MCD no: está 14º de 36 en
+Consumer Discretionary por puntaje fundamental (52,6). Eso no es un bug — es el
+screener diciendo que hay 13 mejores en su sector.
+
+### El cupo se ajustó por PARA QUÉ sirve cada sector
+
+Dejar entrar todo llevó el payload de 10 a 39 candidatos: **+980 tokens por
+llamada.** La variedad de SECTORES es lo que permite diversificar; cuatro
+opciones dentro de cada uno no agregan ninguna decisión, solo peso.
+
+```
+CANDIDATOS_POR_SECTOR_ENVIADOS = 3   # sectores de donde sale plata
+CANDIDATOS_SECTOR_AL_TOPE      = 2   # solo reemplazo de sí mismos
+CANDIDATOS_SECTOR_NUEVO        = 2   # alcanzan dos para elegir
+```
+
+23 candidatos, 791 tokens. El costo neto sube ~425 tokens por llamada y compra
+la capacidad de diversificar, que es la mitad del producto.
+
+### Reglas nuevas en el prompt
+
+- Si hay que bajar volatilidad, **el candidato correcto es el defensivo aunque
+  otro tenga mejor puntaje**. Un papel con puntaje 82 y beta 2,1 no baja el
+  riesgo de nadie.
+- `sector_nuevo` diversifica por definición: priorizarlo cuando el problema es
+  la concentración.
+- Si Technology excede, la respuesta **no puede ser otra tecnológica**.
+- Al elegir un defensivo sobre uno de mejor puntaje, decirlo con esas palabras.
+
+### Sobre GOOGL para RGTI, la respuesta honesta
+
+Con el arreglo GOOGL llega (Communication Services, sector nuevo). Pero **el
+sistema no tiene ningún concepto de "mismo negocio"** más allá de sector e
+industria, y Yahoo clasifica a GOOGL como *Internet Content & Information*, no
+como computación cuántica. Que Google tenga Quantum AI es una relación temática
+que ninguna taxonomía sectorial captura.
+
+Lo más parecido que sí medimos es la **correlación**: si dos papeles se mueven
+juntos, son la misma apuesta aunque estén en sectores distintos. Eso ya está
+implementado y es el sustituto honesto — pero no es lo mismo, y conviene no
+fingir que sí.
+
+### El estimador: cuarta recalibración, y esta vez cambió la FORMA
+
+No solo la altura. Al entrar los sectores ausentes, una cartera **chica** tiene
+**más** sectores ausentes y por lo tanto más candidatos: el bloque quedó casi
+constante (~1.000-1.140 tokens) en vez de crecer con las posiciones.
+
+```
+  la ordenada subió de 880 a 1.620 y la pendiente bajó de 175 a 143
+  medido: 1.759 · 2.167 · 2.884 · 3.455 · 4.020 · 4.730
+  margen: 16% · 8% · 6% · 9% · 11% · 10%
+```
+
+---
+
 ## 📦 PENDIENTE DE PUSH — lista acumulada
 
 Todo esto está escrito en la carpeta y **todavía no subido**. Verificar con
 `git status` antes de asumir.
+
+### Tanda de ahora (31/08) — octava parte: el filtro que impedia diversificar
+
+```
+api/informe.py               🔴 _filtrar_candidatos deja pasar los sectores
+                             AUSENTES (borraba 8 sectores enteros)
+                             + cupo por tipo de sector + orden por beta
+                             + reglas de eleccion defensiva en el prompt
+                             + estimador 1620 + 143n (cambio la FORMA)
+src/informe/universo.js      beta en las dos fuentes
+src/informe/sugerencias.js   el candidato lleva beta, defensivo y sector_nuevo
+src/informe/cartera.js       esos tres campos al payload
+src/informe/Cartera.jsx      le pasa los sectores de la cartera a candidatosRotacion
+test/test_tesis_cartera.py   +7: los sectores ausentes llegan, cupos, banderas
+CONTEXTO_INFORME_AVANZADO.md
+```
 
 ### Tanda de ahora (31/08) — septima parte: los 4 hallazgos de la prueba real
 

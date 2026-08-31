@@ -1715,6 +1715,21 @@ REGLAS DE DECISIÓN
     el ajuste da cero, decí "el desvío es menor a una acción, no hay nada que
     operar" en vez de proponer un monto que no se puede ejecutar.
 
+ELEGIR UN CANDIDATO — MIRÁ EL RIESGO, NO SOLO EL PUNTAJE
+Cada candidato trae `beta`, `defensivo` (beta < 0,9) y `sector_nuevo`.
+  · Si la cartera hay que hacerla MENOS volátil —lo dice `plan.mejora_puntos` y
+    la comparación contra el índice—, el candidato correcto es uno DEFENSIVO,
+    aunque otro tenga mejor puntaje fundamental. Un papel con puntaje 82 y beta
+    2,1 no baja el riesgo de nadie.
+  · `sector_nuevo: true` significa que el cliente NO tiene nada de ese sector.
+    Eso diversifica por definición y es lo más barato que se puede hacer por el
+    riesgo del conjunto. Priorizalo cuando el problema sea la concentración.
+  · NO propongas reforzar lo que ya está en el sector que sobra. Si Technology
+    excede, la respuesta no puede ser otra tecnológica por más buena que sea.
+  · Cuando recomiendes un defensivo sobre uno de mejor puntaje, DECILO con esas
+    palabras: "tiene menos puntaje pero beta 0,4 contra 2,5, y lo que hay que
+    arreglar acá es el riesgo".
+
 ROTACIÓN
 Cuando recortes algo, el reemplazo tiene que aportar al menos una de estas, y
 tenés que decir CUÁL:
@@ -1798,7 +1813,14 @@ _POS_FUERA = ('precio_compra', 'brecha_objetivo', 'cantidad', 'valor_actual')
 #   - poner la plata en otro lado   -> hacen falta de sectores que NO esten al tope
 # Un candidato de un sector que ya excede su tope no se puede recomendar: seria
 # cambiar una concentracion por otra, que es justo lo que el prompt prohibe.
-CANDIDATOS_POR_SECTOR_ENVIADOS = 4
+# El cupo depende de PARA QUE sirve ese sector, no es uno solo para todos.
+# Al dejar entrar los sectores ausentes, el payload paso de 10 a 39 candidatos
+# (+980 tokens por llamada). La variedad de SECTORES es lo que importa —es lo
+# que permite diversificar—; tener cuatro opciones dentro de cada uno no agrega
+# ninguna decision, solo peso.
+CANDIDATOS_POR_SECTOR_ENVIADOS = 3      # sectores de donde sale plata
+CANDIDATOS_SECTOR_AL_TOPE = 2           # solo pueden ser reemplazo de si mismos
+CANDIDATOS_SECTOR_NUEVO = 2             # alcanzan dos para elegir
 
 
 def _filtrar_candidatos(candidatos, posiciones, sectores):
@@ -1808,10 +1830,32 @@ def _filtrar_candidatos(candidatos, posiciones, sectores):
     saliendo = {p.get('sector') for p in posiciones
                 if p.get('estado') in ('sobre', 'critico')
                 or p.get('accion_calculada') in ('sacar', 'recortar')}
+    en_cartera = {s.get('sector') for s in (sectores or []) if s.get('sector')}
     al_tope = {s.get('sector') for s in (sectores or []) if s.get('excede')}
-    # Sectores donde SI se puede poner plata: los que no estan al tope.
+
+    # ⚠️ EL BUG QUE ESTA FUNCION TENIA, Y ERA GRAVE (31/08/2026)
+    #
+    # Antes: `utiles = saliendo | con_lugar`, y los dos conjuntos se armaban a
+    # partir de `sectores`, que son LOS SECTORES QUE YA ESTAN EN LA CARTERA. Un
+    # sector donde el cliente no tiene nada no estaba en ninguno de los dos, asi
+    # que se filtraba ENTERO.
+    #
+    # Medido sobre la cartera real de Marcos (AMD, CAT, MSFT, LRCX, AAPL, RGTI,
+    # HIMS): de 51 candidatos pasaban 10, y desaparecian OCHO SECTORES completos
+    # —Consumer Staples con MO y PG, Communication Services con GOOGL, Consumer
+    # Discretionary con MCD, Energy, Financials, Materials, Utilities—.
+    #
+    # O sea: el filtro estaba construido para elegir DENTRO de lo que ya tenes,
+    # y por construccion impedia diversificar. Marcos lo noto de la unica forma
+    # en que se podia notar, leyendo la salida: "me dice que siga sumando
+    # tecnologia y no me da opciones mas defensivas".
+    #
+    # Un sector donde NO hay nada es el MEJOR destino posible para diversificar,
+    # no el peor. Ahora entra con cupo completo.
+    ausentes = {c.get('sector') for c in candidatos
+                if c.get('sector') and c.get('sector') not in en_cartera}
     con_lugar = {s.get('sector') for s in (sectores or []) if not s.get('excede')}
-    utiles = (saliendo | con_lugar) - set()
+    utiles = saliendo | con_lugar | ausentes
     if not utiles:                       # cartera sin nada que tocar
         utiles = {c.get('sector') for c in candidatos}
 
@@ -1822,7 +1866,9 @@ def _filtrar_candidatos(candidatos, posiciones, sectores):
             continue
         # Un sector que ya excede solo puede aportar REEMPLAZO de si mismo, no
         # destino de plata nueva: entra igual pero con menos cupo.
-        cupo = 2 if sec in al_tope else CANDIDATOS_POR_SECTOR_ENVIADOS
+        cupo = (CANDIDATOS_SECTOR_AL_TOPE if sec in al_tope
+                else CANDIDATOS_SECTOR_NUEVO if sec in ausentes
+                else CANDIDATOS_POR_SECTOR_ENVIADOS)
         if por_sector.get(sec, 0) >= cupo:
             continue
         por_sector[sec] = por_sector.get(sec, 0) + 1
@@ -1838,15 +1884,22 @@ def _filtrar_candidatos(candidatos, posiciones, sectores):
         # al modelo solo le quedaba el puntaje fundamental, que es justo el
         # criterio que la auditoria midio como el peor de cuatro.
         for k in ('volatilidad_pct', 'correlacion_media_con_la_cartera',
-                  'delta_volatilidad_cartera'):
+                  'delta_volatilidad_cartera', 'beta', 'defensivo',
+                  'sector_nuevo'):
             if c.get(k) is not None:
                 fila[k] = c[k]
         out.append(fila)
 
     # Primero los que MAS bajan la volatilidad de esta cartera. Los que no se
     # pudieron medir van al final, no adelante: no se premia la falta de dato.
+    # Primero los que MAS bajan la volatilidad de esta cartera. Los que no se
+    # pudieron medir van despues, y entre ellos los de menor beta primero: es
+    # el mejor sustituto disponible del delta cuando no hay historico.
     out.sort(key=lambda x: (x.get('delta_volatilidad_cartera') is None,
-                            x.get('delta_volatilidad_cartera') or 0))
+                            x.get('delta_volatilidad_cartera')
+                            if x.get('delta_volatilidad_cartera') is not None
+                            else (x.get('beta') if x.get('beta') is not None
+                                  else 99)))
     return out
 
 
@@ -1934,7 +1987,14 @@ def estimar_cartera(n_posiciones, proveedor='anthropic', modo=None):
     #
     #   base                 :   955 · 1.520 · 2.374 · 2.913 · 3.602 · 4.275
     #   + benchmark y pares   : 1.050 · 1.616 · 2.469 · 3.031 · 3.720 · 4.422
-    #   + industrias (actual) : 1.082 · 1.651 · 2.512 · 3.083 · 3.781 · 4.492
+    #   + industrias          : 1.082 · 1.651 · 2.512 · 3.083 · 3.781 · 4.492
+    #   + sectores ausentes   : 1.759 · 2.167 · 2.884 · 3.455 · 4.020 · 4.730
+    #
+    # ⚠️ EL ULTIMO CAMBIO TAMBIEN CAMBIO LA FORMA DE LA CURVA, no solo su
+    # altura. Al dejar entrar los sectores ausentes, una cartera CHICA tiene
+    # MAS sectores ausentes y por lo tanto MAS candidatos: el bloque quedo casi
+    # constante (~1.000-1.140 tokens) en vez de crecer con las posiciones. Por
+    # eso la ordenada subio de 880 a 1.620 y la pendiente bajo.
     #
     # ⚠️ ESTA RECTA SE QUEDÓ CORTA DOS VECES EN UN DÍA. Primero `benchmark`
     # (82 tokens) y `pares_que_son_una_apuesta` (24); despues `industrias` (48).
@@ -1947,7 +2007,7 @@ def estimar_cartera(n_posiciones, proveedor='anthropic', modo=None):
     # payload hay que VOLVER A MEDIR y actualizar tambien el `MEDIDO` de
     # `test_tesis_cartera.py` — la guarda no avisa sola: sus numeros viejos son
     # mas bajos que la realidad nueva, asi que sigue pasando en verde.
-    entrada = 880 + 175 * n
+    entrada = 1620 + 143 * n
     # La salida crecio un poco: la seccion 1 cierra con los invalidation points
     # y las lineas de la seccion 3 llevan monto y acciones.
     salida = 1150 + 55 * n

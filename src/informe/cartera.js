@@ -949,6 +949,12 @@ export function armarDatosTesis(cart, estres, candidatos = [], scores = {},
       return {
         ticker: c.ticker, sector: c.sector,
         puntaje: c.puntaje, metricas: c.metricas,
+        // Sin esto el modelo solo podia ordenar por puntaje fundamental, que
+        // no sabe nada de riesgo: una cartera con 33% de volatilidad recibia
+        // las mismas sugerencias que una tranquila.
+        beta: c.beta ?? null,
+        defensivo: !!c.defensivo,
+        sector_nuevo: !!c.sector_nuevo,
         ...(r ? { volatilidad_pct: r.volatilidad,
                   correlacion_media_con_la_cartera: r.correlacion_media,
                   delta_volatilidad_cartera: r.delta_volatilidad } : {}),

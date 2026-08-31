@@ -339,7 +339,12 @@ export const CANDIDATOS_POR_SECTOR = 5
  * @param porSector  cuantos por sector (default CANDIDATOS_POR_SECTOR)
  */
 export function candidatosRotacion(stocks, scores, enCartera = [],
-                                   porSector = CANDIDATOS_POR_SECTOR) {
+                                   porSector = CANDIDATOS_POR_SECTOR,
+                                   sectoresEnCartera = []) {
+  // Un sector donde el cliente NO tiene nada es el mejor destino posible para
+  // diversificar. Se marca para que el modelo pueda decirlo, en vez de tener
+  // que deducirlo comparando dos listas.
+  const yaTiene = new Set(sectoresEnCartera)
   const ya = new Set(enCartera)
   const pts = sym => scores[sym]?.score ?? null
   const grupos = {}
@@ -362,6 +367,17 @@ export function candidatosRotacion(stocks, scores, enCartera = [],
         puntaje: pts(s.symbol),
         metricas: `${scores[s.symbol].nUsadas}/${scores[s.symbol].nAplicables}`,
         reemplazos: scores[s.symbol].reemplazos,
+        // ── La dimension que faltaba: RIESGO ─────────────────────────────
+        // Hasta el 31/08 el candidato viajaba con puntaje fundamental y nada
+        // mas. Una cartera con 33% de volatilidad que hay que bajar recibia
+        // exactamente las mismas sugerencias que una tranquila, porque el
+        // puntaje no sabe nada de riesgo.
+        beta: s.beta ?? null,
+        // Defensivo = se mueve MENOS que el mercado. No es una opinion: es
+        // beta < 1 medida contra el indice.
+        defensivo: s.beta != null && s.beta < 0.9,
+        // Un sector que no esta en la cartera diversifica por definicion.
+        sector_nuevo: !yaTiene.has(sector),
       }))
   }
   return out.sort((a, b) => a.sector.localeCompare(b.sector) || b.puntaje - a.puntaje)

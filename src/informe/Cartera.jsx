@@ -53,7 +53,9 @@ export default function Cartera({ informes, meta, stocks, scores, conAnexo,
   // El bloque de datos para la tesis con IA. Es SOLO reempaquetar lo que ya se
   // calculo arriba: si acá se calculara algo, habría dos fuentes de verdad y el
   // texto podría contradecir la tabla que está en esta misma página.
-  const candidatos = candidatosRotacion(stocks, scores, validos.map(i => i.ticker))
+  const candidatos = candidatosRotacion(stocks, scores, validos.map(i => i.ticker),
+                                        undefined,
+                                        [...new Set(validos.map(i => i.sector))])
 
   // ── MOTOR B ───────────────────────────────────────────────────────────────
   // Baja el historico de precios (un estatico del mismo origen) y calcula

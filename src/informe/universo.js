@@ -81,6 +81,11 @@ function normalizar(sym, a) {
     patrimonioNegativo: neg,
     hasCedear: !!a.hasCedear,
     enSp500: !!a.enSp500,
+    // La beta es la unica medida de riesgo que se puede tener ANTES de bajar
+    // el historico de precios. Sin ella, los candidatos solo se pueden ordenar
+    // por puntaje fundamental — que no sabe nada de riesgo— y una cartera que
+    // necesita bajar volatilidad recibe las mismas sugerencias que una que no.
+    beta: a.consenso?.beta ?? null,
     // De dónde salió cada papel. Sirve para poder decir en el informe "esto lo
     // sabemos por el bot del informe, no por el del screener" cuando algo no
     // cuadre, en vez de tener que adivinarlo.
@@ -107,6 +112,10 @@ export function armarUniverso(stocks, activos) {
 
   const delScreener = base.map(s => ({
     ...s,
+    // El snapshot del screener NO trae beta (vive en informe_consenso.json, que
+    // el informe no baja). Sale del detalle, que cubre a los 151 del indice con
+    // CEDEAR — o sea, a TODOS los que pueden ser candidatos.
+    beta: s.beta ?? det[s.symbol]?.consenso?.beta ?? null,
     // Si el detalle dice que tiene CEDEAR, vale: es el archivo que lo validó
     // uno por uno contra el broker. Nunca al revés — un `false` del detalle no
     // le saca el CEDEAR a un papel que el screener marcó, porque el detalle

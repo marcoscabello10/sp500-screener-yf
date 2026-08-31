@@ -401,6 +401,56 @@ chequear(not faltan, f'estas claves se pierden en _resumen_cartera: {faltan}')
 print(f'  Motor B completo    -> riesgo + plan + {len(d2["candidatos"])} '
       f'candidatos con delta, mejor primero')
 
+# ── 14. LOS SECTORES AUSENTES SON EL MEJOR DESTINO, NO EL PEOR ────────────
+# El bug que Marcos vio leyendo la salida: "me dice que siga sumando tecnologia
+# y no me da opciones mas defensivas". `_filtrar_candidatos` armaba `utiles` a
+# partir de los sectores QUE YA ESTAN EN LA CARTERA, asi que un sector donde no
+# tenia nada se filtraba ENTERO. Medido sobre su cartera real: de 51 candidatos
+# pasaban 10 y desaparecian OCHO sectores completos, incluidos los defensivos.
+sec_cartera = [
+    {'sector': 'Technology', 'pct': 49.3, 'tope': 43.3, 'excede': True},
+    {'sector': 'Industrials', 'pct': 14.9, 'tope': 43.3, 'excede': False},
+]
+pos_cartera = [
+    {'ticker': 'AMD', 'sector': 'Technology', 'estado': 'critico',
+     'accion_calculada': 'recortar'},
+    {'ticker': 'CAT', 'sector': 'Industrials', 'estado': 'banda',
+     'accion_calculada': 'mantener'},
+]
+cands_todos = []
+for sec, ts in (('Technology', ['ZM', 'FSLR', 'MU']),
+                ('Industrials', ['HON', 'SNA', 'ASR']),
+                ('Consumer Staples', ['MO', 'PG', 'ABEV']),
+                ('Utilities', ['SBS', 'NEE', 'KEP']),
+                ('Healthcare', ['BMY', 'NVO', 'GSK'])):
+    for t in ts:
+        cands_todos.append({'ticker': t, 'sector': sec, 'puntaje': 70,
+                            'metricas': '6/6', 'beta': 0.4,
+                            'defensivo': True, 'sector_nuevo':
+                                sec not in ('Technology', 'Industrials')})
+filtrados = I._filtrar_candidatos(cands_todos, pos_cartera, sec_cartera)
+secs_out = {c['sector'] for c in filtrados}
+ausentes = {'Consumer Staples', 'Utilities', 'Healthcare'}
+chequear(ausentes <= secs_out,
+         f'los sectores donde el cliente NO tiene nada se siguen filtrando: '
+         f'faltan {sorted(ausentes - secs_out)}')
+chequear(any(c['ticker'] == 'MO' for c in filtrados),
+         'MO (Consumer Staples, beta 0,5) no llega al modelo')
+# El sector al tope entra igual, pero con menos cupo: solo como reemplazo.
+tech = [c for c in filtrados if c['sector'] == 'Technology']
+chequear(len(tech) <= I.CANDIDATOS_SECTOR_AL_TOPE,
+         f'Technology excede su tope y aporta {len(tech)} candidatos')
+nuevos_sec = [c for c in filtrados if c.get('sector_nuevo')]
+chequear(all(len([x for x in filtrados if x['sector'] == c['sector']])
+             <= I.CANDIDATOS_SECTOR_NUEVO for c in nuevos_sec),
+         'un sector nuevo manda mas candidatos que su cupo')
+# Y las banderas de riesgo tienen que sobrevivir al filtro.
+for k in ('beta', 'defensivo', 'sector_nuevo'):
+    chequear(all(k in c for c in filtrados),
+             f'"{k}" se cae en el filtro: el modelo no puede elegir por riesgo')
+print(f'  sectores ausentes    -> {len(filtrados)} candidatos de '
+      f'{len(secs_out)} sectores (antes: solo los que ya estaban en la cartera)')
+
 # ── 13. El estimador no puede mentir para abajo ───────────────────────────
 # El boton existe para que Marcos decida ANTES de gastar. Un estimador que
 # subestima es peor que no tenerlo. Estuvo 23-41% bajo desde que se agregaron
@@ -415,7 +465,7 @@ print(f'  Motor B completo    -> riesgo + plan + {len(d2["candidatos"])} '
 # esos dos bloques, y como eran MAS BAJOS que la realidad nueva, esta guarda
 # pasaba en verde mientras el estimador subestimaba de verdad. Si tocas el
 # payload: volve a medir esto, no alcanza con que la prueba siga pasando.
-MEDIDO = {3: 1088, 5: 1658, 10: 2519, 15: 3089, 20: 3787, 25: 4498}
+MEDIDO = {3: 1759, 5: 2167, 10: 2884, 15: 3455, 20: 4020, 25: 4730}
 for n_pos, real in MEDIDO.items():
     est = I.estimar_cartera(n_pos, 'anthropic')['tokens_estimados']['entrada']
     chequear(est >= real,

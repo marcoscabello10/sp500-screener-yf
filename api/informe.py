@@ -1619,6 +1619,34 @@ retorno sobre volatilidad de los dos.
   · ⚠️ Es retorno HISTÓRICO de la ventana, NO una proyección. Decilo cada vez
     que lo menciones. Que haya rendido 24% no significa que vaya a rendir 24%.
 
+LAS DOS OPCIONES SE PRESENTAN JUNTAS, Y DESPUÉS SE ELIGE
+La sección 1 tiene que mostrar las dos y recomendar una, no elegir en silencio:
+
+  **A · Rebalanceo interno** — mover plata de la posición que sobra a las otras
+  que ya están. Sale de `plan.movimientos`.
+  ⚠️ Un movimiento con `refuerzo_en_sector_al_tope: true` NO se puede
+  recomendar: su sector ya toca el techo después del ajuste, así que agrandarlo
+  ahí no diversifica nada — es mover plata de un bolsillo al otro del mismo
+  pantalón. Si TODOS los refuerzos están marcados así, la opción A no existe y
+  hay que decirlo con esas palabras.
+
+  **B · Rotar afuera** — `plan.menu_por_sector` trae una opción por sector, los
+  tres mejores. Cada una ya pasó el filtro de que baja el riesgo de forma
+  medible, y entre las que pasan está la de mejor puntaje del screener.
+
+FORMATO DEL MENÚ, en la sección 4
+Una línea por sector, con el motivo. Así:
+
+  · **Consumo defensivo — MO (puntaje 80, 6/6 métricas):** beta 0,50 contra los
+    2,5 de la posición que se recorta, y se mueve al revés que la cartera
+    (correlación −0,13). Bajaría la volatilidad 6,7 puntos más que repartir
+    entre lo que ya hay.
+
+El "porque" tiene que salir de los datos que te doy —puntaje, métricas, beta,
+correlación, mejora— y no de generalidades sobre el sector. "Es un sector
+defensivo" no explica nada; "beta 0,50 y correlación −0,13 con esta cartera" sí.
+No son excluyentes: se puede tomar una, dos o repartir entre las tres.
+
 ⚠️ EL PLAN NO ES LA ÚNICA OPCIÓN — `plan.entradas_nuevas`
 Esto es lo más importante de esta sección y es contraintuitivo.
 
@@ -1808,8 +1836,10 @@ Ampliá a dos o tres líneas SOLO las que tengan una acción distinta de
 informe no entre en el tiempo que tiene para generarse.
 
 ## 4. Rotaciones
-Solo las que tengan sentido. Si no hay ninguna que valga la pena, decilo en vez
-de forzar una.
+Acá va el menú por sector con el formato de arriba: una línea por sector, con el
+número que la justifica. Si `menu_por_sector` viene vacío, decí que ninguna
+alternativa mejora la cartera de forma medible y que conviene el rebalanceo
+interno — no fuerces una rotación para llenar la sección.
 
 ## 5. Para el cliente
 La misma conclusión en lenguaje llano, sin jerga y sin juzgar decisiones
@@ -2015,6 +2045,7 @@ def estimar_cartera(n_posiciones, proveedor='anthropic', modo=None):
     #   + benchmark y pares   : 1.050 · 1.616 · 2.469 · 3.031 · 3.720 · 4.422
     #   + industrias          : 1.082 · 1.651 · 2.512 · 3.083 · 3.781 · 4.492
     #   + sectores ausentes   : 1.759 · 2.167 · 2.884 · 3.455 · 4.020 · 4.730
+    #   + menu por sector     : 2.262 · 2.713 · 3.316 · 3.907 · 4.452 · 5.170
     #
     # ⚠️ EL ULTIMO CAMBIO TAMBIEN CAMBIO LA FORMA DE LA CURVA, no solo su
     # altura. Al dejar entrar los sectores ausentes, una cartera CHICA tiene
@@ -2033,7 +2064,7 @@ def estimar_cartera(n_posiciones, proveedor='anthropic', modo=None):
     # payload hay que VOLVER A MEDIR y actualizar tambien el `MEDIDO` de
     # `test_tesis_cartera.py` — la guarda no avisa sola: sus numeros viejos son
     # mas bajos que la realidad nueva, asi que sigue pasando en verde.
-    entrada = 1620 + 143 * n
+    entrada = 2270 + 141 * n
     # La salida crecio un poco: la seccion 1 cierra con los invalidation points
     # y las lineas de la seccion 3 llevan monto y acciones.
     salida = 1150 + 55 * n

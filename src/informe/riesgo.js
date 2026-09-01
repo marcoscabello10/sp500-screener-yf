@@ -345,6 +345,12 @@ function contraBenchmark(snap, desde, largo, w, con, cov, varCartera) {
 // Esto se volvió MUCHO más útil al sumar los CEDEAR de afuera del índice: el
 // universo nuevo trae siete mineras (VALE, RIO, BHP, GFI, HMY, KGC, PAAS).
 // Tener tres se siente diversificado y es una sola posición.
+// Cuantos candidatos se miden contra la matriz. Cada uno cuesta armar una fila
+// y una columna de covarianza: con 15 posiciones son ~30 productos escalares
+// sobre 756 dias. 60 es holgado para el navegador y alcanza para cubrir los 11
+// sectores con varias opciones cada uno.
+export const MAX_CANDIDATOS_MEDIDOS = 60
+
 export const CORR_PAR_ALTA = 0.7
 
 function paresCorrelacionados(con, cov, w) {
@@ -545,8 +551,35 @@ export async function analizarRiesgo(cart, candidatos = []) {
   const topeEntrada = topeGeneral > 0 ? aEscala(topeGeneral) : 1
   const pesoEntrada = Math.min(subeTotal, topeEntrada)
 
+  // ⚠️ EL CORTE ERA ALFABETICO Y SE COMIA SECTORES ENTEROS (31/08/2026)
+  //
+  // Antes: `.slice(0, 20)`. Y `candidatosRotacion()` devuelve la lista ordenada
+  // por `sector.localeCompare()`, asi que los primeros 20 eran Communication
+  // Services, Consumer Discretionary, Consumer Staples y Energy — las cuatro
+  // primeras del abecedario. Financials, Healthcare, Industrials, Materials,
+  // Real Estate y Utilities NUNCA se median.
+  //
+  // O sea: el menu de rotacion no podia ofrecer un banco ni una utility, y el
+  // motivo era el orden alfabetico. No daba error y el informe se veia completo.
+  //
+  // Ahora se recorre POR RONDAS: el mejor de cada sector primero, despues el
+  // segundo de cada uno, etc. Si el tope corta, corta parejo — nunca borra un
+  // sector entero.
+  const porSectorCand = {}
+  for (const c of (candidatos || [])) (porSectorCand[c.sector] ||= []).push(c)
+  const enRondas = []
+  for (let ronda = 0; enRondas.length < MAX_CANDIDATOS_MEDIDOS; ronda++) {
+    let agrego = false
+    for (const lista of Object.values(porSectorCand)) {
+      if (ronda >= lista.length) continue
+      enRondas.push(lista[ronda]); agrego = true
+      if (enRondas.length >= MAX_CANDIDATOS_MEDIDOS) break
+    }
+    if (!agrego) break
+  }
+
   const aporteCandidatos = []
-  for (const c of (candidatos || []).slice(0, 20)) {
+  for (const c of enRondas) {
     const serie = snap.series[c.ticker]
     const r = serie ? retornosDe(serie, desde) : []
     if (r.length < largo) continue
@@ -574,6 +607,10 @@ export async function analizarRiesgo(cart, candidatos = []) {
     }
     aporteCandidatos.push({
       ticker: c.ticker, sector: c.sector, puntaje: c.puntaje,
+      // Para que la fila del menu se explique sola, sin volver a buscar nada.
+      beta: c.beta ?? null,
+      defensivo: !!c.defensivo,
+      metricas: c.metricas ?? null,
       volatilidad: Math.round(anual(cov2[n][n]) * 10) / 10,
       correlacion_media: p > 0 ? Math.round(corr / p * 100) / 100 : null,
       delta_volatilidad: Math.round((anual(varianzaCartera(w2, cov2)) - volActual) * 100) / 100,
@@ -618,6 +655,16 @@ export async function analizarRiesgo(cart, candidatos = []) {
       limitado_por_grupo: (gruposLimitantes || [])
         .filter(g => grupos.find(x => x.nombre === g)?.idx.includes(i))
         .map(g => grupos.find(x => x.nombre === g).nombre_corto),
+      // ⚠️ Marcos, 31/08: "reforzar solo si no hay exceso en el sector".
+      // Un aumento DENTRO de un sector que ya toca su techo no es rotacion:
+      // es mover plata de un bolsillo al otro del mismo pantalon. El numero
+      // sigue siendo el que dice la paridad de riesgo —no se falsea— pero se
+      // marca, para que el informe no lo ofrezca como destino.
+      refuerzo_en_sector_al_tope: objetivo[i] > con[i].peso
+        && (gruposLimitantes || []).some(g => {
+          const def = grupos.find(x => x.nombre === g)
+          return def && def.tipo === 'sector' && def.idx.includes(i)
+        }),
     })),
     candidatos: aporteCandidatos,
     // Las dos lecturas que faltaban, y las dos son cuentas sobre la misma

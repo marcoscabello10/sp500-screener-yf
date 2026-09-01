@@ -465,7 +465,7 @@ print(f'  sectores ausentes    -> {len(filtrados)} candidatos de '
 # esos dos bloques, y como eran MAS BAJOS que la realidad nueva, esta guarda
 # pasaba en verde mientras el estimador subestimaba de verdad. Si tocas el
 # payload: volve a medir esto, no alcanza con que la prueba siga pasando.
-MEDIDO = {3: 1809, 5: 2217, 10: 2890, 15: 3461, 20: 4025, 25: 4736}
+MEDIDO = {3: 2262, 5: 2713, 10: 3316, 15: 3907, 20: 4452, 25: 5170}
 for n_pos, real in MEDIDO.items():
     est = I.estimar_cartera(n_pos, 'anthropic')['tokens_estimados']['entrada']
     chequear(est >= real,

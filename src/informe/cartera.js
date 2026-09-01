@@ -1002,6 +1002,20 @@ export function armarDatosTesis(cart, estres, candidatos = [], scores = {},
         // ⚠️ EL PLAN SOLO REPARTE ENTRE LO QUE YA ESTA. Estas son las entradas
         // NUEVAS que lo mejoran, medidas con la misma matriz. Sin esto el
         // modelo solo podia recomendar agrandar posiciones existentes.
+        // Una opcion por sector, los 3 mejores. Filtradas por mejora medible y
+        // ordenadas por el puntaje del screener.
+        menu_por_sector: pl.menu.map(c => ({
+          ticker: c.ticker, sector: c.sector, puntaje: c.puntaje,
+          metricas: c.metricas, beta: c.beta, defensivo: c.defensivo,
+          entra_con_pct: c.peso_si_entra_pct,
+          volatilidad_resultante_pct: c.volatilidad_si_entra_pct,
+          mejor_que_el_plan_en_puntos: c.mejora_vs_plan_pts,
+          correlacion_con_la_cartera: c.correlacion_media,
+        })),
+        // Si esto es verdadero, "comprar mas de lo que ya tenes" NO es una
+        // opcion: todas las compras del plan caen en sectores que ya tocan su
+        // techo, asi que la plata tiene que salir del sector.
+        refuerzo_interno_bloqueado: pl.refuerzoBloqueado,
         entradas_nuevas: pl.entradas.map(c => ({
           ticker: c.ticker, sector: c.sector,
           entra_con_pct: c.peso_si_entra_pct,
@@ -1023,6 +1037,9 @@ export function armarDatosTesis(cart, estres, candidatos = [], scores = {},
             monto_usd: f.montoUSD, acciones: f.acciones,
             aporte_al_riesgo_pct: f.aporteRiesgo,
             limitado_por_tope: f.limitadoPorTope,
+            // Si es true, este refuerzo NO se puede recomendar: su sector ya
+            // toca el techo y agrandar adentro no diversifica nada.
+            refuerzo_en_sector_al_tope: f.refuerzoEnSectorAlTope,
           })),
       }
     })(),
@@ -1130,6 +1147,68 @@ export function concentracionPorIndustria(cart) {
 // es ruido con cara de decisión.
 export const UMBRAL_AJUSTE_PP = 1.0
 
+// ─────────────────────────────────────────────────────────────────────────────
+// EL MENÚ DE ROTACIÓN, POR SECTOR
+//
+// Pedido de Marcos (31/08): *"que recomiende otras opciones… de Financials ej
+// JPM porque…, de Consumo ej MO porque…"*. Tres sectores, una opción por
+// sector, con el motivo.
+//
+// EL CRITERIO, y por qué es el que es. Se midieron los tres sobre su cartera:
+//
+//   solo por PUNTAJE del screener  -> mete HMY (87,5) que SUBE la volatilidad
+//                                     2,26 puntos. Es el error que veníamos
+//                                     corrigiendo toda la sesión.
+//   solo por MEJORA de riesgo      -> mete O (baja 5,79) con puntaje 53. Le
+//                                     ofrece al cliente una empresa mediocre
+//                                     porque diversifica.
+//   FILTRAR y después PUNTUAR      -> SBS(86,7) PBR(86,2) MO(80), los tres
+//                                     bajan el riesgo Y son buenas empresas.
+//
+// O sea: la mejora de riesgo es una COMPUERTA, no un ranking. Primero se
+// descarta lo que no ayuda a la cartera; entre lo que queda, manda el puntaje
+// del screener — que es el criterio de Marcos y el que él sabe defender.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Cuánto tiene que bajar la volatilidad para que valga la pena ofrecerlo. Por
+// debajo de esto la diferencia está adentro del error de la covarianza.
+export const UMBRAL_MENU_PTS = 2.0
+export const SECTORES_EN_EL_MENU = 3
+
+/**
+ * Una opción por sector, los tres mejores sectores.
+ *
+ * Se excluyen los sectores que YA exceden su tope: poner plata nueva ahí sería
+ * cambiar una concentración por otra, que es justo lo que el informe prohíbe.
+ */
+export function menuDeRotacion(cart, riesgo) {
+  if (!riesgo?.disponible) return []
+  const alTope = new Set((cart?.sectores || [])
+    .filter(s => s.excede).map(s => s.sector))
+
+  const mejorPorSector = {}
+  for (const c of (riesgo.candidatos || [])) {
+    if (!c.sector || alTope.has(c.sector)) continue
+    // LA COMPUERTA: si no mejora la cartera de forma medible, no se ofrece.
+    // Da igual lo buena que sea la empresa.
+    if (!(c.mejora_vs_plan_pts >= UMBRAL_MENU_PTS)) continue
+    const actual = mejorPorSector[c.sector]
+    // Entre los que pasan la compuerta, manda el PUNTAJE. Desempate por mejora,
+    // y después alfabético: dos corridas con los mismos datos tienen que dar el
+    // mismo documento.
+    if (!actual
+        || (c.puntaje ?? 0) > (actual.puntaje ?? 0)
+        || ((c.puntaje ?? 0) === (actual.puntaje ?? 0)
+            && c.mejora_vs_plan_pts > actual.mejora_vs_plan_pts)) {
+      mejorPorSector[c.sector] = c
+    }
+  }
+  return Object.values(mejorPorSector)
+    .sort((a, b) => (b.puntaje ?? 0) - (a.puntaje ?? 0)
+                 || a.ticker.localeCompare(b.ticker))
+    .slice(0, SECTORES_EN_EL_MENU)
+}
+
 export function planDePesos(cart, riesgo) {
   if (!cart || !Array.isArray(cart.activos)) return null
   if (!riesgo || !riesgo.disponible) return null
@@ -1168,6 +1247,9 @@ export function planDePesos(cart, riesgo) {
       correlacion: p.correlacion_media ?? null,
       limitadoPorTope: !!p.limitado_por_tope,
       limitadoPorGrupo: p.limitado_por_grupo || [],
+      // Un refuerzo DENTRO de un sector que ya toca su techo no es rotacion:
+      // es mover plata de un bolsillo al otro del mismo pantalon.
+      refuerzoEnSectorAlTope: !!p.refuerzo_en_sector_al_tope,
       topeClase: a.topeClase ?? null,
       accionCartera: a.accion || null,
       // Un papel puede pesar de más y aportar POCO riesgo (o al revés). Marcar
@@ -1195,6 +1277,9 @@ export function planDePesos(cart, riesgo) {
     valorReferencia: valor,
     umbralPP: UMBRAL_AJUSTE_PP,
     nMovimientos: compras.length + ventas.length,
+    // Los refuerzos que NO corresponden porque su sector ya esta lleno. La
+    // plata de esos tiene que salir del sector, no quedarse adentro.
+    refuerzosBloqueados: compras.filter(f => f.refuerzoEnSectorAlTope),
     comprarUSD: Math.round(suma(compras)),
     venderUSD: Math.round(suma(ventas)),
     // El único número que dice si todo esto vale la pena. Si mover diez
@@ -1213,6 +1298,13 @@ export function planDePesos(cart, riesgo) {
     // caminos hacia el mismo dato y uno se olvidaría de actualizar.
     benchmark: riesgo.benchmark || null,
     pares: riesgo.pares_correlacionados || [],
+    // El menú por sector, y si el refuerzo interno sigue siendo una opción.
+    menu: menuDeRotacion(cart, riesgo),
+    // ⚠️ Esto NO es todo-o-nada, y la primera version lo trataba asi.
+    // En la cartera de Marcos las compras del plan eran AAPL y MSFT (Technology,
+    // que SI toca su techo) y HIMS (Healthcare, que no). Un unico booleano decia
+    // "no bloqueado" y dejaba pasar los dos refuerzos que no correspondian.
+    // Se marca CADA UNO.
     gruposLimitantes: riesgo.grupos_limitantes || [],
     // Las mejores entradas NUEVAS, medidas contra este mismo plan. Solo las que
     // de verdad mejoran: ofrecer una que empeora seria ruido con cara de opcion.

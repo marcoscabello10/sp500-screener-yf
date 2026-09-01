@@ -4448,10 +4448,120 @@ pagó dos veces.
 
 ---
 
+## 🎯 LAS DOS OPCIONES, Y EL MENÚ POR SECTOR (31/08/2026)
+
+Pedido de Marcos: *"que recomiende ambas versiones, solo si no hay exceso en el
+sector… y a su vez recomiende otras opciones: de Financials ej JPM porque…, de
+Consumo ej MO porque…"*.
+
+### El criterio del menú se MIDIÓ antes de elegirlo
+
+Sobre su cartera real, los tres criterios posibles:
+
+| criterio | qué ofrece | problema |
+|---|---|---|
+| solo **puntaje** del screener | HMY (87,5) · SBS (86,7) · PBR (86,2) | 🔴 **HMY SUBE la volatilidad 2,26 puntos** |
+| solo **mejora de riesgo** | MO (6,67) · T (6,41) · O (5,79) | ⚠️ O tiene **puntaje 53**: una empresa mediocre porque diversifica |
+| **filtrar y después puntuar** | SBS (86,7 · baja 2,8) · PBR (86,2 · baja 3,5) · MO (80 · baja 6,7) | ✅ bajan el riesgo **y** son buenas empresas |
+
+> **La mejora de riesgo es una COMPUERTA, no un ranking.** Primero se descarta
+> lo que no ayuda a la cartera; entre lo que queda manda el puntaje del
+> screener, que es el criterio de la casa y el que Marcos sabe defender.
+
+`UMBRAL_MENU_PTS = 2.0` · `SECTORES_EN_EL_MENU = 3`. Una opción por sector, y
+los sectores que **ya exceden su tope no aparecen**: poner plata ahí sería
+cambiar una concentración por otra.
+
+Hay una prueba dedicada al caso que justifica la compuerta: un candidato con
+puntaje **90** —el mejor de todos— que NO entra al menú porque no mejora la
+cartera.
+
+### El refuerzo interno: solo si el sector tiene lugar
+
+Decisión de Marcos: si el sector ya toca su techo después del ajuste, **no se
+refuerza adentro** — la plata sale del sector.
+
+⚠️ **Y esto NO es todo-o-nada.** La primera versión usaba un solo booleano para
+toda la cartera, y en la de Marcos eso fallaba:
+
+```
+  AAPL   +7,6pp   ⚠️ Technology ya está en su tope — no corresponde
+  MSFT   +6,7pp   ⚠️ Technology ya está en su tope — no corresponde
+  HIMS   +3,9pp   OK, Healthcare tiene lugar
+```
+
+Un único `refuerzoBloqueado: false` (porque HIMS sí valía) habría dejado pasar
+los dos que no correspondían. Ahora se marca **cada movimiento**, y el informe
+avisa: *"agrandarlos ahí no diversifica nada, mueve plata de un bolsillo al otro
+del mismo pantalón"*.
+
+### El formato del "porque", exigido en el prompt
+
+```
+· Consumo defensivo — MO (puntaje 80, 6/6 métricas): beta 0,50 contra los 2,5
+  de la posición que se recorta, y se mueve al revés que la cartera
+  (correlación −0,13). Bajaría la volatilidad 6,7 puntos más que repartir
+  entre lo que ya hay.
+```
+
+> El "porque" tiene que salir de los datos —puntaje, métricas, beta,
+> correlación, mejora— y no de generalidades sobre el sector. *"Es un sector
+> defensivo"* no explica nada; *"beta 0,50 y correlación −0,13 con esta
+> cartera"* sí.
+
+### 🔴 Y otro corte silencioso: el tope de medición era ALFABÉTICO
+
+`analizarRiesgo` medía `candidatos.slice(0, 20)`, y `candidatosRotacion()`
+devuelve la lista ordenada por `sector.localeCompare()`. O sea que los 20
+medidos eran **Communication Services, Consumer Discretionary, Consumer Staples
+y Energy** — las cuatro primeras del abecedario.
+
+**Financials, Healthcare, Industrials, Materials, Real Estate y Utilities nunca
+se medían.** El menú no podía ofrecer un banco ni una utility, y el motivo era
+el orden alfabético. No daba error y el informe se veía completo.
+
+Ahora se recorre **por rondas**: el mejor de cada sector, después el segundo de
+cada uno. Si el tope corta, corta parejo — nunca borra un sector entero.
+`MAX_CANDIDATOS_MEDIDOS = 60`. Con eso aparecieron los 10 sectores operables.
+
+### El costo
+
+El menú sumó ~450 tokens. Recta nueva: `2270 + 141·n`, medida sobre
+2.262 · 2.713 · 3.316 · 3.907 · 4.452 · 5.170, con 10-19% de margen.
+
+**7 posiciones: rápido USD 0,0109 (20s) · profundo USD 0,0219 (51s).**
+
+⚠️ **El prompt de reglas llegó a 4.344 tokens.** Está cacheado (0,1× en las
+lecturas) así que el costo casi no se nota, pero conviene tenerlo en el radar:
+un prompt muy largo diluye instrucciones, y ya hay reglas que se pisan entre
+sí. Si en las próximas pruebas el modelo empieza a ignorar reglas, el primer
+sospechoso es el largo, no la regla nueva.
+
+---
+
 ## 📦 PENDIENTE DE PUSH — lista acumulada
 
 Todo esto está escrito en la carpeta y **todavía no subido**. Verificar con
 `git status` antes de asumir.
+
+### Tanda de ahora (31/08) — decima parte: menu por sector y las dos opciones
+
+```
+src/informe/riesgo.js        🔴 el tope de medicion era ALFABETICO: 6 sectores
+                             nunca se median. Ahora por rondas, 60 candidatos
+                             + refuerzo_en_sector_al_tope por posicion
+                             + beta/defensivo/metricas en cada candidato
+src/informe/cartera.js       menuDeRotacion() + UMBRAL_MENU_PTS + el marcado
+                             por movimiento (NO un booleano para toda la cartera)
+src/informe/Cartera.jsx      <MenuDeRotacion> + aviso de refuerzos bloqueados
+api/informe.py               las dos opciones en la seccion 1, el formato del
+                             "porque" en la 4, estimador 2270 + 141n
+test/prueba-plan.cjs         +13: la compuerta, el orden, los sectores al tope
+test/test_tesis_cartera.py   mediciones al dia
+CONTEXTO_INFORME_AVANZADO.md
+```
+
+Doce suites: 376 comprobaciones en JS + las tres de Python.
 
 ### Tanda de ahora (31/08) — novena parte: el plan puede abrir posiciones
 
@@ -5011,4 +5121,4 @@ y recargar. Si no, seguís viendo datos cacheados de antes.
 
 ---
 
-*Actualizado: 31 de agosto de 2026 · Tabla ACTUAL vs OBJETIVO en el informe · Dos bugs que tiraban el Motor B antes de la llamada · Estimador de costo recalibrado · Build verificado · Universo operable: 268 papeles, 28 candidatos nuevos · Benchmark vs SPY y pares correlacionados · Concentracion por industria · Topes de sector e industria en el optimizador · Excel con cantidades · Afinidad por perfil de riesgo · Tesis fuera del informe del cliente · El plan puede abrir posiciones nuevas · 363 comprobaciones en JS + 3 suites de Python · Anterior: 21 de agosto de 2026 · Sonda corrida y analizada · Tesis híbrida y estética clara confirmadas · Pendiente: alcance del histórico y deploy*
+*Actualizado: 31 de agosto de 2026 · Tabla ACTUAL vs OBJETIVO en el informe · Dos bugs que tiraban el Motor B antes de la llamada · Estimador de costo recalibrado · Build verificado · Universo operable: 268 papeles, 28 candidatos nuevos · Benchmark vs SPY y pares correlacionados · Concentracion por industria · Topes de sector e industria en el optimizador · Excel con cantidades · Afinidad por perfil de riesgo · Tesis fuera del informe del cliente · El plan puede abrir posiciones nuevas · Menu de rotacion por sector · 376 comprobaciones en JS + 3 suites de Python · Anterior: 21 de agosto de 2026 · Sonda corrida y analizada · Tesis híbrida y estética clara confirmadas · Pendiente: alcance del histórico y deploy*

@@ -323,6 +323,86 @@ chequear('con el numero que hace elegir',
 chequear('sin candidatos, el bloque queda vacio y no rompe',
   C.planDePesos(cart, riesgo).entradas.length === 0);
 
+// ── 9. EL MENU POR SECTOR (31/08/2026) ────────────────────────────────────
+// Pedido de Marcos: "de Financials ej JPM porque..., de Consumo ej MO
+// porque...". Tres sectores, una opcion por sector.
+//
+// El criterio se MIDIO antes de elegirlo, sobre su cartera real:
+//   solo por puntaje -> ofrecia HMY (87,5) que SUBIA la volatilidad 2,26 pts
+//   solo por riesgo  -> ofrecia O (baja 5,79) con puntaje 53
+//   filtrar y puntuar-> SBS(86,7) PBR(86,2) MO(80): bajan el riesgo Y son buenas
+console.log('\n9. El menu de rotacion por sector');
+const MENU_CAND = [
+  // Pasan la compuerta y son buenas: tienen que entrar.
+  { ticker: 'MO', sector: 'Consumer Staples', puntaje: 80, beta: 0.5, metricas: '6/6' },
+  { ticker: 'PG', sector: 'Consumer Staples', puntaje: 64, beta: 0.38, metricas: '6/6' },
+  { ticker: 'T',  sector: 'Communication Services', puntaje: 70, beta: 0.42, metricas: '6/6' },
+  { ticker: 'O',  sector: 'Real Estate', puntaje: 53, beta: 0.72, metricas: '5/6' },
+  // Buena empresa pero NO ayuda a la cartera: la compuerta la tiene que frenar.
+  { ticker: 'NVDA', sector: 'Technology', puntaje: 90, beta: 2.1, metricas: '6/6' },
+];
+const rMenu = await Rg.analizarRiesgo(CONC, MENU_CAND);
+const planMenu = C.planDePesos(CONC, rMenu);
+console.log('     sector                   ticker  puntaje  baja');
+for (const m of planMenu.menu)
+  console.log(`     ${m.sector.padEnd(24)} ${m.ticker.padEnd(6)} `
+            + `${String(m.puntaje).padStart(7)} ${String(m.mejora_vs_plan_pts).padStart(6)} pts`);
+
+chequear('el menu trae como mucho un sector por fila (no repite sector)',
+  new Set(planMenu.menu.map(m => m.sector)).size === planMenu.menu.length,
+  planMenu.menu.map(m => m.sector).join(','));
+chequear(`como mucho ${C.SECTORES_EN_EL_MENU} sectores`,
+  planMenu.menu.length <= C.SECTORES_EN_EL_MENU);
+// LA COMPUERTA: todo lo que se ofrece tiene que mejorar de verdad.
+chequear('todo lo del menu supera el umbral de mejora',
+  planMenu.menu.every(m => m.mejora_vs_plan_pts >= C.UMBRAL_MENU_PTS),
+  planMenu.menu.map(m => `${m.ticker}:${m.mejora_vs_plan_pts}`).join(' '));
+// Y este es el caso que justifica la compuerta: NVDA tiene el mejor puntaje de
+// todos (90) y NO puede entrar, porque no ayuda a esta cartera.
+chequear('la de MEJOR puntaje NO entra si no mejora la cartera',
+  !planMenu.menu.some(m => m.ticker === 'NVDA'),
+  'NVDA (puntaje 90) se colo en el menu');
+// Entre las que pasan, manda el puntaje: en Consumer Staples estan MO (80) y
+// PG (64), y aunque PG bajara mas el riesgo, se ofrece MO.
+const cs = planMenu.menu.find(m => m.sector === 'Consumer Staples');
+if (cs) chequear('dentro del sector gana el de mejor puntaje del screener',
+  cs.ticker === 'MO', `se ofrecio ${cs.ticker}`);
+chequear('el menu viene ordenado por puntaje',
+  planMenu.menu.every((m, i) => i === 0
+    || planMenu.menu[i - 1].puntaje >= m.puntaje));
+// Un sector que YA excede no puede recibir plata nueva.
+const conTech = C.planDePesos(
+  { ...CONC, sectores: [{ sector: 'Technology', tope: 35, excede: true }] }, rMenu);
+chequear('un sector que excede su tope no aparece en el menu',
+  !conTech.menu.some(m => m.sector === 'Technology'));
+
+// ── 10. Los refuerzos que caen en un sector lleno ─────────────────────────
+console.log('\n10. Reforzar adentro de un sector que ya toca el techo');
+const compras = planMenu.filas.filter(f => f.movimiento === 'comprar');
+for (const f of compras)
+  console.log(`     ${f.ticker.padEnd(6)} +${f.delta}pp  `
+            + (f.refuerzoEnSectorAlTope ? 'sector al tope' : 'su sector tiene lugar'));
+chequear('cada compra dice si su sector ya esta lleno',
+  compras.every(f => typeof f.refuerzoEnSectorAlTope === 'boolean'));
+chequear('los bloqueados se listan aparte para poder avisarlos',
+  planMenu.refuerzosBloqueados.every(f => f.refuerzoEnSectorAlTope));
+// ⚠️ Esto NO es todo-o-nada: en la cartera de Marcos AAPL y MSFT caian en un
+// sector lleno y HIMS no. Un solo booleano dejaba pasar los dos que no
+// correspondian.
+chequear('es por movimiento, no un unico booleano para toda la cartera',
+  Array.isArray(planMenu.refuerzosBloqueados));
+
+// Y el puente al prompt.
+const datosMenu = C.armarDatosTesis(CONC, C.stressTest(CONC), MENU_CAND, {}, rMenu);
+chequear('el menu por sector viaja al modelo',
+  (datosMenu.plan.menu_por_sector || []).length === planMenu.menu.length);
+chequear('con el puntaje, las metricas y el motivo numerico',
+  datosMenu.plan.menu_por_sector.every(m =>
+    m.puntaje != null && m.mejor_que_el_plan_en_puntos != null));
+chequear('y cada movimiento avisa si su sector esta lleno',
+  datosMenu.plan.movimientos.every(m =>
+    'refuerzo_en_sector_al_tope' in m));
+
 console.log(`\n${'-'.repeat(64)}`);
 console.log(fail === 0 ? `TODO BIEN -- ${ok} comprobaciones`
                        : `${fail} FALLAS de ${ok + fail}`);

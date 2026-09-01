@@ -1141,6 +1141,19 @@ function ActualVsObjetivo({ plan }) {
         </tbody>
       </table>
 
+      {plan.refuerzosBloqueados?.length > 0 && (
+        <p style={{ fontSize: 13.5, color: C.ambar, marginTop: 14,
+                    background: C.ambarFondo, borderRadius: 7, padding: '9px 12px' }}>
+          <b>Ojo con {plan.refuerzosBloqueados.map(f => f.ticker).join(' y ')}.</b>{' '}
+          El reparto por riesgo los agranda, pero su sector ya toca el techo
+          después del ajuste: agrandarlos ahí no diversifica nada, mueve plata
+          de un bolsillo al otro del mismo pantalón. Esa parte conviene que
+          salga del sector — las opciones están abajo.
+        </p>
+      )}
+
+      {plan.menu?.length > 0 && <MenuDeRotacion menu={plan.menu}
+                                  volPlan={plan.volObjetivo} />}
       {plan.entradas?.length > 0 && <EntrarEnAlgoNuevo entradas={plan.entradas}
                                       volPlan={plan.volObjetivo} />}
       {plan.benchmark && <ContraElIndice b={plan.benchmark} />}
@@ -1346,6 +1359,81 @@ function TesisAparte({ datos }) {
         </div>
       )}
     </>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ADÓNDE ROTAR — una opción por sector
+//
+// El criterio no es obvio y se midió antes de elegirlo, sobre una cartera real:
+//
+//   solo por PUNTAJE del screener  -> ofrecía HMY (87,5) que SUBÍA la
+//                                     volatilidad 2,26 puntos.
+//   solo por MEJORA de riesgo      -> ofrecía O (baja 5,79) con puntaje 53:
+//                                     una empresa mediocre porque diversifica.
+//   filtrar y DESPUÉS puntuar      -> SBS(86,7) PBR(86,2) MO(80): bajan el
+//                                     riesgo Y son buenas empresas.
+//
+// La mejora de riesgo es una COMPUERTA, no un ranking. Entre lo que pasa la
+// compuerta manda el puntaje del screener, que es el criterio de la casa.
+// ─────────────────────────────────────────────────────────────────────────────
+function MenuDeRotacion({ menu, volPlan }) {
+  return (
+    <div className="evitar-corte" style={{ marginTop: 18 }}>
+      <h4 style={{ fontSize: 14.5, color: C.subtitulo, margin: '0 0 6px' }}>
+        Adónde rotar, por sector
+      </h4>
+      <p style={{ fontSize: 13.5, marginTop: 0, marginBottom: 8 }}>
+        Una opción por sector, entre las que <b>bajan el riesgo de esta cartera
+        de forma medible</b>. De las que pasan ese filtro se muestra la de mejor
+        puntaje del screener. Los sectores que ya están en su tope no aparecen:
+        poner plata ahí sería cambiar una concentración por otra.
+      </p>
+      <table style={{ maxWidth: 660 }}>
+        <thead>
+          <tr>
+            <th>Sector</th><th>Activo</th>
+            <th className="n">Puntaje</th><th className="n">Datos</th>
+            <th className="n">Beta</th>
+            <th className="n">Baja el riesgo</th>
+            <th className="n">Corr.</th>
+          </tr>
+        </thead>
+        <tbody>
+          {menu.map(m => (
+            <tr key={m.ticker}>
+              <td style={{ fontSize: 13 }}>{m.sector}</td>
+              <td style={{ fontFamily: F.num, fontWeight: 600, color: C.titulo }}>
+                {m.ticker}
+                {m.defensivo && (
+                  <span style={{ fontSize: 11.5, color: C.verde }}> · defensivo</span>
+                )}
+              </td>
+              <td className="n" style={{ fontWeight: 600,
+                    color: semaforo(m.puntaje).color }}>{num(m.puntaje, 0)}</td>
+              <td className="n" style={{ fontSize: 12.5, color: C.tenue }}>
+                {m.metricas || '—'}
+              </td>
+              <td className="n" style={{ color: C.tenue }}>
+                {m.beta != null ? num(m.beta, 2) : '—'}
+              </td>
+              <td className="n" style={{ fontWeight: 700, color: C.verde }}>
+                −{num(m.mejora_vs_plan_pts, 1)} pts
+              </td>
+              <td className="n" style={{ color: C.tenue }}>
+                {m.correlacion_media != null ? num(m.correlacion_media, 2) : '—'}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <p style={{ fontSize: 12.5, color: C.tenue, marginTop: 8 }}>
+        «Baja el riesgo» es contra el plan de arriba, que deja la cartera en{' '}
+        {num(volPlan, 1)}%: es lo que se gana eligiendo esta opción en vez de
+        repartir el recorte entre las posiciones que ya están. No son
+        excluyentes — se puede tomar una, dos o repartir entre las tres.
+      </p>
+    </div>
   )
 }
 

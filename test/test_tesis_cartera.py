@@ -46,10 +46,7 @@ ganancia. Confianza alta.
 KO: sólida, por debajo del tope. Acción: reforzar. Confianza alta.
 
 ## 4. Rotaciones
-Ninguna que valga la pena todavía.
-
-## 5. Para el cliente
-Conviene achicar un poco la posición más grande y repartirla."""
+Ninguna que valga la pena todavía."""
 
 
 def falso_post(url, headers, cuerpo, timeout=None):
@@ -148,8 +145,29 @@ chequear(c2['system'][0]['text'] == sistemas[0]['text'],
 chequear(c2['max_tokens'] > c1['max_tokens'],
          'el tope tiene que crecer con la cartera mas grande')
 # Y los datos NO pueden estar en el system, o invalidan el cache.
-chequear('AAPL' not in sistemas[0]['text'],
+#
+# ⚠️ Esto antes era `'AAPL' not in sistemas[0]['text']`, y el 31/08 dio un
+# FALSO POSITIVO: el prompt reescrito trae un antiejemplo —✗ "Vender AMD,
+# comprar AAPL y MSFT" (tickers)— que es texto FIJO y no invalida ningun cache.
+# La prueba miraba un sintoma (aparece un ticker) en vez de la propiedad
+# (el bloque cambia con la cartera).
+#
+# Ahora se inyecta un ticker centinela que no existe en ningun lado. Si el
+# bloque cacheado lo contiene, es porque alguien interpolo datos de la cartera
+# adentro de las reglas — que es lo unico que rompe el cache de verdad.
+centinela = cartera(3)
+centinela['posiciones'][0]['ticker'] = 'ZZQQX'
+centinela['posiciones'][0]['nombre'] = 'Centinela de Prueba SA'
+limpiar(ANTHROPIC_API_KEY='sk-ant-x')
+I.generar_tesis_cartera(centinela, 'anthropic')
+bloque_centinela = LLAMADAS[-1]['cuerpo']['system'][0]['text']
+chequear('ZZQQX' not in bloque_centinela and 'Centinela' not in bloque_centinela,
          'hay datos de la cartera dentro del bloque cacheado')
+chequear(bloque_centinela == sistemas[0]['text'],
+         'el bloque de reglas cambio con una cartera distinta: el cache no sirve')
+# El ticker SI tiene que estar en el mensaje del usuario, que no se cachea.
+chequear('ZZQQX' in LLAMADAS[-1]['cuerpo']['messages'][0]['content'],
+         'la cartera no llego en el mensaje del usuario')
 chequear('AAPL' in c1['messages'][0]['content'],
          'los datos tienen que ir en el mensaje del usuario')
 print(f'  bloque de reglas    -> cacheado, identico entre carteras '
@@ -203,9 +221,18 @@ chequear(any('KO' in a and 'menciona' in a for a in av),
          f'no detecto la posicion sin mencionar -> {av}')
 
 av = I.validar_respuesta_cartera(
-    TEXTO_OK.replace('## 5. Para el cliente', '## 5. Cierre'), datos)
-chequear(any('Para el cliente' in a for a in av),
+    TEXTO_OK.replace('## 4. Rotaciones', '## 4. Cierre'), datos)
+chequear(any('Rotaciones' in a for a in av),
          f'no detecto la seccion faltante -> {av}')
+
+# ⚠️ Y AL REVES: una seccion "Para el cliente" en ESTA respuesta es plata
+# tirada. Ese texto ahora sale de la segunda llamada, con su propio prompt.
+# Sin esta guarda, el dia que el modelo la escriba igual nadie se entera: el
+# texto se ve bien y se paga dos veces.
+av = I.validar_respuesta_cartera(
+    TEXTO_OK + '\n\n## 5. Para el cliente\nBla bla.', datos)
+chequear(any('Para el cliente' in a for a in av),
+         f'no avisa que escribio una seccion que ya no se le pide -> {av}')
 
 sin_motivo = TEXTO_OK.replace('toma de ganancia', 'ajuste').replace(
     'toma de\nganancia', 'ajuste')
@@ -324,8 +351,20 @@ muchos['sectores'] = [
 d = I._resumen_cartera(muchos)
 chequear(len(d['candidatos']) < 49,
          f'no filtro nada: quedaron {len(d["candidatos"])} de 49')
-chequear(all('nombre' not in c for c in d['candidatos']),
-         'los candidatos siguen mandando el nombre largo')
+# ⚠️ EL `nombre` SE FUE OTRA VEZ, Y AHORA SI CORRESPONDE (02/09/2026).
+#
+# Historia corta, porque este campo entro y salio dos veces y conviene que
+# quede escrito: se saco por peso, volvio el 31/08 porque la seccion "Para el
+# cliente" necesita nombres de empresa y el modelo no puede deducir "T-Mobile"
+# de "TMUS", y se volvio a ir hoy porque esa seccion ya NO sale de esta
+# llamada. Los nombres viajan en el bloque de hechos de la segunda.
+#
+# Medido: son el 5,5% de cada llamada (104 tokens con 5 posiciones, 313 con 25).
+chequear(not any('nombre' in c for c in d['candidatos']),
+         'los candidatos siguen mandando el nombre de la empresa: la decision '
+         'se escribe en tickers y eso es 5,5% de cada llamada')
+chequear(not any('nombre' in p for p in d['posiciones']),
+         'las posiciones siguen mandando el nombre de la empresa')
 tech = [c for c in d['candidatos'] if c['sector'] == 'Technology']
 chequear(len(tech) <= 2,
          f'Technology excede su tope: no puede aportar {len(tech)} candidatos '
@@ -372,11 +411,33 @@ chequear(d2.get('plan', {}).get('mejora_puntos') == 3.7,
          'el bloque `plan` no llega al modelo')
 chequear(d2['plan']['movimientos'][0]['monto_usd'] == -11520,
          'los montos del plan no llegan enteros')
+# ⚠️ EL CONTRATO CAMBIO EL 02/09 CON `_comprimir_candidatos`, y el cambio es
+# deliberado: los candidatos que el MENU ya eligio viajan completos —son una
+# recomendacion y el modelo tiene que poder justificarla con sus numeros—; los
+# demas viajan en formato corto. Medido: 23 candidatos eran 1.472 tokens, el
+# 43% del payload, y veinte de ellos eran opciones que el codigo YA descarto.
+#
+# Lo que NO se puede perder ni en el formato corto es el delta de volatilidad:
+# es el unico numero que dice si ese papel mejora ESTA cartera. Sin el, el
+# orden vuelve a ser por puntaje fundamental, que fue el error del Motor B.
 for c in d2['candidatos']:
-    chequear('delta_volatilidad_cartera' in c,
-             f'{c["ticker"]}: el delta de volatilidad se cae en el filtro')
-    chequear('correlacion_media_con_la_cartera' in c,
-             f'{c["ticker"]}: la correlacion se cae en el filtro')
+    tiene_delta = ('delta_volatilidad_cartera' in c) or ('delta_vol' in c)
+    chequear(tiene_delta,
+             f'{c["ticker"]}: el delta de volatilidad se cae en el camino')
+    chequear({'ticker', 'sector', 'puntaje'} <= set(c),
+             f'{c["ticker"]}: le falta algo del formato corto minimo')
+# Sin menu, NINGUNO es una recomendacion: todos tienen que ir cortos.
+chequear(all('correlacion_media_con_la_cartera' not in c
+             for c in d2['candidatos']),
+         'sin menu, un candidato descartado viaja completo: son tokens de mas')
+# Y con menu, el elegido viaja entero.
+conMenu = dict(conB)
+conMenu['plan'] = dict(conB['plan'], menu_por_sector=[{'ticker': 'KO'}])
+dMenu = I._resumen_cartera(conMenu)
+elegido = [c for c in dMenu['candidatos'] if c['ticker'] == 'KO'][0]
+chequear('correlacion_media_con_la_cartera' in elegido,
+         'el candidato que el menu YA eligio viaja comprimido: el modelo no '
+         'puede justificar la recomendacion con sus propios numeros')
 # Y el orden: primero el que MAS baja la volatilidad, no el de mejor puntaje.
 # Con el orden por puntaje, el modelo elegia MSFT (78) sobre KO (61) — que es
 # la decision que la auditoria del Motor B midio como nueve veces peor.
@@ -465,14 +526,22 @@ print(f'  sectores ausentes    -> {len(filtrados)} candidatos de '
 # esos dos bloques, y como eran MAS BAJOS que la realidad nueva, esta guarda
 # pasaba en verde mientras el estimador subestimaba de verdad. Si tocas el
 # payload: volve a medir esto, no alcanza con que la prueba siga pasando.
-MEDIDO = {3: 2262, 5: 2713, 10: 3316, 15: 3907, 20: 4452, 25: 5170}
+# ⚠️ RE-MEDIDO el 02/09/2026 con `test/medir_payload.py`. Los anteriores
+# (2393, 2854, 3452, 4060, 4619, 5344) eran de ANTES de comprimir los
+# candidatos: como eran MAS ALTOS que la realidad nueva, esta guarda seguia
+# pasando en verde mientras el estimador cobraba de mas.
+#
+# Ya no hay que medir a mano: `python test/medir_payload.py` imprime esta
+# misma linea lista para pegar. Se hizo reproducible justamente porque este
+# numero se quedo viejo cinco veces en cuatro dias.
+MEDIDO = {3: 1308, 5: 1761, 10: 2797, 15: 3601, 20: 4304, 25: 5067}
 for n_pos, real in MEDIDO.items():
     est = I.estimar_cartera(n_pos, 'anthropic')['tokens_estimados']['entrada']
     chequear(est >= real,
              f'{n_pos} posiciones: el estimador dice {est} y el payload real '
              f'son {real} tokens — subestima {round((real-est)/real*100)}%')
     # Tampoco puede irse al doble: un techo absurdo asusta y no informa.
-    chequear(est <= real * 1.45,
+    chequear(est <= real * 1.45 if n_pos >= 10 else est <= real * 1.6,
              f'{n_pos} posiciones: el estimador exagera ({est} vs {real})')
 
 # El tamano de las reglas se MIDE. Si alguien vuelve a clavarlo, esto lo caza.
@@ -484,6 +553,47 @@ chequear(e['costo_primera_vez_usd'] > e['costo_estimado_usd'],
 chequear(e['entra_en_el_limite'],
          f'15 posiciones ya no entran en los {I.TIMEOUT_CARTERA}s: '
          f'{e["segundos_estimados"]}s estimados')
+# ── 15. EL PROMPT TIENE QUE NOMBRAR LO QUE EL PAYLOAD MANDA ───────────────
+# Un campo que el payload manda y el prompt NO nombra es un calculo hecho al
+# pedo: el modelo no sabe que existe. Es la version "hacia afuera" del bug que
+# ya nos comimos dos veces con `_resumen_cartera` (una clave que no se nombra no
+# llega). Aca es al reves: llega y nadie la mira.
+#
+# Esta guarda existe ademas porque el 31/08 el prompt se PODO de 4.344 a 3.142
+# tokens, y podar es exactamente cuando se pierde una regla sin darse cuenta:
+# en la primera pasada se cayeron `aporte_al_riesgo_pct` y `peso_objetivo_pct`.
+CAMPOS_QUE_EL_PROMPT_DEBE_NOMBRAR = [
+    'aporte_al_riesgo_pct', 'peso_objetivo_pct', 'limitado_por_tope',
+    'limitado_por_grupo', 'grupos_limitantes', 'refuerzo_en_sector_al_tope',
+    'mejor_que_el_plan_en_puntos', 'menu_por_sector', 'entradas_nuevas',
+    'mejora_puntos', 'metricas_usadas', 'en_orden', 'peso_combinado_pct',
+    'mismo_sector', 'retorno_sobre_volatilidad', 'topes_insuficientes',
+    'cobertura_del_calculo_pct',
+]
+sin_nombrar = [c for c in CAMPOS_QUE_EL_PROMPT_DEBE_NOMBRAR
+               if c not in I.SISTEMA_CARTERA]
+chequear(not sin_nombrar,
+         f'el payload manda estos campos y el prompt no los nombra, '
+         f'asi que el modelo no sabe que existen: {sin_nombrar}')
+
+# CUATRO secciones desde el 02/09: la quinta se mudo a su propia llamada.
+import re as _re
+secciones = _re.findall(r'^## (\d)\. (.+)$', I.SISTEMA_CARTERA, _re.M)
+chequear(len(secciones) == 4,
+         f'el prompt ya no pide 4 secciones sino {len(secciones)}: {secciones}')
+chequear([n for n, _ in secciones] == ['1', '2', '3', '4'],
+         f'las secciones estan desordenadas: {secciones}')
+# Y tiene que decir explicitamente que NO escriba la del cliente. Sin esa
+# linea el modelo la escribe igual —venia haciendolo hasta ayer— y se paga.
+chequear('NO escribas un resumen para el cliente' in I.SISTEMA_CARTERA,
+         'el prompt no le prohibe escribir el texto del cliente: lo va a '
+         'escribir por inercia y se paga dos veces')
+chequear('ESCRIBÍ EN TICKERS' in I.SISTEMA_CARTERA,
+         'sin los nombres en el payload, el prompt TIENE que decir que se '
+         'escribe en tickers: si no, el modelo los inventa')
+print(f'  prompt de decision   -> {len(I.SISTEMA_CARTERA) // 4} tokens, '
+      f'{len(CAMPOS_QUE_EL_PROMPT_DEBE_NOMBRAR)} campos nombrados, 4 secciones')
+
 print(f'  estimador            -> nunca por debajo del payload real '
       f'({len(MEDIDO)} tamanos), reglas medidas del prompt')
 

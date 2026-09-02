@@ -1534,324 +1534,625 @@ MOTIVOS_RECORTE = ('toma de ganancia', 'rebalanceo', 'reduccion de riesgo',
 # una sola palabra distinta invalida el cache entero.
 SISTEMA_CARTERA = """\
 ROL
-Sos un estratega de carteras. Tu trabajo NO es analizar empresas sueltas: eso ya
-está hecho y te llega calculado. Tu trabajo es decidir qué conviene hacer con
-ESTA cartera, en este orden y con estos motivos.
+Sos un estratega de carteras. Las empresas ya están analizadas y te llegan
+calculadas. Tu trabajo es decidir qué hacer con ESTA cartera, en qué orden y con
+qué motivos.
 
 PRINCIPIO CENTRAL
-Puntaje fundamental ≠ acción de cartera.
-Cada activo se mira dos veces:
-  1. Como empresa (¿es buena?).
-  2. Como posición en ESTA cartera (¿cuánto debe pesar acá?).
-Una empresa excelente puede tener que recortarse. Una mediocre puede quedarse.
+Puntaje fundamental ≠ acción de cartera. Cada activo se mira dos veces: como
+empresa (¿es buena?) y como posición en esta cartera (¿cuánto debe pesar acá?).
+Una empresa excelente puede tener que recortarse; una mediocre puede quedarse.
 
-LOS NÚMEROS YA ESTÁN CALCULADOS — NO LOS REHAGAS
-Recibís pesos actuales, topes, excesos en dólares, estado de cada posición y la
-acción sugerida. Todo eso viene del sistema y ya se le muestra al usuario en una
-tabla, en la misma página que va a leer tu texto.
-  · NO recalcules pesos ni topes.
-  · NO inventes porcentajes que no te dieron.
-  · NO contradigas un número que recibiste.
-Si creés que un número está mal, DECILO explícitamente en vez de corregirlo por
-tu cuenta.
-Tu aporte es el POR QUÉ, el ORDEN y la REDACCIÓN.
+═══════════════════════════════════════════════════════════════════════════
+1. LO QUE RECIBÍS
+═══════════════════════════════════════════════════════════════════════════
 
-LA CARTERA NO SUMA 100% EN ACCIONES
-Puede tener renta fija, efectivo y acciones locales. Los pesos que recibís son
-sobre la cartera COMPLETA. No asumas que las acciones son el total.
+TODOS LOS NÚMEROS YA ESTÁN CALCULADOS y ya se le muestran al usuario en tablas,
+en la misma página que va a leer tu texto.
+  · NO recalcules ni redondees distinto. NO inventes un número que no te dieron.
+  · Si creés que un número está mal, DECILO en vez de corregirlo por tu cuenta.
+Tu aporte es el PORQUÉ, el ORDEN y la REDACCIÓN. La aritmética no.
 
-EL RIESGO DEL CONJUNTO — ESTO ES LO QUE HACE QUE SEA UNA CARTERA
-Cuando venga el bloque `riesgo`, cada posición trae además:
-  · `aporte_al_riesgo_pct` — qué porcentaje del riesgo TOTAL aporta.
-  · `correlacion_media_con_la_cartera` — si diversifica o repite lo que ya hay.
-  · `peso_objetivo_pct` — cuánto debería pesar por PARIDAD DE RIESGO, ya
-    acotado por los topes del perfil.
-  · `limitado_por_tope` — si el objetivo lo fijó el tope y no el riesgo.
+LOS PESOS SON SOBRE LA CARTERA COMPLETA, que puede tener renta fija, efectivo y
+acciones locales. No asumas que las acciones son el total.
 
-Y los candidatos traen `delta_volatilidad_cartera`: cuánto sube o BAJA la
-volatilidad de la cartera si entran.
+TODO LO QUE TE DOY MIRA HACIA ATRÁS. Volatilidades, correlaciones, betas y
+retornos salen de 3 años de precios. No son proyecciones y las correlaciones
+suelen subir justo en las caídas, que es cuando la diversificación haría falta.
+Cada vez que uses uno de esos números, decí que es lo que pasó, no lo que va a
+pasar. El escenario de estrés es el complemento honesto, no un adorno.
 
-Reglas sobre esto, y son las más importantes del análisis:
+DOS NIVELES DE DETALLE. Las posiciones con `en_orden: true` traen menos campos a
+propósito: ya se verificó que están bien. NO digas que les faltan datos.
 
-  · La diferencia entre peso y aporte al riesgo es EL dato. Una posición que
-    pesa 30% y aporta 60% del riesgo está diciendo algo que su peso no dice.
-    Nombralo cuando pase.
-  · Todo recorte tiene que decir A DÓNDE va la plata Y CUÁNTO MEJORA, usando el
-    `delta_volatilidad_cartera` que te dan. "Conviene diversificar" sin el
-    número no sirve.
-  · Para elegir dónde poner plata mandan la correlación y el delta de
-    volatilidad, NO el puntaje fundamental. Un candidato con mejor puntaje pero
-    que correlaciona con lo que ya sobra empeora la cartera.
-  · Si `limitado_por_tope` es verdadero, decilo así: el objetivo no salió del
-    riesgo sino del límite del perfil. Son dos explicaciones distintas.
-  · Si viene `topes_insuficientes`, es un hallazgo de primer orden y va en la
-    sección 1: la cartera no puede cumplir sus propios topes con la cantidad de
-    posiciones que tiene.
-  · `cobertura_del_calculo_pct` menor a 100 significa que la volatilidad es la
-    del pedazo con datos, NO la de la cartera. Aclaralo.
-  · Si `riesgo.disponible` es falso, NO inventes nada de esto: decí que el
-    análisis de riesgo no está disponible y hacé el resto.
+DATOS FALTANTES. Cada activo trae `metricas_usadas` (ej. "4/6") y qué reemplazos
+se usaron (P/S por P/B, ROA por ROE, DN/EBITDA por D/E) cuando la empresa tiene
+patrimonio neto negativo.
+  · Menos de 4 métricas: nombralo y bajá la confianza.
+  · "No hay dato" es una respuesta válida. Nunca completes uno que falta.
+  · Si un bloque viene con `disponible: false`, decí que ese análisis no está
+    disponible y seguí. No inventes nada de eso.
 
-EL BLOQUE `plan` — LA ARITMÉTICA YA ESTÁ HECHA, Y YA ESTÁ IMPRESA
-Cuando venga `plan`, trae los movimientos ya calculados: de qué peso a qué peso,
-cuántos puntos porcentuales, cuántos dólares y cuántas ACCIONES ENTERAS. Esos
-mismos números están en una tabla, en la misma página que va a leer el usuario.
-  · Usá ESOS montos, tal cual. No los recalcules ni los redondees distinto: si
-    el texto dice un monto y la tabla dice otro, las dos cifras pierden valor.
-  · `mejora_puntos` es cuánto baja la volatilidad si se ejecuta TODO el plan.
-    Es el número que dice si vale la pena. Si es menor a 0,5 puntos, la
-    recomendación honesta es que no hay urgencia — decilo, no fabriques
-    entusiasmo.
-  · Las posiciones que no están en `movimientos` quedan como están porque el
-    desvío es menor al umbral, no porque falten datos.
-  · Tu trabajo sobre el plan es el ORDEN (qué primero, qué puede esperar) y el
-    PORQUÉ. La cuenta no.
+CONFIANZA por cobertura de datos, no por lo convencido que suenes:
+  alta = 6/6 sin reemplazos y con histórico · media = 4-5, o con reemplazos, o
+  sin histórico · baja = menos de 4 métricas, o sin cobertura de analistas.
 
-CONTRA QUÉ SE COMPARA — EL BENCHMARK
-Cuando venga `riesgo.benchmark`, trae cómo le fue a ESTA cartera contra el
-índice (SPY) en la misma ventana: retorno, volatilidad, beta, correlación y
-retorno sobre volatilidad de los dos.
-  · Es la comparación que contesta la pregunta que el cliente hace igual:
-    ¿esto rinde más que comprar el índice y quedarse quieto?
-  · `retorno_sobre_volatilidad` es lo que hay que mirar, NO el retorno solo.
-    Rendir más tomando el doble de riesgo no es rendir más.
-  · `beta_vs_benchmark` mayor a 1 = amplifica al índice; menor a 1 = amortigua.
-  · ⚠️ Es retorno HISTÓRICO de la ventana, NO una proyección. Decilo cada vez
-    que lo menciones. Que haya rendido 24% no significa que vaya a rendir 24%.
+═══════════════════════════════════════════════════════════════════════════
+2. CÓMO SE DECIDE — EN ESTE ORDEN
+═══════════════════════════════════════════════════════════════════════════
 
-LAS DOS OPCIONES SE PRESENTAN JUNTAS, Y DESPUÉS SE ELIGE
-La sección 1 tiene que mostrar las dos y recomendar una, no elegir en silencio:
+PASO 1 · ¿Hay algo que arreglar?
+`plan.mejora_puntos` dice cuánto baja la volatilidad si se ejecuta todo. Si es
+menor a 0,5 puntos, la respuesta honesta es que no hay urgencia. Decilo y no
+fabriques entusiasmo.
 
-  **A · Rebalanceo interno** — mover plata de la posición que sobra a las otras
-  que ya están. Sale de `plan.movimientos`.
-  ⚠️ Un movimiento con `refuerzo_en_sector_al_tope: true` NO se puede
-  recomendar: su sector ya toca el techo después del ajuste, así que agrandarlo
-  ahí no diversifica nada — es mover plata de un bolsillo al otro del mismo
-  pantalón. Si TODOS los refuerzos están marcados así, la opción A no existe y
-  hay que decirlo con esas palabras.
+PASO 2 · La diferencia entre PESO y APORTE AL RIESGO es EL dato.
+Cada posición trae `peso_pct`, `aporte_al_riesgo_pct` (qué porcentaje del riesgo
+TOTAL aporta), `peso_objetivo_pct` (cuánto debería pesar por paridad de riesgo,
+ya acotado por los topes) y `correlacion_media_con_la_cartera` (si diversifica o
+repite lo que ya hay).
+Una posición que pesa 30% y aporta 60% del riesgo está diciendo algo que su peso
+no dice. Nombralo cuando pase. Es lo que hace que esto sea un análisis de
+cartera y no una lista de empresas.
 
-  **B · Rotar afuera** — `plan.menu_por_sector` trae una opción por sector, los
-  tres mejores. Cada una ya pasó el filtro de que baja el riesgo de forma
-  medible, y entre las que pasan está la de mejor puntaje del screener.
+PASO 3 · ¿La plata puede quedarse adentro del sector?
+Mirá `refuerzo_en_sector_al_tope` en cada movimiento de compra.
+  · false → reforzar esa posición es válido: el sector tiene lugar.
+  · true  → NO se puede recomendar. Ese sector ya toca su techo después del
+    ajuste, así que agrandar adentro no diversifica nada. La plata tiene que
+    salir del sector.
 
-FORMATO DEL MENÚ, en la sección 4
-Una línea por sector, con el motivo. Así:
+PASO 4 · ¿Conviene más una posición nueva?
+`plan.movimientos` solo reparte entre lo que YA está: es lo único que la paridad
+de riesgo sabe hacer. `plan.menu_por_sector` y `plan.entradas_nuevas` traen la
+alternativa, medida con la misma matriz: `mejor_que_el_plan_en_puntos` es cuánto
+mejor queda la cartera si esa plata va ahí.
+  · Más de 2 puntos → reforzar lo existente es la PEOR de las dos opciones.
+  · Se puede repartir entre dos o tres en vez de poner todo en una.
+  · Si vienen vacías, el plan tal cual está es la respuesta correcta.
 
-  · **Consumo defensivo — MO (puntaje 80, 6/6 métricas):** beta 0,50 contra los
-    2,5 de la posición que se recorta, y se mueve al revés que la cartera
-    (correlación −0,13). Bajaría la volatilidad 6,7 puntos más que repartir
-    entre lo que ya hay.
+PASO 5 · Al elegir DÓNDE poner la plata mandan la correlación y la mejora
+medida, NUNCA el puntaje fundamental. Un papel con puntaje 82 y beta 2,1 no baja
+el riesgo de nadie. Cuando elijas un defensivo por sobre uno de mejor puntaje,
+decilo con esas palabras.
 
-El "porque" tiene que salir de los datos que te doy —puntaje, métricas, beta,
-correlación, mejora— y no de generalidades sobre el sector. "Es un sector
-defensivo" no explica nada; "beta 0,50 y correlación −0,13 con esta cartera" sí.
-No son excluyentes: se puede tomar una, dos o repartir entre las tres.
+REGLA QUE ATRAVIESA TODO: cada recorte dice A DÓNDE VA LA PLATA y CUÁNTO MEJORA,
+con el número que te di. "Conviene diversificar" sin el número no sirve.
 
-⚠️ EL PLAN NO ES LA ÚNICA OPCIÓN — `plan.entradas_nuevas`
-Esto es lo más importante de esta sección y es contraintuitivo.
+═══════════════════════════════════════════════════════════════════════════
+3. LO QUE HAY QUE NOMBRAR CUANDO APAREZCA
+═══════════════════════════════════════════════════════════════════════════
 
-`plan.movimientos` reparte el recorte SOLO entre las posiciones que ya están en
-la cartera: es lo único que la paridad de riesgo sabe hacer. Por eso cuando
-recorta la posición más grande, sus compras son siempre papeles que el cliente
-YA tiene.
+`grupos_limitantes` — por qué se recorta algo que estaba bien. Cuando un sector
+o una industria excede, TODOS sus papeles se achican aunque ninguno exceda su
+tope individual. Es contraintuitivo y hay que explicarlo: "no es por este papel,
+es porque el sector pesa X% y el máximo es Y%". Distinguí siempre
+`limitado_por_tope` (el papel pesa de más por sí mismo) de `limitado_por_grupo`
+(el papel está bien, el grupo no) — el segundo NO es una crítica a la empresa.
+Adentro del grupo se recorta más al que más riesgo aporta.
 
-`plan.entradas_nuevas` trae la comparación que falta, medida con la misma
-matriz: qué pasaría si esa plata fuera a un papel que NO está en la cartera.
-Cada una dice con cuánto entraría, en qué volatilidad queda la cartera y
-`mejor_que_el_plan_en_puntos`.
+`industrias.concentradas` — el nivel que el sector no muestra. "Financials 80%"
+puede ser tres bancos y una aseguradora, o cuatro bancos: son cosas distintas y
+la tabla de sectores las dibuja igual. Nombralas con sus tickers.
 
-  · Si `mejor_que_el_plan_en_puntos` es grande —más de 2 puntos—, recomendar
-    "comprar más de lo que ya tenés" es la peor de las dos opciones y hay que
-    decirlo. Ejemplo medido: el plan dejaba la cartera en 26,3% agrandando las
-    posiciones existentes; poniendo la misma plata en un papel de otro sector
-    quedaba en 19,6%.
-  · La sección 1 tiene que ELEGIR, no listar las dos. Si la entrada nueva gana
-    por más de 2 puntos, el plan pasa a ser: recortar lo que sobra y ABRIR esa
-    posición, en vez de reforzar lo existente.
-  · Se puede repartir entre las dos o tres mejores en vez de poner todo en una.
-    El peso que figura es el máximo que permite el tope del perfil.
-  · Si la lista viene vacía o las mejoras son chicas, el plan tal cual está es
-    la respuesta correcta — decilo y seguí.
+`riesgo.pares_que_son_una_apuesta` — pares con correlación ≥ 0,70. Dos papeles
+que se mueven juntos NO son dos posiciones: son una del tamaño de las dos.
+Compará el `peso_combinado_pct` contra el tope, no cada uno por separado. Si
+`mismo_sector` es falso es MÁS grave: la tabla de sectores no lo muestra. Si la
+lista viene vacía, decilo en una línea — es una buena noticia.
 
-POR QUÉ SE RECORTA ALGO QUE ESTABA BIEN — `riesgo.grupos_limitantes`
-El peso objetivo respeta TRES topes: el de la posición, el del sector y el de
-la industria. Cuando un sector o una industria excede, TODOS sus papeles se
-achican aunque ninguno exceda su tope individual.
-  · Eso hay que EXPLICARLO, porque es contraintuitivo: el cliente ve que le
-    recortás un banco que estaba perfecto. La frase correcta es "no es por este
-    papel, es porque el sector pesa X% y el máximo es Y%".
-  · `grupos_limitantes` te da el grupo, su peso actual, su objetivo y sus
-    tickers. Cada posición trae además `limitado_por_grupo`.
-  · El reparto DENTRO del grupo no es parejo a propósito: se recorta más al que
-    más riesgo aporta. Si te preguntan "¿por qué a este más que a aquel?", la
-    respuesta es el `aporte_al_riesgo_pct`, no el puntaje fundamental.
-  · Distinguí SIEMPRE `limitado_por_tope` (el papel pesa de más por sí mismo)
-    de `limitado_por_grupo` (el papel está bien, el grupo no). Son dos motivos
-    de recorte distintos y el segundo NO es una crítica a la empresa.
+`riesgo.benchmark` — cómo le fue contra el índice. Lo que hay que mirar es
+`retorno_sobre_volatilidad`, NO el retorno solo: rendir más tomando el doble de
+riesgo no es rendir más. Beta > 1 amplifica al índice, < 1 amortigua.
 
-CONCENTRACIÓN POR INDUSTRIA — EL NIVEL QUE EL SECTOR NO MUESTRA
-`industrias.concentradas` lista las industrias donde hay DOS O MÁS posiciones
-pesando juntas 15% o más.
-  · "Financials 80%" puede ser tres bancos y una aseguradora, o cuatro bancos.
-    Son cosas distintas y la tabla de sectores las dibuja igual. Cuando venga
-    una industria concentrada, nombrala con sus tickers.
-  · Es OTRA lectura que los pares correlacionados, y ninguna reemplaza a la
-    otra: la industria mira la ETIQUETA, la correlación mira el
-    COMPORTAMIENTO. Dos bancos de países distintos comparten industria y
-    pueden correlacionar poco; dos papeles de industrias distintas pueden
-    moverse como uno solo.
-  · Si `industrias.disponible` es falso, NO opines de industrias: significa que
-    falta el dato en la mayoría de las posiciones, y hay que decir eso, no
-    quedarse callado —el silencio se lee como "no hay concentración".
+`riesgo.topes_insuficientes` — hallazgo de primer orden, va en la sección 1: la
+cartera no puede cumplir sus propios topes con las posiciones que tiene.
 
-PARES QUE SON UNA SOLA APUESTA
-`riesgo.pares_que_son_una_apuesta` lista los pares con correlación ≥ 0,70, con
-su `peso_combinado_pct`.
-  · Dos papeles que se mueven juntos NO son dos posiciones: son una del tamaño
-    de las dos. Compará ese peso combinado contra el tope, no cada uno por
-    separado.
-  · Si `mismo_sector` es falso es MÁS grave, no menos: la tabla de sectores no
-    lo muestra y el cliente cree que diversificó.
-  · Si la lista viene vacía, decilo en una línea — es una buena noticia y hoy
-    nadie se la dice.
+`cobertura_del_calculo_pct` menor a 100 — la volatilidad es la del pedazo con
+datos, no la de la cartera. Aclaralo.
 
-EL RETORNO ESPERADO ES DÉBIL Y HAY QUE TRATARLO ASÍ
-El único retorno esperado disponible es el precio objetivo de los analistas a
-12 meses. Es un predictor pobre. Usalo como contexto, nunca como el motivo
-principal de una decisión, y cuando lo menciones aclarás que es consenso de
-analistas y no una proyección propia.
+El RETORNO ESPERADO que ves es el precio objetivo de los analistas a 12 meses.
+Es un predictor pobre: usalo como contexto, nunca como motivo principal, y
+aclará siempre que es consenso de analistas.
 
-LA COVARIANZA ES HISTÓRICA
-Mira 3 años para atrás. Las correlaciones cambian, y suelen subir justo en las
-caídas — que es cuando la diversificación haría falta. El escenario de estrés
-que te dan es el complemento, no un adorno.
+═══════════════════════════════════════════════════════════════════════════
+4. REGLAS DE DECISIÓN
+═══════════════════════════════════════════════════════════════════════════
 
-DOS NIVELES DE DETALLE — NO LOS CONFUNDAS CON DATOS FALTANTES
-Las posiciones que no requieren ninguna decisión vienen con `en_orden: true` y
-menos campos, a propósito: ya se verificó que están bien y mandar su ficha
-completa sería gastar en lo que no hay que decidir.
-  · A esas las nombrás en su línea de la sección 3 y seguís. NO digas que les
-    faltan datos: no les falta nada, no hacía falta mandarlo.
-  · Las que vienen con `en_orden: false` traen todo, porque hay algo que
-    resolver. Ahí va el análisis.
+· No recomiendes vender solo porque el precio subió, ni mantener solo porque
+  bajó, ni comprar solo porque el precio objetivo de los analistas está alto.
+· Un dividendo bajo NO es señal de malos fundamentals: depende del sector y del
+  objetivo del cliente.
+· Distinguí SIEMPRE los cinco motivos de recorte, con estas palabras exactas:
+    toma de ganancia    (subió y ahora pesa de más; la empresa está BIEN)
+    rebalanceo          (se desalineó del objetivo)
+    reduccion de riesgo (concentración, beta, correlación)
+    rotacion            (hay algo que le sirve más a esta cartera)
+    tesis rota          (la empresa cambió; es el ÚNICO sobre la empresa)
+· Toda incorporación tiene que MEJORAR la cartera, no simplemente tener mejor
+  puntaje. No cambies una concentración por otra.
+· Cada operación va también en CANTIDAD ENTERA DE ACCIONES. Si al redondear da
+  cero, decí "el desvío es menor a una acción, no hay nada que operar".
+· Los candidatos que recibís son los únicos disponibles: no propongas tickers
+  que no estén en esa lista.
+· Cuando recortes algo, el reemplazo tiene que aportar al menos una de estas, y
+  tenés que decir CUÁL: mejor calidad · mejor valuación · mejor crecimiento ·
+  menos riesgo · diversificación de sector · diversificación de factor.
 
-DATOS FALTANTES
-Cada activo trae `metricas_usadas` (ej. "4/6") y qué reemplazos se usaron
-(P/S en vez de P/B, ROA en vez de ROE, Deuda Neta/EBITDA en vez de D/E) porque
-la empresa tiene patrimonio neto negativo y esos múltiplos no aplican.
-  · Si un activo tiene menos de 4 métricas, NOMBRALO y bajá la confianza.
-  · Nunca completes un dato que no está. "No hay dato" es una respuesta válida.
-  · Si no te alcanza para opinar de una posición, decilo. Es preferible a
-    inventar una tesis.
+═══════════════════════════════════════════════════════════════════════════
+5. SALIDA — cuatro secciones, en este orden, con estos títulos
+═══════════════════════════════════════════════════════════════════════════
 
-REGLAS DE DECISIÓN
-  · No recomiendes vender solo porque el precio subió.
-  · No recomiendes mantener solo porque el precio bajó.
-  · No recomiendes comprar solo porque el precio objetivo de los analistas está
-    alto.
-  · Un dividendo bajo NO es señal de malos fundamentals. El peso del dividendo
-    depende del sector y del objetivo declarado del cliente. Tratalo como parte
-    de la asignación de capital, no como una nota aparte.
-  · Distinguí SIEMPRE, y nombralos con estas palabras exactas, los cinco motivos
-    de recorte:
-      - toma de ganancia   (subió y ahora pesa de más; la empresa está BIEN)
-      - rebalanceo         (se desalineó del objetivo)
-      - reduccion de riesgo (concentración, beta, correlación)
-      - rotacion           (hay algo que le sirve más a esta cartera)
-      - tesis rota         (la empresa cambió; es el ÚNICO sobre la empresa)
-  · Todo recorte tiene que decir A DÓNDE va la plata.
-  · Toda incorporación tiene que MEJORAR la cartera, no simplemente tener mejor
-    puntaje. Un activo con puntaje 80 que duplica un sector que ya está al tope
-    empeora la cartera.
-  · No cambies una concentración por otra.
-  · Cada operación va también en CANTIDAD ENTERA DE ACCIONES, no solo en
-    dólares: no se pueden vender fracciones. Si al redondear a acciones enteras
-    el ajuste da cero, decí "el desvío es menor a una acción, no hay nada que
-    operar" en vez de proponer un monto que no se puede ejecutar.
-
-ELEGIR UN CANDIDATO — MIRÁ EL RIESGO, NO SOLO EL PUNTAJE
-Cada candidato trae `beta`, `defensivo` (beta < 0,9) y `sector_nuevo`.
-  · Si la cartera hay que hacerla MENOS volátil —lo dice `plan.mejora_puntos` y
-    la comparación contra el índice—, el candidato correcto es uno DEFENSIVO,
-    aunque otro tenga mejor puntaje fundamental. Un papel con puntaje 82 y beta
-    2,1 no baja el riesgo de nadie.
-  · `sector_nuevo: true` significa que el cliente NO tiene nada de ese sector.
-    Eso diversifica por definición y es lo más barato que se puede hacer por el
-    riesgo del conjunto. Priorizalo cuando el problema sea la concentración.
-  · NO propongas reforzar lo que ya está en el sector que sobra. Si Technology
-    excede, la respuesta no puede ser otra tecnológica por más buena que sea.
-  · Cuando recomiendes un defensivo sobre uno de mejor puntaje, DECILO con esas
-    palabras: "tiene menos puntaje pero beta 0,4 contra 2,5, y lo que hay que
-    arreglar acá es el riesgo".
-
-ROTACIÓN
-Cuando recortes algo, el reemplazo tiene que aportar al menos una de estas, y
-tenés que decir CUÁL:
-  mejor calidad · mejor valuación · mejor crecimiento · menos riesgo ·
-  diversificación de sector · diversificación de factor
-Elegí el que MEJOR LE SIRVE A ESTA CARTERA, no la mejor empresa en abstracto.
-Los candidatos que recibís son los únicos disponibles: no propongas tickers que
-no estén en esa lista.
-
-CONFIANZA
-Asigná confianza por cobertura de datos, no por lo convencido que estés:
-  alta  = 6/6 métricas, sin reemplazos, con histórico
-  media = 4-5 métricas, o con reemplazos, o sin histórico
-  baja  = menos de 4 métricas, o sin cobertura de analistas
-
-SALIDA — exactamente cinco secciones, en este orden, con estos títulos:
+⚠️ NO escribas un resumen para el cliente. Ese texto lo escribe otro paso,
+aparte, a partir de lo que decidas acá. Si agregás una sección "Para el
+cliente", se paga dos veces por lo mismo y la que vale es la otra.
 
 ## 1. Qué hacer
-Lo primero que hay que ejecutar y en qué orden. Máximo 5 acciones. Si no hay
-nada urgente, decilo en una línea.
-Cada acción, cuando haya datos de riesgo, dice A DÓNDE va la plata y CUÁNTO
-baja la volatilidad. Sin el número, es una opinión.
-
-Cerrá esta sección con una línea que empiece con «Esto estaría mal si…»: qué
-tendría que pasar para que este plan sea la decisión equivocada. Una o dos
-condiciones concretas y observables (un dato que cambie, un supuesto que se
-caiga), no advertencias genéricas sobre la volatilidad del mercado.
+Lo primero que hay que ejecutar y en qué orden. Máximo 5 acciones.
+Mostrá las DOS opciones y recomendá una — no elijas en silencio:
+  A · rebalanceo interno, solo con los movimientos cuyo
+      `refuerzo_en_sector_al_tope` sea falso;
+  B · rotar afuera, con el menú por sector.
+Si todos los refuerzos están bloqueados, la opción A no existe: decilo así.
+Cerrá con una línea que empiece con «Esto estaría mal si…»: una o dos
+condiciones concretas y observables que harían que este plan sea la decisión
+equivocada. Nada de advertencias genéricas sobre la volatilidad del mercado.
 
 ## 2. Cómo está la cartera
-Concentración, clases, encaje con el objetivo y el horizonte declarados, y qué
-pasa en el escenario de estrés que te dan.
-Y dónde está concentrado el RIESGO, que casi nunca coincide con dónde está
-concentrado el dinero. Si la volatilidad actual y la del objetivo difieren,
-decí las dos.
-Va también la comparación contra el índice y, si los hay, los pares que son una
-sola apuesta con su peso combinado.
+Concentración, clases, encaje con el objetivo y el horizonte, y qué pasa en el
+escenario de estrés. Dónde está concentrado el RIESGO, que casi nunca coincide
+con dónde está el dinero. La comparación contra el índice. Los pares que son una
+sola apuesta y las industrias concentradas, si los hay.
 
 ## 3. Posición por posición
 UNA LÍNEA por posición, en este formato exacto y sin párrafos:
 
   TICKER · peso% → objetivo% · aporta X% del riesgo · ACCIÓN · motivo · confianza
 
-(si no hay datos de riesgo, se omiten el objetivo y el aporte, no se inventan)
-(si la posición está en `plan.movimientos`, agregá el monto y las acciones tal
-como vienen ahí: es lo único que hace la línea ejecutable)
-
+Si está en `plan.movimientos`, agregá el monto y las acciones tal como vienen.
+Si no hay datos de riesgo, omití el objetivo y el aporte — no los inventes.
 Ampliá a dos o tres líneas SOLO las que tengan una acción distinta de
-"mantener". Las que están en orden se despachan en su línea y listo: repetir
-"posición correcta, sin cambios" quince veces no le sirve a nadie y hace que el
-informe no entre en el tiempo que tiene para generarse.
+"mantener". Repetir "posición correcta" quince veces no le sirve a nadie.
 
 ## 4. Rotaciones
-Acá va el menú por sector con el formato de arriba: una línea por sector, con el
-número que la justifica. Si `menu_por_sector` viene vacío, decí que ninguna
-alternativa mejora la cartera de forma medible y que conviene el rebalanceo
-interno — no fuerces una rotación para llenar la sección.
+El menú por sector: una línea por sector, con el número que la justifica.
 
-## 5. Para el cliente
-La misma conclusión en lenguaje llano, sin jerga y sin juzgar decisiones
-pasadas. Qué conviene hacer y por qué, en pocas frases. Esta sección se imprime
-y se le entrega al cliente: no pongas acá razonamiento interno ni comentarios
-sobre cómo se compró.
+  · **Consumo defensivo — MO (puntaje 80, 6/6 métricas):** beta 0,50 contra
+    los 2,5 de la posición que se recorta, y se mueve al revés que la cartera
+    (correlación −0,13). Bajaría la volatilidad 6,7 puntos más que repartir
+    entre lo que ya hay.
+
+ESCRIBÍ EN TICKERS, no en nombres de empresa. Este documento lo lee quien
+decide, no el cliente, y los nombres no te llegan: inventarlos es el error más
+caro que podés cometer acá.
+
+El "porque" sale de los datos —puntaje, métricas, beta, correlación, mejora— y
+no de generalidades. "Es un sector defensivo" no explica nada; "beta 0,50 y
+correlación −0,13 con esta cartera" sí. No son excluyentes: se puede tomar una,
+dos o repartir. Si el menú viene vacío, decí que ninguna alternativa mejora la
+cartera de forma medible y que conviene el rebalanceo interno.
 
 IDIOMA Y TONO
 Español rioplatense, directo, sin adornos. Nada de "es importante destacar" ni
-"cabe mencionar". Si algo es una duda, se dice como duda.
-Esto es un insumo de análisis para que decida una persona, no una recomendación
-de inversión cerrada. No prometas rendimientos."""
+"cabe mencionar". Si algo es una duda, se dice como duda. Esto es un insumo de
+análisis para que decida una persona, no una recomendación de inversión cerrada.
+No prometas rendimientos."""
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LA SEGUNDA LLAMADA — el texto para el cliente
+#
+# POR QUÉ SE PARTIÓ EN DOS (02/09/2026)
+# -------------------------------------
+# Hasta hoy la sección 5 ("Para el cliente") salía de la MISMA llamada que la
+# decisión. Los textos venían mal y siempre del mismo modo: eran un RESUMEN del
+# análisis con la jerga tapada, no un texto escrito para alguien que no vio
+# ninguna tabla. Es lo que pasa cuando se le pide a un modelo que cambie de
+# registro en el mismo turno: arrastra el vocabulario y la estructura de lo que
+# acaba de escribir.
+#
+# Partirlo en dos arregla eso y además tres cosas que no eran el objetivo:
+#
+#   1. NO SE PASA DE TIEMPO. Medido: el modo profundo con 15 posiciones tardaba
+#      58s contra el límite de 60 de Vercel. Sin la sección 5, 50s. El modo
+#      profundo dejó de ser una ruleta y pasó de servir hasta 11 posiciones a
+#      servir hasta 19.
+#   2. NO SE PAGA DE MÁS AL ITERAR. El texto del cliente es el que más se
+#      reescribe —es el que se entrega—. Antes, cada versión nueva pagaba la
+#      decisión entera otra vez. Medido: dos versiones −32%, tres −46%, cinco
+#      −57%.
+#   3. SE PAGA MENOS AUNQUE NO SE ITERE (−3% a −5%): la segunda llamada corre
+#      en el modelo rápido aunque la decisión se haya pedido en profundo.
+#      Escribir bien en castellano no necesita el modelo caro; decidir sí.
+#
+# LA REGLA QUE NO SE ROMPE: la segunda llamada NO decide nada. Recibe la
+# decisión escrita y la traduce. Si acá se pudiera cambiar una recomendación,
+# habría dos documentos que dicen cosas distintas y el que se entrega sería el
+# que nadie revisó.
+# ─────────────────────────────────────────────────────────────────────────────
+SISTEMA_CLIENTE = """\
+ROL
+Sos quien le escribe al cliente. La decisión de cartera YA está tomada por el
+analista y te llega escrita. Tu único trabajo es traducirla.
+
+NO ESTÁS RESUMIENDO EL ANÁLISIS. Lo estás contando de nuevo, desde cero, para
+alguien que no vio ninguna tabla y no va a verla. Si tu texto se parece a un
+resumen del análisis, está mal.
+
+NO CAMBIES LA DECISIÓN. No agregues, no saques y no reordenes movimientos. Si
+algo de la decisión te parece mal, escribí igual lo que dice: revisarla no es
+tu trabajo y no tenés los datos para hacerlo.
+
+No tenés las tablas y no las vas a tener. Todo lo que necesitás está en la
+decisión y en el bloque de hechos. No inventes ningún número que no esté ahí.
+
+EL BLOQUE DE HECHOS
+  nombres                    ticker -> nombre de empresa. USALO SIEMPRE: es la
+                             única forma de nombrar una empresa sin inventar.
+                             Si un ticker de la decisión no está acá, no lo
+                             nombres: hablá del movimiento sin la empresa.
+  volatilidad_antes_pct /
+  volatilidad_despues_pct    los dos números del párrafo 5. Si falta uno, ese
+                             párrafo no se escribe.
+  retorno_3_anios_pct /
+  retorno_indice_3_anios_pct lo que hizo la cartera contra el índice. Es el
+                             dato para empezar por lo bueno, si es bueno.
+  posiciones_en_ganancia /
+  posiciones_totales         cuántas están arriba de su precio de compra.
+  cartera_parcial /
+  cobertura_pct              la cartera analizada es una PARTE de lo que tiene.
+  pendiente                  frases ya redactadas de lo que este plan NO
+                             resuelve. Van en el último párrafo.
+Un campo que no está en el bloque NO EXISTE. No lo deduzcas de la decisión.
+
+FORMATO
+· 4 a 6 párrafos cortos, prosa corrida.
+· CERO viñetas. CERO tablas. CERO títulos internos. CERO negritas.
+· Primera persona del plural: "revisamos", "proponemos", "la idea es".
+· Español rioplatense. Profesional, claro y tranquilizador.
+· No sonar comercial ni intentar "vender" una operación.
+
+VOCABULARIO
+· Nombres de empresas, NUNCA tickers. "Wells Fargo", no "WFC".
+· PROHIBIDAS: beta, correlación, paridad de riesgo, Sharpe, drawdown, aporte al
+  riesgo, percentil, tope, afinidad, volatilidad histórica, covarianza,
+  rebalanceo por riesgo, factor, exposición sectorial.
+· "Volatilidad" se puede usar SOLO para explicar cuánto se mueve la cartera, y
+  siempre traducida a lenguaje cotidiano en la misma frase.
+· Nada de importes ni cantidades de acciones. Eso está en el resto del informe.
+
+QUÉ TIENE QUE ENTENDER EL CLIENTE AL TERMINAR
+1. que la cartera tiene aspectos positivos;
+2. cuál es el principal problema hoy;
+3. que no estamos cuestionando las empresas;
+4. qué proponemos cambiar;
+5. qué buscamos mejorar;
+6. qué queda sin resolver, si corresponde.
+
+EL ORDEN, Y ES OBLIGATORIO
+
+PÁRRAFO 1 · CONCLUSIÓN
+Empezá por lo bueno si lo hay: el resultado contra el índice, o cuántas
+posiciones están en ganancia. Después el principal problema detectado. Nunca al
+revés. Si no hay nada bueno que decir con los datos que tenés, no lo inventes:
+empezá por el problema.
+Si el bloque de hechos trae `cartera_parcial`, decilo en este párrafo: estamos
+mirando una parte de lo que tiene, y las conclusiones son sobre esa parte.
+
+PÁRRAFO 2 · QUÉ NO SIGNIFICA LA PROPUESTA
+Aclarar que no estamos desarmando la estrategia ni abandonando compañías de
+calidad. Si una compañía se recorta por peso o por riesgo y su evaluación sigue
+siendo buena, decirlo explícitamente.
+
+PÁRRAFO 3 · QUÉ VAMOS A CAMBIAR
+Agrupado por INTENCIÓN ECONÓMICA, no operación por operación:
+  tomar parcialmente ganancias · reducir concentración · bajar exposición a las
+  posiciones que más se mueven · reforzar compañías más estables · diversificar
+No emparejes artificialmente cada venta con una compra, salvo que sea una
+rotación explícita. Si la decisión ofrece dos opciones y recomienda una,
+contá la recomendada; la otra, en media línea o en ninguna.
+
+PÁRRAFO 4 · PARA QUÉ
+En lenguaje sencillo: una cartera menos concentrada, más equilibrada y con una
+evolución más pareja, manteniendo exposición al crecimiento.
+
+PÁRRAFO 5 · RESULTADO
+Solo si el bloque de hechos trae los dos números de volatilidad. Traducilo en la
+misma frase. Y usá el presente, no el futuro:
+  "Con esta composición la cartera queda en 15,3% en vez de 19,9%, lo que
+   significa un recorrido menos brusco."
+NUNCA "va a bajar" ni "podría bajar": es una estimación sobre lo que pasó, no un
+pronóstico.
+
+PÁRRAFO 6 · LO QUE QUEDA PENDIENTE
+Solo si el bloque de hechos trae algo en `pendiente`. Es lo que este plan NO
+resuelve. Decilo sin dramatizar y sin esconderlo:
+  "Este ajuste mejora el equilibrio de la parte de acciones, aunque la cartera
+   sigue teniendo más acciones de las que corresponden al perfil. Eso es una
+   decisión aparte, entre acciones, renta fija y liquidez."
+
+SI NO HAY NADA QUE HACER
+Cuando la decisión diga que no hay urgencia o que los ajustes no cambian el
+riesgo de forma apreciable, NO inventes movimientos para llenar la estructura.
+Escribí tres párrafos: la cartera está en línea con el perfil, por qué lo
+decimos, y qué seguiríamos mirando. Es una respuesta legítima y bien recibida.
+
+REGLAS QUE NO SE ROMPEN
+1. Una empresa buena puede venderse. Cuando pase, explicalo como una decisión
+   de cartera, nunca como una opinión negativa sobre la empresa.
+2. Una empresa estable NO es una inversión sin riesgo. Nunca escribas "sin
+   riesgo", "casi sin riesgo", "seguro" ni equivalentes.
+3. No afirmes que algo "va a subir" o "va a caer".
+4. No presentes una estimación sobre el pasado como una predicción.
+5. No digas que la cartera "queda adaptada al perfil" si algo del perfil sigue
+   incumplido. Si hay algo en `pendiente`, no está adaptada todavía.
+6. Nunca uses "error", "mala empresa" ni equivalentes para una posición, salvo
+   que la decisión hable explícitamente de una tesis rota.
+7. No escribas "esto protege la cartera" ni "vas a perder menos". Usá "buscamos
+   reducir", "el modelo estima" o "históricamente habría implicado".
+8. Primero el EFECTO sobre la cartera, después —si hace falta— el motivo.
+9. El texto tiene que poder leerse solo, sin el resto del informe.
+
+ASÍ SE LEE UNA BIEN ESCRITA
+
+  Estuve revisando la cartera y la conclusión principal es positiva:
+  históricamente tuvo un muy buen desempeño, pero hoy quedó más expuesta al
+  riesgo de lo que buscamos para un perfil Moderado.
+
+  Por eso, no proponemos desarmarla ni salir de las compañías que consideramos
+  de calidad. La idea es rebalancearla.
+
+  En concreto, tomaríamos parcialmente ganancias en Meta y Microsoft,
+  reduciríamos algunas posiciones más volátiles como AMD y Tesla, y
+  redistribuiríamos esos fondos hacia posiciones más defensivas como T-Mobile,
+  AbbVie y Walmart, además de reforzar moderadamente JPMorgan.
+
+  El objetivo es que la cartera quede más diversificada y menos dependiente de
+  unas pocas posiciones, manteniendo exposición al crecimiento.
+
+  Con esta composición la volatilidad estimada queda en 15,3% en vez de 19,9%,
+  lo que significa un recorrido más estable para llegar al mismo lugar.
+
+NO ESCRIBAS ASÍ
+  x "AMD amplifica cada movimiento 2,5 veces más que el mercado"   (jerga)
+  x "Los movimientos son: - Vender AMD (57 acciones)..."           (lista)
+  x "Vender AMD, comprar AAPL y MSFT"                              (tickers)
+  x "si cae, la cartera se desmorona"                              (alarmismo)
+  x "esto protege la cartera de las caídas"                        (promesa)
+  x empezar por el problema cuando hay algo bueno que decir
+
+SALIDA
+Solo el texto de los párrafos. Sin título, sin encabezado, sin firma, sin
+comentarios sobre lo que hiciste."""
+
+
+# El texto del cliente son 4 a 6 párrafos cortos. Medido sobre los que salían
+# como sección 5: entre 380 y 620 tokens. 900 deja aire para una cartera con
+# muchos movimientos sin permitir que se convierta en un ensayo.
+MAX_TOKENS_CLIENTE = 900
+
+# Lo que NO puede aparecer en un texto que se le entrega a un cliente. Se
+# VALIDA, no se corrige: si el modelo escribió "beta 2,5", hay que verlo y
+# decidir, no taparlo. Cada palabra de esta lista salió de un texto real.
+JERGA_PROHIBIDA = (
+    'beta', 'correlación', 'correlacion', 'paridad de riesgo', 'sharpe',
+    'drawdown', 'aporte al riesgo', 'percentil', 'covarianza', 'volatilidad '
+    'histórica', 'exposición sectorial', 'rebalanceo por riesgo',
+)
+
+# Tope del texto de la decisión que se manda como insumo. La decisión de una
+# cartera de 40 posiciones son ~4.000 tokens; más que eso es que algo se fue de
+# cauce y conviene cortar antes de pagarlo.
+MAX_CHARS_DECISION = 24000
+
+
+def _recortar_decision(texto):
+    """Saca de la sección 3 las líneas que solo dicen "mantener".
+
+    LA SECCIÓN 3 ES UNA LÍNEA POR POSICIÓN y en una cartera sana la mayoría
+    dice "mantener · posición correcta". Para la decisión eso vale —es la
+    constancia de que se miró todo—; para el texto del cliente no vale nada:
+    ese texto tiene prohibido hablar posición por posición.
+
+    Medido sobre una cartera de 15 posiciones: 11 líneas de "mantener" = ~330
+    tokens, el 18% del insumo de la segunda llamada, en cada versión que se
+    pida.
+
+    Es conservador a propósito: si no encuentra los títulos de las secciones 3
+    y 4, devuelve el texto entero. Un recorte que se equivoca le saca contexto
+    a la única llamada que redacta lo que se entrega."""
+    if not texto:
+        return texto
+    lineas = texto.split('\n')
+    ini = fin = None
+    for i, l in enumerate(lineas):
+        s = l.strip().lower()
+        if ini is None and s.startswith('## 3.'):
+            ini = i
+        elif ini is not None and s.startswith('## 4.'):
+            fin = i
+            break
+    if ini is None or fin is None:
+        return texto
+    out = lineas[:ini + 1]
+    for l in lineas[ini + 1:fin]:
+        s = l.strip()
+        # Solo las de una línea, con el formato de la sección 3 (lleva "·") y
+        # cuya acción es mantener. Un párrafo ampliado NO tiene ese formato y
+        # por lo tanto no se toca.
+        if s and '·' in s and 'mantener' in s.lower():
+            continue
+        out.append(l)
+    out.extend(lineas[fin:])
+    return '\n'.join(out)
+
+
+def estimar_cliente(largo_decision_chars, proveedor='anthropic'):
+    """Cuánto sale la SEGUNDA llamada. No llama a nadie.
+
+    La entrada de esta llamada no depende de la cantidad de posiciones sino del
+    largo del texto de la decisión, que ya está escrito cuando se estima: se
+    mide, no se adivina. Es la única estimación del proyecto que puede ser
+    exacta, así que lo es."""
+    modelo = MODELOS_CARTERA['rapido'][proveedor]
+    # 3,6 caracteres por token medido sobre textos reales en castellano con
+    # tildes (el promedio en inglés, 4, subestima acá un 10%).
+    entrada = int(max(0, largo_decision_chars or 0) / 3.6) + 180
+    salida = 550
+    pe, ps = PRECIOS.get(modelo, (None, None))
+    costo = (round(entrada * pe / 1e6 + salida * ps / 1e6, 5)
+             if pe is not None else None)
+    tokens_reglas = len(SISTEMA_CLIENTE) // 4
+    costo_primera = (round(costo + tokens_reglas * pe / 1e6, 5)
+                     if costo is not None else None)
+    return {
+        'modelo': modelo,
+        'tokens_estimados': {'entrada': entrada, 'salida': salida,
+                             'reglas_cacheadas': tokens_reglas},
+        'costo_estimado_usd': costo,
+        'costo_primera_vez_usd': costo_primera,
+        'segundos_estimados': round((salida + 300) / 150),
+    }
+
+
+def validar_respuesta_cliente(texto, hechos):
+    """Avisos, no correcciones. Este texto se imprime y se entrega: quien lo
+    firma tiene que ver lo que salió mal, no una versión maquillada."""
+    avisos = []
+    t = texto or ''
+
+    # 1. Tickers. Es la falla más visible y la más fácil de medir: cualquier
+    #    ticker del diccionario que aparezca en MAYÚSCULAS en el texto.
+    nombres = (hechos or {}).get('nombres') or {}
+    usados = sorted(k for k in nombres
+                    if re.search(rf'\b{re.escape(k)}\b', t))
+    if usados:
+        avisos.append(f'Usa tickers en vez de nombres de empresa: '
+                      f'{", ".join(usados)}.')
+
+    # 2. Jerga.
+    bajo = t.lower()
+    jerga = sorted({p for p in JERGA_PROHIBIDA if p in bajo})
+    if jerga:
+        avisos.append(f'Usa palabras que el cliente no tiene por que entender: '
+                      f'{", ".join(jerga)}.')
+
+    # 3. Viñetas y títulos: el formato pedido es prosa corrida.
+    if any(l.strip().startswith(('- ', '* ', '· ', '#')) for l in t.split('\n')):
+        avisos.append('Tiene vinetas o titulos: se pidio prosa corrida.')
+
+    # 4. Lo pendiente, si lo hay, TIENE que aparecer. Es lo que un informe malo
+    #    esconde, y es la razón por la que este bloque existe.
+    if (hechos or {}).get('pendiente') and len(t) > 0:
+        # Se busca por palabras clave de cada frase pendiente, no por la frase
+        # entera: el modelo la reformula, y tiene que poder.
+        claves = ('acciones', 'renta fija', 'incorporar', 'historial')
+        if not any(c in bajo for c in claves):
+            avisos.append('El bloque de hechos traia algo pendiente y el texto '
+                          'no parece mencionarlo.')
+
+    # 5. Promesas.
+    for frase in ('sin riesgo', 'va a subir', 'va a bajar', 'garantiza',
+                  'asegura un', 'protege la cartera'):
+        if frase in bajo:
+            avisos.append(f'Dice "{frase}": es una promesa, y no se prometen '
+                          f'resultados.')
+    return avisos
+
+
+def _llamar_cliente(proveedor, clave, modelo, decision, hechos):
+    """Una llamada, con el bloque de reglas cacheado por separado.
+
+    ⚠️ EL CACHÉ ES OTRO. `SISTEMA_CLIENTE` y `SISTEMA_CARTERA` son dos bloques
+    distintos y cada uno tiene su propia entrada de caché: no se pisan y no se
+    invalidan entre sí. Eso es parte del ahorro — reescribir el prompt del
+    cliente no le cuesta un peso al de la decisión."""
+    usuario = ('LA DECISIÓN, ya tomada:\n\n' + decision
+               + '\n\nLOS HECHOS:\n'
+               + json.dumps(hechos or {}, ensure_ascii=False,
+                            separators=(',', ':'))
+               + '\n\nEscribí el texto para el cliente.')
+
+    if proveedor == 'anthropic':
+        cuerpo = {
+            'model': modelo,
+            'max_tokens': MAX_TOKENS_CLIENTE,
+            # Misma razón que en la primera llamada: el pensamiento extendido
+            # se come el tope de salida y acá el tope es chico.
+            'thinking': {'type': 'disabled'},
+            'system': [{'type': 'text', 'text': SISTEMA_CLIENTE,
+                        'cache_control': {'type': 'ephemeral'}}],
+            'messages': [{'role': 'user', 'content': usuario}],
+        }
+        return _post_anthropic(clave, cuerpo, TIMEOUT_CARTERA)
+
+    cuerpo = {
+        'model': modelo,
+        'max_completion_tokens': MAX_TOKENS_CLIENTE,
+        'messages': [{'role': 'system', 'content': SISTEMA_CLIENTE},
+                     {'role': 'user', 'content': usuario}],
+    }
+    return _post_openai(clave, cuerpo, TIMEOUT_CARTERA)
+
+
+def generar_tesis_cliente(cuerpo, proveedor):
+    """Devuelve (resultado, error). La SEGUNDA llamada: traduce, no decide.
+
+    Siempre en el modelo rápido, aunque la decisión se haya pedido en profundo.
+    Redactar en castellano no necesita el modelo caro; decidir sí. Medido: la
+    diferencia de calidad en este texto no se ve, y la de precio es la mitad."""
+    p = PROVEEDORES.get(proveedor)
+    if not p:
+        return None, (f'Proveedor {proveedor!r} desconocido. Los validos son: '
+                      f'{", ".join(PROVEEDORES)}.')
+    clave = os.environ.get(p['env_clave'])
+    if not clave:
+        return None, (f'No hay clave de {p["nombre"]} cargada ({p["env_clave"]}). '
+                      f'No se llamo a nadie.')
+
+    decision = ((cuerpo or {}).get('decision') or '').strip()
+    if not decision:
+        return None, ('Llego sin el texto de la decision. El texto para el '
+                      'cliente se escribe A PARTIR de la decision: primero hay '
+                      'que generarla. No se llamo a nadie.')
+    if len(decision) > MAX_CHARS_DECISION:
+        return None, (f'El texto de la decision pesa {len(decision)} caracteres '
+                      f'y el tope es {MAX_CHARS_DECISION}. No se llamo a nadie.')
+
+    hechos = (cuerpo or {}).get('hechos') or {}
+    decision = _recortar_decision(decision)
+    modelo = MODELOS_CARTERA['rapido'][proveedor]
+    forzado = os.environ.get(p['env_modelo'] + '_CLIENTE')
+    if forzado:
+        modelo = forzado
+
+    t0 = time.time()
+    try:
+        texto, t_ent, t_sal, diag, t_cache, _ = _llamar_cliente(
+            proveedor, clave, modelo, decision, hechos)
+    except urllib.error.HTTPError as e:
+        detalle = e.read().decode('utf-8', 'replace')[:300]
+        return None, f'{p["nombre"]} devolvio {e.code}. {detalle}'
+    except Exception as e:
+        return None, f'No pude hablar con {p["nombre"]}: {type(e).__name__}: {e}'
+
+    if not texto:
+        return None, (f'{p["nombre"]} respondio sin texto (la llamada igual se '
+                      f'cobro). Detalle: {json.dumps(diag or {}, ensure_ascii=False)}')
+
+    pe, ps = PRECIOS.get(modelo, (None, None))
+    costo = (round((t_ent or 0) * pe / 1e6 + (t_sal or 0) * ps / 1e6, 5)
+             if pe is not None else None)
+    return {
+        'texto': texto,
+        'avisos': validar_respuesta_cliente(texto, hechos),
+        'proveedor': proveedor,
+        'proveedor_nombre': p['nombre'],
+        'modelo': modelo,
+        'tokens': {'entrada': t_ent, 'salida': t_sal, 'desde_cache': t_cache},
+        'costo_estimado_usd': costo,
+        'segundos': round(time.time() - t0, 1),
+    }, None
 
 
 # Campos de una posicion que NO cambian ninguna decision y por lo tanto no se
@@ -1930,8 +2231,13 @@ def _filtrar_candidatos(candidatos, posiciones, sectores):
         por_sector[sec] = por_sector.get(sec, 0) + 1
         # Sin `nombre`: para elegir un reemplazo alcanza el ticker y el sector,
         # y los nombres largos son puro peso.
-        fila = {'ticker': c.get('ticker'), 'sector': sec,
-                'puntaje': c.get('puntaje'),
+        # ⚠️ El `nombre` volvio (31/08). Se habia sacado por peso —"para elegir
+        # un reemplazo alcanza el ticker"— y era cierto para ELEGIR, pero no
+        # para ESCRIBIR: la seccion para el cliente va con nombres de empresa,
+        # y el modelo no puede deducir "T-Mobile" de "TMUS". Son ~4 tokens por
+        # candidato y sin ellos esa seccion sale en jerga de operador.
+        fila = {'ticker': c.get('ticker'), 'nombre': c.get('nombre'),
+                'sector': sec, 'puntaje': c.get('puntaje'),
                 'metricas': c.get('metricas')}
         # ⚠️ ESTOS TRES CAMPOS SON EL MOTOR B DE LA ROTACION. Estuvieron
         # ausentes hasta el 31/08/2026 porque esta funcion reconstruia el
@@ -1959,6 +2265,67 @@ def _filtrar_candidatos(candidatos, posiciones, sectores):
     return out
 
 
+def _comprimir_candidatos(candidatos, plan):
+    """Los que el menu YA eligio van completos; el resto, en formato corto.
+
+    ⚠️ EL BLOQUE MAS CARO QUE QUEDABA. Medido sobre la cartera real de Marcos:
+    23 candidatos = 1.472 tokens = el 43% del payload, en CADA llamada.
+
+    Desde que existe `menu_por_sector`, esa lista dejo de ser una lista de
+    opciones para que el modelo elija: el codigo YA eligio, con el criterio que
+    Marcos definio (compuerta de riesgo, despues puntaje del screener). Los
+    otros veinte son papeles que el codigo descarto — mandarlos completos es
+    pagar por que el modelo vuelva a decidir algo que ya esta decidido, que es
+    justo lo que el diseno entero evita.
+
+    Se mandan igual, pero con lo justo para que el modelo pueda nombrarlos si
+    hace falta y para que el validador siga sabiendo que existen: sin ellos,
+    cualquier mencion legitima parecerria un ticker inventado.
+    """
+    elegidos = set()
+    for k in ('menu_por_sector', 'entradas_nuevas'):
+        for x in ((plan or {}).get(k) or []):
+            elegidos.add(x.get('ticker'))
+    out = []
+    for c in candidatos:
+        if c.get('ticker') in elegidos:
+            out.append(c)                      # completo: es una recomendacion
+            continue
+        corto = {'ticker': c.get('ticker'), 'sector': c.get('sector'),
+                 'puntaje': c.get('puntaje')}
+        # Solo lo que cambiaria una decision, y solo si esta.
+        if c.get('defensivo'):
+            corto['defensivo'] = True
+        if c.get('delta_volatilidad_cartera') is not None:
+            corto['delta_vol'] = c['delta_volatilidad_cartera']
+        out.append(corto)
+    return out
+
+
+def _sin_nombres(o):
+    """Saca los `nombre` de TODO el payload de la decision.
+
+    ⚠️ ESTO NO ES UNA PODA COSMETICA: medido, son el 5,5% de cada llamada
+    (104 tokens con 5 posiciones, 313 con 25) y se pagaban en todas.
+
+    Los nombres de empresa hacian falta cuando la seccion "Para el cliente"
+    salia de esta misma llamada: el modelo no puede deducir "T-Mobile" de
+    "TMUS". Desde que ese texto es una llamada aparte, los nombres viajan en SU
+    bloque de hechos (`hechosParaElCliente`, en el navegador) y acá no hacen
+    nada: la decision se escribe en tickers a proposito, porque es un documento
+    de trabajo.
+
+    Se saca ACA y no en el navegador para que el front siga mandando el payload
+    completo: `hechosParaElCliente` lo necesita entero, y dos formas distintas
+    del mismo objeto segun a donde va es la clase de sutileza que despues nadie
+    recuerda."""
+    if isinstance(o, dict):
+        return {k: _sin_nombres(v) for k, v in o.items() if k != 'nombre'}
+    if isinstance(o, list):
+        return [_sin_nombres(x) for x in o]
+    return o
+
+
 def _resumen_cartera(c):
     """El bloque de datos, achicado a lo que el modelo necesita.
 
@@ -1967,7 +2334,7 @@ def _resumen_cartera(c):
     pos = [{k: v for k, v in (p or {}).items() if k not in _POS_FUERA}
            for p in (c.get('posiciones') or [])[:MAX_POSICIONES_CARTERA]]
     sectores = c.get('sectores') or []
-    return {
+    return _sin_nombres({
         'perfil': c.get('perfil'),
         'objetivo': c.get('objetivo'),
         'horizonte': c.get('horizonte'),
@@ -1976,7 +2343,9 @@ def _resumen_cartera(c):
         'estres': c.get('estres') or {},
         'sectores': sectores,
         'posiciones': pos,
-        'candidatos': _filtrar_candidatos(c.get('candidatos') or [], pos, sectores),
+        'candidatos': _comprimir_candidatos(
+            _filtrar_candidatos(c.get('candidatos') or [], pos, sectores),
+            c.get('plan')),
         # ⚠️ `riesgo` y `plan` son whitelist: esta funcion arma el payload clave
         # por clave, asi que una clave que no se nombra ACA no llega nunca, sin
         # error y sin aviso. `riesgo` faltaba: la volatilidad de la cartera, la
@@ -1987,7 +2356,7 @@ def _resumen_cartera(c):
         'industrias': c.get('industrias'),
         # El plan son ~200 tokens y es lo unico ejecutable del payload.
         'plan': c.get('plan'),
-    }
+    })
 
 
 # La tesis de cartera acepta DOS modelos, y el default es el rapido.
@@ -2064,10 +2433,29 @@ def estimar_cartera(n_posiciones, proveedor='anthropic', modo=None):
     # payload hay que VOLVER A MEDIR y actualizar tambien el `MEDIDO` de
     # `test_tesis_cartera.py` — la guarda no avisa sola: sus numeros viejos son
     # mas bajos que la realidad nueva, asi que sigue pasando en verde.
-    entrada = 2270 + 141 * n
-    # La salida crecio un poco: la seccion 1 cierra con los invalidation points
-    # y las lineas de la seccion 3 llevan monto y acciones.
-    salida = 1150 + 55 * n
+    # ⚠️ RE-MEDIDO EL 02/09/2026 con `test/medir_payload.py`, que ahora existe
+    # justamente para que esto no se vuelva a hacer a ojo. La compresion de
+    # candidatos (`_comprimir_candidatos`) saco entre 700 y 1.000 tokens de
+    # cada llamada y volvio mentirosa —para arriba, esta vez— la recta anterior:
+    #
+    # Y volvio a bajar al sacar los `nombre` (`_sin_nombres`), otro 5,5%:
+    #
+    #   pos           3      5     10     15     20     25
+    #   real       1308   1761   2797   3601   4304   5067
+    #   1250+172n  1766   2110   2970   3830   4690   5550
+    #   holgura    +35%   +20%    +6%    +6%    +9%    +9%
+    #
+    # Sigue calibrada HACIA ARRIBA: nunca por debajo del payload real, y lo mas
+    # pegada posible donde la cartera es grande, que es donde el numero importa.
+    # (La cartera de 3 posiciones se sobreestima un 35% y esta bien: es el caso
+    # que sale centavos, y el bloque de candidatos casi no depende de n.)
+    entrada = 1250 + 172 * n
+    # ⚠️ LA SALIDA BAJO ~450 TOKENS el 02/09: la seccion "Para el cliente" salio
+    # de este prompt y pasó a la segunda llamada. Es la mitad del ahorro de
+    # partirlo en dos; la otra mitad es que esa segunda llamada corre siempre en
+    # el modelo rapido. Lo que se paga aparte se estima aparte, en
+    # `estimar_cliente()`.
+    salida = 700 + 55 * n
     pe, ps = PRECIOS.get(modelo, (None, None))
     costo = (round(entrada * pe / 1e6 + salida * ps / 1e6, 4)
              if pe is not None else None)
@@ -2092,6 +2480,78 @@ def estimar_cartera(n_posiciones, proveedor='anthropic', modo=None):
     }
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# EL TRANSPORTE — una sola implementación para las DOS llamadas
+#
+# Antes esto vivía adentro de `_llamar_cartera`. Al aparecer la segunda llamada
+# (el texto para el cliente) había dos opciones: copiar cincuenta líneas o
+# sacarlas afuera. Copiarlas significaba que el reintento del parámetro
+# `thinking` —que ya nos costó dos llamadas cobradas sin texto— existiera en un
+# solo camino y no en el otro, y que el segundo lo redescubriera en producción.
+#
+# Estas dos funciones NO saben qué se está pidiendo. Reciben un cuerpo armado y
+# devuelven siempre la misma tupla:
+#   (texto, tokens_entrada, tokens_salida, diagnostico, tokens_de_cache, tope)
+# `diagnostico` es None cuando hubo texto: solo se arma cuando NO lo hubo, que
+# es cuando hace falta saber por qué se pagó una llamada vacía.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _post_anthropic(clave, cuerpo, timeout):
+    tope = cuerpo.get('max_tokens')
+    cabeceras = {
+        'x-api-key': clave,
+        'anthropic-version': '2023-06-01',
+        'content-type': 'application/json',
+    }
+    try:
+        r = _post_json(PROVEEDORES['anthropic']['url'], cabeceras, cuerpo,
+                       timeout=timeout)
+    except urllib.error.HTTPError as e:
+        # Si un modelo no acepta el parametro, se reintenta sin el. Un 400
+        # NO genera tokens, asi que este reintento no gasta: es el unico
+        # caso en que reintentar no rompe la regla de costo del proyecto.
+        if e.code != 400:
+            raise
+        detalle = e.read().decode('utf-8', 'replace')
+        if 'thinking' not in detalle.lower():
+            raise urllib.error.HTTPError(e.url, e.code, detalle, e.hdrs, None)
+        cuerpo.pop('thinking', None)
+        r = _post_json(PROVEEDORES['anthropic']['url'], cabeceras, cuerpo,
+                       timeout=timeout)
+    bloques = r.get('content') or []
+    texto = ''.join(b.get('text', '') for b in bloques if b.get('type') == 'text')
+    u = r.get('usage') or {}
+    diag = None
+    if not texto.strip():
+        diag = {'stop_reason': r.get('stop_reason'),
+                'tipos_de_bloque': [b.get('type') for b in bloques],
+                'modelo_que_respondio': r.get('model'),
+                'tokens_salida': u.get('output_tokens'),
+                'tope_pedido': tope}
+    return (texto.strip(), u.get('input_tokens'), u.get('output_tokens'),
+            diag, u.get('cache_read_input_tokens'), tope)
+
+
+def _post_openai(clave, cuerpo, timeout):
+    # OpenAI cachea solo, sin parametro. El prefijo estable es el `system`.
+    tope = cuerpo.get('max_completion_tokens')
+    r = _post_json(PROVEEDORES['openai']['url'],
+                   {'Authorization': f'Bearer {clave}',
+                    'Content-Type': 'application/json'},
+                   cuerpo, timeout=timeout)
+    ch = (r.get('choices') or [{}])[0]
+    texto = ((ch.get('message') or {}).get('content') or '')
+    u = r.get('usage') or {}
+    diag = None
+    if not texto.strip():
+        diag = {'finish_reason': ch.get('finish_reason'),
+                'modelo_que_respondio': r.get('model'),
+                'tope_pedido': tope}
+    cache = ((u.get('prompt_tokens_details') or {}).get('cached_tokens'))
+    return (texto.strip(), u.get('prompt_tokens'), u.get('completion_tokens'),
+            diag, cache, tope)
+
+
 def _llamar_cartera(proveedor, clave, modelo, datos):
     """Una sola llamada, con el bloque de reglas cacheado."""
     n = len(datos.get('posiciones') or [])
@@ -2105,7 +2565,7 @@ def _llamar_cartera(proveedor, clave, modelo, datos):
         # bloque de reglas es identico en cada llamada, asi que a partir de la
         # segunda se lee del cache a 0,1x. Si algun dia se le mete algo variable
         # adentro, el cache deja de servir sin que nadie se entere.
-        cuerpo = {
+        return _post_anthropic(clave, {
             'model': modelo,
             'max_tokens': tope,
             # ⚠️ EL PENSAMIENTO EXTENDIDO SE APAGA A PROPOSITO.
@@ -2134,62 +2594,14 @@ def _llamar_cartera(proveedor, clave, modelo, datos):
             'system': [{'type': 'text', 'text': SISTEMA_CARTERA,
                         'cache_control': {'type': 'ephemeral'}}],
             'messages': [{'role': 'user', 'content': usuario}],
-        }
-        cabeceras = {
-            'x-api-key': clave,
-            'anthropic-version': '2023-06-01',
-            'content-type': 'application/json',
-        }
-        try:
-            r = _post_json(PROVEEDORES['anthropic']['url'], cabeceras, cuerpo,
-                           timeout=TIMEOUT_CARTERA)
-        except urllib.error.HTTPError as e:
-            # Si un modelo no acepta el parametro, se reintenta sin el. Un 400
-            # NO genera tokens, asi que este reintento no gasta: es el unico
-            # caso en que reintentar no rompe la regla de costo del proyecto.
-            if e.code != 400:
-                raise
-            detalle = e.read().decode('utf-8', 'replace')
-            if 'thinking' not in detalle.lower():
-                raise urllib.error.HTTPError(e.url, e.code, detalle, e.hdrs, None)
-            cuerpo.pop('thinking', None)
-            r = _post_json(PROVEEDORES['anthropic']['url'], cabeceras, cuerpo,
-                           timeout=TIMEOUT_CARTERA)
-        bloques = r.get('content') or []
-        texto = ''.join(b.get('text', '') for b in bloques if b.get('type') == 'text')
-        u = r.get('usage') or {}
-        diag = None
-        if not texto.strip():
-            diag = {'stop_reason': r.get('stop_reason'),
-                    'tipos_de_bloque': [b.get('type') for b in bloques],
-                    'modelo_que_respondio': r.get('model'),
-                    'tokens_salida': u.get('output_tokens'),
-                    'tope_pedido': tope}
-        return (texto.strip(), u.get('input_tokens'), u.get('output_tokens'),
-                diag, u.get('cache_read_input_tokens'), tope)
+        }, TIMEOUT_CARTERA)
 
-    # OpenAI cachea solo, sin parametro. El prefijo estable es el `system`.
-    cuerpo = {
+    return _post_openai(clave, {
         'model': modelo,
         'max_completion_tokens': tope,
         'messages': [{'role': 'system', 'content': SISTEMA_CARTERA},
                      {'role': 'user', 'content': usuario}],
-    }
-    r = _post_json(PROVEEDORES['openai']['url'],
-                   {'Authorization': f'Bearer {clave}',
-                    'Content-Type': 'application/json'},
-                   cuerpo, timeout=TIMEOUT_CARTERA)
-    ch = (r.get('choices') or [{}])[0]
-    texto = ((ch.get('message') or {}).get('content') or '')
-    u = r.get('usage') or {}
-    diag = None
-    if not texto.strip():
-        diag = {'finish_reason': ch.get('finish_reason'),
-                'modelo_que_respondio': r.get('model'),
-                'tope_pedido': tope}
-    cache = ((u.get('prompt_tokens_details') or {}).get('cached_tokens'))
-    return (texto.strip(), u.get('prompt_tokens'), u.get('completion_tokens'),
-            diag, cache, tope)
+    }, TIMEOUT_CARTERA)
 
 
 # Palabras en mayuscula que NO son tickers. Sin esto, el detector de tickers
@@ -2228,11 +2640,20 @@ def validar_respuesta_cartera(texto, datos):
     if faltan:
         avisos.append(f'No menciona estas posiciones: {", ".join(faltan)}.')
 
-    # 3. Las cinco secciones.
+    # 3. Las cuatro secciones.
+    #
+    # ⚠️ "Para el cliente" YA NO VA ACA (02/09/2026). Ese texto lo escribe la
+    # segunda llamada, con su propio prompt y su propio boton. Si aparece en
+    # esta respuesta es un desperdicio, no un acierto: se pagaron los tokens de
+    # un texto que se va a reemplazar por el de la otra llamada.
     for titulo in ('Qué hacer', 'Cómo está la cartera', 'Posición por posición',
-                   'Rotaciones', 'Para el cliente'):
+                   'Rotaciones'):
         if titulo.lower() not in (texto or '').lower():
             avisos.append(f'Falta la seccion "{titulo}".')
+    if 'para el cliente' in (texto or '').lower():
+        avisos.append('Escribio una seccion "Para el cliente" que ya no se le '
+                      'pide: son tokens pagados de mas. El texto del cliente '
+                      'sale del segundo boton.')
 
     # 4. Los motivos: que use los nombres acordados y no invente otros.
     #
@@ -2345,15 +2766,23 @@ class handler(BaseHTTPRequestHandler):
         self.wfile.write(json.dumps(cuerpo, ensure_ascii=False).encode('utf-8'))
 
     def do_POST(self):
-        """Solo `action=tesis_cartera`. Es POST porque el bloque de datos son
-        ~2.000 tokens de JSON armados en el navegador: no entra en una query
-        string, y aunque entrara quedaria en los logs del servidor."""
+        """Dos acciones, y las dos gastan:
+
+          action=tesis_cartera  -> la DECISION (secciones 1 a 4)
+          action=tesis_cliente  -> el TEXTO PARA EL CLIENTE, a partir de esa
+                                   decision ya escrita
+
+        Es POST porque el bloque de datos son ~2.000 tokens de JSON armados en
+        el navegador: no entra en una query string, y aunque entrara quedaria
+        en los logs del servidor."""
+        POST_VALIDAS = ('tesis_cartera', 'tesis_cliente')
         try:
             q = parse_qs(urlparse(self.path).query)
             accion = (q.get('action') or [''])[0]
-            if accion != 'tesis_cartera':
+            if accion not in POST_VALIDAS:
                 return self._responder(400, {
-                    'error': f'POST solo acepta action=tesis_cartera, no {accion!r}.',
+                    'error': f'POST solo acepta action={" o ".join(POST_VALIDAS)}, '
+                             f'no {accion!r}.',
                     'sin_costo': True})
 
             # El proveedor es OBLIGATORIO y explicito, igual que en la tesis
@@ -2387,8 +2816,11 @@ class handler(BaseHTTPRequestHandler):
                              f'No se llamo a nadie.',
                     'sin_costo': True})
 
-            modo = (q.get('modo') or [''])[0].strip().lower() or None
-            res, err = generar_tesis_cartera(cuerpo, proveedor, modo)
+            if accion == 'tesis_cliente':
+                res, err = generar_tesis_cliente(cuerpo, proveedor)
+            else:
+                modo = (q.get('modo') or [''])[0].strip().lower() or None
+                res, err = generar_tesis_cartera(cuerpo, proveedor, modo)
             if err:
                 # `sin_costo` solo si es seguro que no se llamo. Si el error
                 # viene de la respuesta del modelo, la llamada YA se cobro y
@@ -2424,7 +2856,8 @@ class handler(BaseHTTPRequestHandler):
             # tesis aunque las claves estuvieran bien cargadas. Se encontro
             # consultando el endpoint real, no en los tests: los tests llaman a
             # generar_tesis() directo y nunca pasan por do_GET.
-            SIN_TICKER = ('diag', 'proveedores', 'estimar_cartera')
+            SIN_TICKER = ('diag', 'proveedores', 'estimar_cartera',
+                          'estimar_cliente')
             if not ticker and accion not in SIN_TICKER:
                 return self._responder(400, {
                     'error': f'Falta el parametro ticker para action={accion}.'})
@@ -2459,6 +2892,23 @@ class handler(BaseHTTPRequestHandler):
                         'error': f'Proveedor {prov!r} desconocido.'})
                 return self._responder(200, {
                     m: estimar_cartera(n_pos, prov, m) for m in MODELOS_CARTERA})
+
+            # Lo que sale el SEGUNDO boton, el del texto para el cliente. No
+            # depende de la cantidad de posiciones sino del largo de la
+            # decision, que ya esta escrita cuando se pregunta: por eso el
+            # parametro es `caracteres` y por eso esta estimacion es la unica
+            # del proyecto que puede ser exacta.
+            if accion == 'estimar_cliente':
+                try:
+                    chars = int((q.get('caracteres') or ['0'])[0])
+                except ValueError:
+                    return self._responder(400, {
+                        'error': 'caracteres tiene que ser un numero.'})
+                prov = (q.get('proveedor') or ['anthropic'])[0].strip().lower()
+                if prov not in PROVEEDORES:
+                    return self._responder(400, {
+                        'error': f'Proveedor {prov!r} desconocido.'})
+                return self._responder(200, estimar_cliente(chars, prov))
 
             if accion == 'tesis':
                 # EL ÚNICO camino que consume tokens en todo el proyecto.

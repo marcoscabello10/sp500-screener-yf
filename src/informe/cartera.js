@@ -898,7 +898,15 @@ export function armarDatosTesis(cart, estres, candidatos = [], scores = {},
       // cuánto riesgo aporta y qué hacer.
       if (!requiereDecision(a, r)) {
         return {
-          ticker: a.ticker, sector: a.sector,
+          ticker: a.ticker,
+          // ⚠️ El NOMBRE viaja aunque la ficha vaya comprimida. La seccion
+          // "Para el cliente" se escribe con nombres de empresa —"Wells Fargo",
+          // no "WFC"— y sin este campo el modelo no los tiene: no puede
+          // deducirlos del ticker. Son ~3 tokens por posicion y son la
+          // diferencia entre un texto que se le manda a un cliente y una
+          // planilla.
+          nombre: a.nombre,
+          sector: a.sector,
           peso_pct: r1(a.peso), tope_pct: r1(a.topeClase),
           puntaje_fundamental: a.puntajeFundamental,
           metricas_usadas: cob(a.ticker).metricas,
@@ -947,7 +955,7 @@ export function armarDatosTesis(cart, estres, candidatos = [], scores = {},
       const r = riesgo?.disponible
         ? (riesgo.candidatos || []).find(x => x.ticker === c.ticker) : null
       return {
-        ticker: c.ticker, sector: c.sector,
+        ticker: c.ticker, nombre: c.nombre, sector: c.sector,
         puntaje: c.puntaje, metricas: c.metricas,
         // Sin esto el modelo solo podia ordenar por puntaje fundamental, que
         // no sabe nada de riesgo: una cartera con 33% de volatilidad recibia
@@ -1005,7 +1013,7 @@ export function armarDatosTesis(cart, estres, candidatos = [], scores = {},
         // Una opcion por sector, los 3 mejores. Filtradas por mejora medible y
         // ordenadas por el puntaje del screener.
         menu_por_sector: pl.menu.map(c => ({
-          ticker: c.ticker, sector: c.sector, puntaje: c.puntaje,
+          ticker: c.ticker, nombre: c.nombre, sector: c.sector, puntaje: c.puntaje,
           metricas: c.metricas, beta: c.beta, defensivo: c.defensivo,
           entra_con_pct: c.peso_si_entra_pct,
           volatilidad_resultante_pct: c.volatilidad_si_entra_pct,
@@ -1017,7 +1025,7 @@ export function armarDatosTesis(cart, estres, candidatos = [], scores = {},
         // techo, asi que la plata tiene que salir del sector.
         refuerzo_interno_bloqueado: pl.refuerzoBloqueado,
         entradas_nuevas: pl.entradas.map(c => ({
-          ticker: c.ticker, sector: c.sector,
+          ticker: c.ticker, nombre: c.nombre, sector: c.sector,
           entra_con_pct: c.peso_si_entra_pct,
           volatilidad_resultante_pct: c.volatilidad_si_entra_pct,
           mejor_que_el_plan_en_puntos: c.mejora_vs_plan_pts,
@@ -1333,4 +1341,152 @@ export function huellaCartera(datos) {
     .sort()
     .join(',')
   return [datos.perfil, datos.objetivo, datos.horizonte, posiciones].join('|')
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LOS HECHOS PARA EL CLIENTE — el insumo de la SEGUNDA llamada
+//
+// POR QUÉ EXISTE (02/09/2026)
+// ---------------------------
+// El texto para el cliente dejó de ser la sección 5 de la primera llamada y
+// pasó a ser una llamada aparte. Esa llamada recibe DOS cosas: la decisión ya
+// escrita (secciones 1 a 4) y este bloque.
+//
+// Y hace falta este bloque, no alcanza con la decisión, por tres motivos que
+// se descubrieron leyendo los textos que salían mal:
+//
+//   1. LOS NOMBRES. La decisión habla en tickers —"WFC · 12% → 8%"— porque es
+//      un documento de trabajo. El texto del cliente tiene PROHIBIDO usar
+//      tickers. Sin un diccionario ticker→nombre, el modelo tiene que
+//      adivinar de qué empresa habla "LRCX", y adivinar nombres de empresas es
+//      exactamente la clase de invento que no se puede permitir en algo que se
+//      imprime y se entrega.
+//
+//   2. LO QUE EL PLAN NO ARREGLA. La decisión dice qué hacer; casi nunca dice
+//      qué queda sin hacer. Si el perfil admite 70% en acciones y la cartera
+//      tiene 100%, ningún rebalanceo entre acciones lo resuelve —y el texto no
+//      puede terminar diciendo "queda adaptada al perfil", porque no lo está.
+//
+//   3. LOS DOS NÚMEROS DE VOLATILIDAD. Son el único número que el texto tiene
+//      permitido usar, y tienen que llegar como números, no extraídos de un
+//      párrafo por lectura.
+//
+// LO QUE NO HACE: no decide nada. Si el plan no existe o el riesgo no se pudo
+// calcular, los campos faltan y el prompt tiene una rama para cada ausencia.
+// Un campo inventado acá se convierte en una frase falsa en un documento que
+// firma una persona.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Diccionario ticker → nombre de TODO lo que el texto podría llegar a nombrar:
+ * las posiciones, el menú por sector y las entradas nuevas.
+ *
+ * Sale barato —unos 6 tokens por papel— y es lo único que permite cumplir la
+ * regla "nombres, nunca tickers".
+ */
+function nombresQueSePuedenUsar(datos) {
+  const m = {}
+  const meter = x => {
+    if (x && x.ticker && x.nombre && !m[x.ticker]) m[x.ticker] = x.nombre
+  }
+  ;(datos.posiciones || []).forEach(meter)
+  ;((datos.plan || {}).menu_por_sector || []).forEach(meter)
+  ;((datos.plan || {}).entradas_nuevas || []).forEach(meter)
+  return m
+}
+
+/**
+ * Lo que el plan NO resuelve. Es la parte que un informe malo esconde.
+ *
+ * Cada entrada es una frase corta y ya redactada en lenguaje de cliente: el
+ * modelo la reformula, no la interpreta. Si acá llegara jerga —"topes
+ * insuficientes"— saldría jerga en el documento del cliente.
+ */
+function loQueQuedaPendiente(datos) {
+  const p = []
+  const c = datos.cartera || {}
+  const r = datos.riesgo || {}
+
+  // 1. La mezcla entre acciones y el resto. Ningún rebalanceo DENTRO de las
+  //    acciones puede arreglar esto, y es lo que más veces quedó sin decirse.
+  if (c.renta_variable_pct != null && c.tope_renta_variable_pct != null
+      && c.renta_variable_pct > c.tope_renta_variable_pct + 1) {
+    p.push(`La cartera tiene ${r1(c.renta_variable_pct)}% en acciones y para `
+         + `este perfil corresponde hasta ${r1(c.tope_renta_variable_pct)}%. `
+         + `Eso no se resuelve moviendo acciones entre sí: es una decisión `
+         + `aparte entre acciones, renta fija y liquidez.`)
+  }
+
+  // 2. Los topes que no se pueden cumplir con lo que hay adentro. Traducido:
+  //    "por más que reparta, con estas empresas no alcanza".
+  if (r.topes_insuficientes) {
+    p.push(`Con las empresas que hoy tiene la cartera no alcanza para llegar `
+         + `al equilibrio que buscamos: haría falta incorporar algo nuevo.`)
+  }
+
+  // 3. La volatilidad se calculó sobre una parte. Decir "la cartera queda en
+  //    15,3%" cuando el número cubre el 60% de la cartera es mentir por omisión.
+  if (r.cobertura_del_calculo_pct != null && r.cobertura_del_calculo_pct < 95) {
+    p.push(`Los números de riesgo cubren el ${r1(r.cobertura_del_calculo_pct)}% `
+         + `de la cartera: hay posiciones sin historial suficiente para medirlas.`)
+  }
+
+  return p
+}
+
+/**
+ * El bloque de hechos de la segunda llamada. Chico a propósito: medido, entra
+ * en ~80-160 tokens según el tamaño de la cartera.
+ *
+ * @param datos  el MISMO objeto que se le manda a la primera llamada
+ *               (`armarDatosTesis`). No se recalcula nada: si acá se derivara
+ *               un número por otro camino, el texto del cliente podría
+ *               contradecir a la decisión que dice traducir.
+ */
+export function hechosParaElCliente(datos) {
+  if (!datos) return null
+  const c = datos.cartera || {}
+  const r = datos.riesgo || {}
+  const pl = datos.plan || null
+  const b = r.benchmark || null
+  const pos = datos.posiciones || []
+
+  const h = {
+    perfil: datos.perfil || null,
+    objetivo: datos.objetivo || null,
+    nombres: nombresQueSePuedenUsar(datos),
+  }
+
+  // La cartera analizada puede ser un PEDAZO de lo que el cliente tiene. Si lo
+  // es, el primer párrafo tiene que decirlo, y para eso tiene que saberlo.
+  if (c.es_parcial) {
+    h.cartera_parcial = true
+    h.cobertura_pct = r1(c.cobertura_analizada_pct)
+  }
+
+  // Los DOS números, y solo si están los dos. Uno solo no se puede comparar y
+  // el prompt tiene prohibido escribir el párrafo del resultado sin la
+  // comparación.
+  if (pl && pl.volatilidad_actual_pct != null
+      && pl.volatilidad_si_se_ejecuta_pct != null) {
+    h.volatilidad_antes_pct = pl.volatilidad_actual_pct
+    h.volatilidad_despues_pct = pl.volatilidad_si_se_ejecuta_pct
+  }
+
+  // Lo bueno, si lo hay, MEDIDO. El párrafo 1 pide empezar por lo positivo, y
+  // sin un dato atrás eso se convierte en un elogio de relleno.
+  if (b && b.retorno_cartera_pct != null && b.retorno_benchmark_pct != null) {
+    h.retorno_3_anios_pct = b.retorno_cartera_pct
+    h.retorno_indice_3_anios_pct = b.retorno_benchmark_pct
+  }
+  const conGanancia = pos.filter(p => p.ganancia_pct != null && p.ganancia_pct > 0)
+  if (conGanancia.length) {
+    h.posiciones_en_ganancia = conGanancia.length
+    h.posiciones_totales = pos.length
+  }
+
+  const pendiente = loQueQuedaPendiente(datos)
+  if (pendiente.length) h.pendiente = pendiente
+
+  return h
 }

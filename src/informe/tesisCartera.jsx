@@ -21,9 +21,10 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import React, { useState, useEffect } from 'react'
 import { C, F } from './estilos.js'
-import { huellaCartera } from './cartera.js'
+import { huellaCartera, hechosParaElCliente } from './cartera.js'
 
 const CLAVE = 'informe_tesis_cartera_v1'
+const CLAVE_CLIENTE = 'informe_texto_cliente_v1'
 const DIAS_VALIDA = 7
 const MAX_GUARDADAS = 8      // pesan bastante más que una tesis individual
 
@@ -52,6 +53,53 @@ function cacheGuardar(huella, proveedor, modo, tesis) {
     // silencia del todo — el aviso va a la consola, porque un caché que nunca
     // guarda hace que todo se vuelva a pagar y eso ya nos pasó una vez.
     console.warn('No se pudo guardar la tesis de cartera en el caché: la '
+                 + 'próxima vez se va a volver a pagar.')
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// EL CACHÉ DEL TEXTO PARA EL CLIENTE
+//
+// Es OTRO caché, a propósito. La clave no es la huella de la cartera sino la
+// huella de la DECISIÓN: dos decisiones distintas sobre la misma cartera —una
+// en rápido y otra en profundo, o la misma pedida de nuevo— dan textos
+// distintos, y devolver el de la otra sería entregarle al cliente un resumen
+// de algo que no se decidió.
+//
+// El hash es tonto a propósito (suma rodante de 32 bits). No hace falta
+// criptografía: solo hace falta que cambie cuando cambia el texto.
+// ─────────────────────────────────────────────────────────────────────────────
+function huellaTexto(t) {
+  let h = 0
+  for (let i = 0; i < (t || '').length; i++) {
+    h = ((h << 5) - h + t.charCodeAt(i)) | 0
+  }
+  return String(h)
+}
+
+function leerTodoCliente() {
+  try { return JSON.parse(localStorage.getItem(CLAVE_CLIENTE)) || {} }
+  catch { return {} }
+}
+
+function clienteLeer(clave) {
+  const t = leerTodoCliente()[clave]
+  if (!t) return null
+  return (Date.now() - (t.guardadoEn || 0)) / 86400000 < DIAS_VALIDA ? t : null
+}
+
+function clienteGuardar(clave, texto) {
+  try {
+    const c = leerTodoCliente()
+    c[clave] = { ...texto, guardadoEn: Date.now() }
+    const claves = Object.keys(c)
+    if (claves.length > MAX_GUARDADAS) {
+      claves.sort((a, b) => (c[a].guardadoEn || 0) - (c[b].guardadoEn || 0))
+      claves.slice(0, claves.length - MAX_GUARDADAS).forEach(k => delete c[k])
+    }
+    localStorage.setItem(CLAVE_CLIENTE, JSON.stringify(c))
+  } catch {
+    console.warn('No se pudo guardar el texto del cliente en el caché: la '
                  + 'próxima vez se va a volver a pagar.')
   }
 }
@@ -225,7 +273,8 @@ export default function TesisCartera({ datos }) {
         </div>
       )}
 
-      {tesis && <ResultadoTesis t={tesis} />}
+      {tesis && <ResultadoTesis t={tesis} datos={datos}
+                                proveedores={proveedores} />}
     </div>
   )
 }
@@ -239,7 +288,7 @@ const avisoBase = {
   padding: '9px 13px', margin: '10px 0', fontSize: 12.5, color: C.tenue,
 }
 
-function ResultadoTesis({ t }) {
+function ResultadoTesis({ t, datos, proveedores }) {
   return (
     <div style={{ marginTop: 14 }}>
       {/* Los avisos de la validación van ARRIBA del texto, no al pie: si el
@@ -261,6 +310,12 @@ function ResultadoTesis({ t }) {
         {t.texto}
       </div>
 
+      {/* EL SEGUNDO PASO. Va acá abajo y no arriba a propósito: no se puede
+          escribir el texto del cliente antes de tener la decisión, y el orden
+          de la pantalla tiene que contar eso solo. */}
+      <TextoParaElCliente decision={t.texto} datos={datos}
+                          proveedores={proveedores} />
+
       <div className="no-imprimir" style={{
         marginTop: 12, paddingTop: 9, borderTop: `1px solid ${C.borde}`,
         fontSize: 11.5, color: C.tenue }}>
@@ -275,6 +330,187 @@ function ResultadoTesis({ t }) {
             {' '}(no se volvió a pagar)</>
         )}
       </div>
+    </div>
+  )
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// EL TEXTO PARA EL CLIENTE — la segunda llamada, y su propio botón
+//
+// POR QUÉ ES UN BOTÓN APARTE Y NO SALE SOLO
+// -----------------------------------------
+// Porque gasta. La regla del proyecto es que nada consuma tokens sin un clic
+// explícito, y esto es una llamada más, con su propio costo. Que la decisión ya
+// esté generada no autoriza a escribir el texto: puede que Marcos quiera leer
+// la decisión, cambiar algo de la cartera y recién entonces pedir el texto.
+//
+// POR QUÉ SE MUESTRA APARTE Y CON SU PROPIO MARCO
+// ----------------------------------------------
+// «me gustaría poder compartir el informe al cliente sin que esta lectura sea
+// vista». Este bloque es lo ÚNICO que ve el cliente: va con su propio recuadro,
+// con un botón para copiarlo, y todo lo demás de esta pantalla lleva
+// `no-imprimir`. Lo que se imprime es el informe; lo que se copia es esto.
+//
+// EL COSTO SE MUESTRA ANTES, igual que en la primera llamada, y acá la
+// estimación puede ser EXACTA: la decisión ya está escrita, así que se mide su
+// largo en vez de adivinarlo por la cantidad de posiciones.
+// ─────────────────────────────────────────────────────────────────────────────
+function TextoParaElCliente({ decision, datos, proveedores }) {
+  const [texto, setTexto] = useState(null)
+  const [estimacion, setEstimacion] = useState(null)
+  const [generando, setGenerando] = useState(null)
+  const [error, setError] = useState(null)
+  const [copiado, setCopiado] = useState(false)
+
+  const hechos = React.useMemo(
+    () => (datos ? hechosParaElCliente(datos) : null), [datos])
+  const clave = React.useMemo(
+    () => (decision ? huellaTexto(decision) : null), [decision])
+
+  // Al cambiar la decisión se muestra lo que YA esté guardado para ESA
+  // decisión, y nada más. Un texto viejo al lado de una decisión nueva es
+  // peor que no tener nada: se entrega sin que nadie note que no coinciden.
+  useEffect(() => {
+    setError(null); setCopiado(false)
+    setTexto(clave ? (clienteLeer(`${clave}|anthropic`)
+                      || clienteLeer(`${clave}|openai`) || null) : null)
+  }, [clave])
+
+  // No gasta: es una cuenta sobre el largo del texto que ya tenemos.
+  useEffect(() => {
+    if (!decision) return
+    let vivo = true
+    fetch(`/api/informe?action=estimar_cliente&caracteres=${decision.length}`)
+      .then(r => r.json())
+      .then(d => { if (vivo) setEstimacion(d) })
+      .catch(() => { if (vivo) setEstimacion(null) })
+    return () => { vivo = false }
+  }, [decision])
+
+  async function generar(proveedor) {
+    const guardado = clienteLeer(`${clave}|${proveedor}`)
+    if (guardado) { setTexto(guardado); setError(null); return }
+    setGenerando(proveedor); setError(null)
+    try {
+      const r = await fetch(
+        `/api/informe?action=tesis_cliente&proveedor=${proveedor}`,
+        { method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ decision, hechos }) })
+      const d = await r.json()
+      if (!r.ok) throw new Error(d.error || `Error ${r.status}`)
+      clienteGuardar(`${clave}|${proveedor}`, d)
+      setTexto(d)
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setGenerando(null)
+    }
+  }
+
+  const activos = Object.entries(proveedores || {}).filter(([, p]) => p.disponible)
+  if (!decision || !activos.length) return null
+
+  return (
+    <div style={{ marginTop: 18 }}>
+      <div className="no-imprimir" style={{
+        borderTop: `1px solid ${C.borde}`, paddingTop: 13 }}>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'baseline',
+                      flexWrap: 'wrap', marginBottom: 7 }}>
+          <strong style={{ fontSize: 15 }}>Texto para el cliente</strong>
+          <span style={{ fontSize: 12.5, color: C.tenue }}>
+            reescribe la decisión de arriba en lenguaje de cliente · sin
+            tablas, sin tickers y sin jerga
+          </span>
+        </div>
+
+        <div style={{ display: 'flex', gap: 9, flexWrap: 'wrap' }}>
+          {activos.map(([c, p]) => {
+            const ya = !!clienteLeer(`${clave}|${c}`)
+            return (
+              <button key={c} onClick={() => generar(c)} disabled={!!generando}
+                style={{
+                  background: generando ? C.borde : 'transparent',
+                  color: generando ? C.tenue : C.titulo,
+                  border: `1px solid ${C.bordeFuerte}`, borderRadius: 9,
+                  padding: '8px 14px', fontSize: 13,
+                  cursor: generando ? 'default' : 'pointer',
+                  fontFamily: F.texto }}>
+                {generando === c
+                  ? 'Escribiendo...'
+                  : ya
+                    ? `Ver el de ${p.nombre} (ya escrito, no gasta)`
+                    : `Escribirlo con ${p.nombre}`}
+              </button>
+            )
+          })}
+        </div>
+
+        {estimacion && !texto && (
+          <div style={{ fontSize: 11.5, color: C.tenue, marginTop: 7 }}>
+            Estimado: {usd(estimacion.costo_estimado_usd)} ·
+            ~{estimacion.segundos_estimados}s · modelo {estimacion.modelo}.
+            {' '}Siempre usa el modelo rápido: redactar no necesita el caro.
+            {' '}Volver a pedirlo NO vuelve a pagar la decisión.
+          </div>
+        )}
+
+        {error && (
+          <div style={{ ...avisoBase, background: C.rojoFondo, color: C.rojo,
+                        border: 'none' }}>
+            {error}
+          </div>
+        )}
+
+        {(texto?.avisos || []).length > 0 && (
+          <div style={{ background: C.ambarFondo, color: C.ambar, borderRadius: 8,
+                        padding: '10px 13px', margin: '11px 0 0',
+                        fontSize: 12.5 }}>
+            <strong>Este texto se entrega. Revisar antes:</strong>
+            <ul style={{ margin: '5px 0 0', paddingLeft: 17, lineHeight: 1.5 }}>
+              {texto.avisos.map((a, i) => <li key={i}>{a}</li>)}
+            </ul>
+          </div>
+        )}
+      </div>
+
+      {texto && (
+        <>
+          {/* El recuadro es lo que se entrega. Nada de lo de arriba entra acá:
+              ni tickers, ni tokens, ni el nombre del modelo. */}
+          <div style={{
+            marginTop: 12, padding: '16px 18px', borderRadius: 10,
+            background: C.panel, border: `1px solid ${C.borde}`,
+            fontSize: 14.5, lineHeight: 1.68, color: C.cuerpo,
+            whiteSpace: 'pre-wrap' }}>
+            {texto.texto}
+          </div>
+
+          <div className="no-imprimir" style={{
+            marginTop: 7, display: 'flex', gap: 10, alignItems: 'center',
+            flexWrap: 'wrap', fontSize: 11.5, color: C.tenue }}>
+            <button
+              onClick={() => {
+                navigator.clipboard?.writeText(texto.texto)
+                  .then(() => { setCopiado(true); setTimeout(() => setCopiado(false), 2000) })
+                  .catch(() => setError('No pude copiar. Seleccionalo a mano.'))
+              }}
+              style={{ background: 'transparent', border: `1px solid ${C.borde}`,
+                       borderRadius: 7, padding: '5px 11px', fontSize: 12,
+                       cursor: 'pointer', fontFamily: F.texto, color: C.titulo }}>
+              {copiado ? 'Copiado' : 'Copiar el texto'}
+            </button>
+            <span>
+              {texto.proveedor_nombre} · {texto.modelo} ·{' '}
+              {texto.tokens?.entrada}+{texto.tokens?.salida} tokens ·{' '}
+              {usd(texto.costo_estimado_usd)}
+              {texto.segundos ? ` · ${texto.segundos}s` : ''}
+              {texto.guardadoEn && ' · guardado (no se volvió a pagar)'}
+            </span>
+          </div>
+        </>
+      )}
     </div>
   )
 }

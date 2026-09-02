@@ -606,7 +606,8 @@ export async function analizarRiesgo(cart, candidatos = []) {
       volConEntrada = anual(varianzaCartera(wc, cov2))
     }
     aporteCandidatos.push({
-      ticker: c.ticker, sector: c.sector, puntaje: c.puntaje,
+      ticker: c.ticker, nombre: c.nombre || c.ticker,
+      sector: c.sector, puntaje: c.puntaje,
       // Para que la fila del menu se explique sola, sin volver a buscar nada.
       beta: c.beta ?? null,
       defensivo: !!c.defensivo,

@@ -4539,10 +4539,361 @@ sospechoso es el largo, no la regla nueva.
 
 ---
 
+## ✂️ EL PROMPT REESCRITO: −28%, SIN PERDER UNA REGLA (31/08/2026)
+
+> *"Siento que se pisa y la parte para el cliente no me cierra tampoco."*
+
+Auditado antes de tocar nada. Las repeticiones eran reales:
+
+```
+  "a dónde va la plata"          3 veces  (L44, L227, L272)
+  "no el puntaje fundamental"    4 veces  (L48, L152, L241, L247)
+  "delta de volatilidad"         2 métricas distintas para la misma decisión
+```
+
+Y **dos reglas que se contradecían entre sí**:
+
+```
+  L88   "La sección 1 tiene que mostrar las dos y recomendar una,
+         no elegir en silencio"
+  L133  "La sección 1 tiene que ELEGIR, no listar las dos"
+```
+
+### La causa: estaba organizado por BLOQUE DE DATOS, no por TAREA
+
+El modelo leía quince bloques sobre campos y después cinco secciones de salida,
+y tenía que deducir solo qué regla aplicaba a cada sección. Cada campo nuevo
+agregaba un bloque, y las reglas transversales se repetían en cada uno.
+
+### La estructura nueva
+
+```
+  1. LO QUE RECIBÍS          — una vez cada regla de datos
+  2. CÓMO SE DECIDE          — cinco pasos EN ORDEN, no reglas sueltas
+  3. QUÉ NOMBRAR CUANDO APAREZCA — un párrafo por señal
+  4. REGLAS DE DECISIÓN      — los cinco motivos de recorte, etc.
+  5. SALIDA                  — cada sección con sus reglas al lado
+```
+
+**4.344 → 3.208 tokens (−26%)**, y las 24 reglas de fondo siguen presentes.
+
+### La guarda contra podar de más
+
+Podar es exactamente cuando se pierde una regla sin darse cuenta: en la primera
+pasada se cayeron `aporte_al_riesgo_pct` y `peso_objetivo_pct` — mencionados en
+concepto pero ya no por su nombre de campo.
+
+`test_tesis_cartera.py` tiene ahora una comprobación que exige que **el prompt
+nombre los 18 campos que el payload manda**. Es la versión "hacia afuera" del
+bug que ya nos comimos dos veces con `_resumen_cartera`: allá una clave que no
+se nombra **no llega**; acá llega y **nadie la mira** — un cálculo hecho al
+pedo. Más las 5 secciones y las 5 reglas de la sección del cliente.
+
+### 🔴 El modelo no tenía los NOMBRES de las empresas
+
+Lo destapó el ejemplo de Marcos. Su texto modelo dice *"T-Mobile, AbbVie y
+Walmart"*, y **el modelo no puede escribir eso**: el payload solo mandaba
+tickers. `nombre` se había sacado de los candidatos por peso —*"para elegir un
+reemplazo alcanza el ticker"*— y era cierto para ELEGIR, pero no para ESCRIBIR.
+Nadie puede deducir "T-Mobile" de "TMUS".
+
+Ahora viaja en las posiciones (también en las comprimidas), en el menú y en los
+candidatos. Son ~4 tokens cada uno y son la diferencia entre un texto que se le
+manda a un cliente y una planilla.
+
+### La sección 5, reescrita con el ejemplo de Marcos adentro
+
+El prompt ahora lleva **el texto modelo completo** y los antiejemplos. Las
+reglas duras:
+
+```
+  · prosa corrida, 4-6 párrafos. CERO viñetas, tablas o títulos internos
+  · NOMBRES DE EMPRESA, nunca tickers
+  · primera persona del plural: "revisamos", "proponemos"
+  · CERO jerga: beta, correlación, percentil, aporte al riesgo, tope, Sharpe
+  · UN SOLO número —la volatilidad— y traducido
+```
+
+Y el ORDEN, que es lo que convence:
+
+```
+  1. la conclusión, y si hay algo bueno se dice PRIMERO
+  2. qué NO vamos a hacer  ← tranquiliza antes de proponer
+  3. qué sí, agrupado por intención y con nombres
+  4. para qué: el objetivo en una frase
+  5. el número, y qué significa en la práctica
+```
+
+Los antiejemplos salen de la salida real que Marcos pegó:
+
+```
+  ✗ "AMD amplifica cada movimiento 2,5 veces más que el mercado"  (jerga)
+  ✗ "Los movimientos son: - Vender AMD (57 acciones)…"            (lista)
+  ✗ "si cae, la cartera se desmorona"                            (alarmismo)
+  ✗ empezar por el problema cuando hay algo bueno que decir
+```
+
+### Una prueba que fallaba con razón y estaba mal escrita
+
+El antiejemplo `✗ "Vender AMD, comprar AAPL y MSFT" (tickers)` hizo saltar la
+comprobación `'AAPL' not in bloque_cacheado`. **Falso positivo**: es texto fijo
+y no invalida ningún caché. La prueba miraba un SÍNTOMA (aparece un ticker) en
+vez de la PROPIEDAD (el bloque cambia con la cartera).
+
+Se reemplazó por un **ticker centinela** (`ZZQQX`) inyectado en la cartera: si
+aparece en el bloque cacheado es porque alguien interpoló datos adentro de las
+reglas, que es lo único que rompe el caché de verdad. Y se agregó la comprobación
+inversa: el centinela SÍ tiene que estar en el mensaje del usuario.
+
+> Cuando una prueba falla, la pregunta es si falla por lo que dice o por lo que
+> quiere decir. Esta fallaba por lo que decía, y arreglarla la dejó más fuerte.
+
+### El costo
+
+El prompt bajó 1.136 tokens (cacheados, 0,1× en las lecturas) y los nombres
+sumaron ~130 al payload. **La primera llamada bajó de USD 0,0152 a 0,0141.**
+
+Recta del estimador: `2270 + 141·n` sigue sirviendo, con 4-13% de margen sobre
+2.393 · 2.854 · 3.452 · 4.060 · 4.619 · 5.344.
+
+---
+
+## 🪓 LA LLAMADA PARTIDA EN DOS: DECISIÓN Y TEXTO PARA EL CLIENTE (02/09/2026)
+
+### El síntoma, y por qué no se arreglaba retocando el prompt
+
+Marcos, tres veces seguidas, sobre la sección 5:
+
+> *"la parte para el cliente no me cierra tampoco, debería estar mejor
+> redactado"*
+
+Se reescribió la sección dos veces y salió igual de mal las dos: **un resumen
+del análisis con la jerga tapada**, no un texto escrito para alguien que no vio
+ninguna tabla. No era un problema de redacción de la regla. Era el turno.
+
+A un modelo se le puede pedir que cambie de registro, pero no en el mismo turno
+en el que acaba de escribir cuatro secciones técnicas: arrastra el vocabulario,
+la estructura y el orden de lo que viene de escribir. Le pedíamos que decidiera
+en jerga y después olvidara la jerga sin cambiar de hoja.
+
+Lo dijo Marcos mejor que yo:
+
+> *"Primero decidí. Después olvidate de la tabla y reescribí la decisión desde
+> la perspectiva del cliente."*
+
+### La arquitectura
+
+```
+  BOTÓN 1  ──►  action=tesis_cartera   SISTEMA_CARTERA   modelo elegido
+                secciones 1 a 4        (2.755 tokens)    rápido o profundo
+                = LA DECISIÓN
+                       │
+                       │  el texto de la decisión + los hechos
+                       ▼
+  BOTÓN 2  ──►  action=tesis_cliente   SISTEMA_CLIENTE   SIEMPRE el rápido
+                el texto que se         (1.931 tokens)
+                entrega
+```
+
+Dos prompts, **dos cachés separados**. Retocar el prompt del cliente no
+invalida el de la decisión, que es lo que permite iterar la redacción sin
+pagar la decisión de nuevo.
+
+### La regla que no se rompe
+
+**La segunda llamada NO decide nada.** Recibe la decisión escrita y la traduce.
+Si pudiera cambiar una recomendación, habría dos documentos que dicen cosas
+distintas y el que se entrega sería el que nadie revisó. Está en el prompt
+(*"NO CAMBIES LA DECISIÓN"*) y está en la prueba: sin decisión, el endpoint
+devuelve error y **no llama a nadie**.
+
+### Los números, medidos
+
+| | antes (una llamada) | ahora (dos) | |
+|---|---|---|---|
+| costo, 15 posiciones, profundo | USD 0,02852 | USD 0,02601 | **−9%** |
+| tres versiones del texto | USD 0,08556 | USD 0,03223 | **−62%** |
+| cinco versiones | USD 0,14260 | USD 0,04156 | **−71%** |
+| profundo, tiempo con 15 pos | 58s (límite 60) | 50s + 4s | entra |
+| profundo, máximo de posiciones | 11 | **19** | |
+
+El ahorro grande no es el −9%: es que **el texto que más se reescribe —el que
+se entrega— dejó de arrastrar la decisión entera cada vez**.
+
+### Y de paso, tres ahorros más que aparecieron buscando
+
+Marcos: *"a ver si podemos mejorar en algo más también, mientras más ahorremos
+o mejoremos, optimicemos mejor."*
+
+**1. Los candidatos descartados van en formato corto** (`_comprimir_candidatos`).
+Medido sobre su cartera real: 23 candidatos eran **1.472 tokens = el 43% del
+payload**, en cada llamada. Desde que existe `menu_por_sector`, esa lista dejó
+de ser un menú de opciones para que el modelo elija: **el código ya eligió**,
+con el criterio que él definió. Los que el menú eligió viajan completos —son una
+recomendación y hay que poder justificarla con sus números—; los otros veinte
+van con ticker, sector, puntaje y el delta de volatilidad. Nada más.
+
+```
+  {"ticker":"O","sector":"Real Estate","puntaje":53,"defensivo":true,"delta_vol":-4.65}
+```
+
+**2. Los nombres de empresa salieron del payload de la decisión**
+(`_sin_nombres`). Medido: **5,5% de cada llamada** (104 tokens con 5 posiciones,
+313 con 25). Entraron y salieron dos veces, así que conviene que quede escrito
+el porqué: hacían falta cuando la sección 5 salía de esta llamada —el modelo no
+puede deducir "T-Mobile" de "TMUS"—. Ahora los nombres viajan en el bloque de
+hechos de la SEGUNDA llamada, y la decisión se escribe en tickers a propósito,
+porque es un documento de trabajo que lee quien decide.
+
+**3. La sección 3 se poda antes de la segunda llamada** (`_recortar_decision`).
+En una cartera sana la mayoría de las líneas dicen "mantener · posición
+correcta". Para la decisión eso vale: es la constancia de que se miró todo. Para
+el texto del cliente no vale nada, porque ese texto tiene prohibido hablar
+posición por posición. Medido con 15 posiciones: 11 líneas = ~330 tokens = el
+18% del insumo, en cada versión que se pida. Es conservador: si no encuentra los
+títulos de las secciones 3 y 4, no toca nada.
+
+### El bloque de hechos: lo único que la segunda llamada recibe además del texto
+
+`hechosParaElCliente()` en `cartera.js`. **148 tokens** medidos. Cuatro cosas, y
+ninguna se inventa cuando el dato no existe:
+
+| campo | para qué | si falta |
+|---|---|---|
+| `nombres` | ticker → nombre. Es lo único que evita que el texto salga en tickers o que el modelo invente una razón social | el prompt le prohíbe nombrar esa empresa |
+| `volatilidad_antes_pct` / `_despues_pct` | el único número que el texto puede usar | el párrafo 5 no se escribe |
+| `retorno_3_anios_pct` vs índice | empezar por lo bueno **con un dato atrás**, no con un elogio de relleno | se empieza por el problema |
+| `pendiente` | lo que este plan **NO** resuelve | no hay párrafo 6 |
+
+`pendiente` es la parte que un informe malo esconde. Se arma en código, con
+frases ya redactadas en lenguaje de cliente:
+
+- 100% en acciones contra un tope de 70% → *"eso no se resuelve moviendo
+  acciones entre sí: es una decisión aparte entre acciones, renta fija y
+  liquidez"*;
+- los topes no se pueden cumplir con lo que hay adentro → *"haría falta
+  incorporar algo nuevo"*;
+- la volatilidad cubre el 62,5% de la cartera → se dice.
+
+Y la regla 5 del prompt: **no digas que la cartera "queda adaptada al perfil" si
+hay algo en `pendiente`**. La validación avisa si el texto se lo calló.
+
+### El botón, y por qué está donde está
+
+Va **debajo** del resultado de la decisión, no arriba. No es estética: no se
+puede escribir el texto del cliente antes de tener la decisión, y el orden de la
+pantalla tiene que contar eso solo.
+
+Y responde a lo que Marcos pidió el 31/08 —*"poder compartir el informe al
+cliente sin que esta lectura sea vista"*—: el texto sale en **su propio
+recuadro**, con un botón para copiarlo, y todo lo demás de ese panel lleva
+`no-imprimir`. Lo que se copia es lo que se entrega.
+
+Caché propio, con clave por **huella de la decisión**, no de la cartera: dos
+decisiones distintas sobre la misma cartera dan textos distintos, y devolver el
+de la otra sería entregarle al cliente el resumen de algo que no se decidió.
+
+### Lo que la validación del texto del cliente encuentra
+
+No corrige: avisa. Este texto se imprime y lo firma una persona.
+
+- **tickers** — busca cada clave del diccionario de nombres dentro del texto;
+- **jerga** — beta, correlación, paridad de riesgo, Sharpe, drawdown, aporte al
+  riesgo, percentil, covarianza, exposición sectorial;
+- **viñetas y títulos** — se pidió prosa corrida;
+- **promesas** — "sin riesgo", "va a subir", "protege la cartera", "garantiza";
+- **lo que se calló** — si había algo en `pendiente` y el texto no lo menciona.
+
+### `medir_payload.py`: la herramienta que faltaba
+
+El estimador de costo se quedó corto **cinco veces en cuatro días**, y siempre
+por el mismo mecanismo: se agrega un bloque al payload, nadie vuelve a medir, y
+la guarda de la prueba sigue en verde porque sus números viejos son *más bajos*
+que la realidad nueva.
+
+La medición se hacía a mano, en una sesión, y después se perdía. Ahora:
+
+```bash
+python test/medir_payload.py     # no gasta un solo token
+```
+
+imprime la tabla y la línea `MEDIDO = {...}` lista para pegar en la prueba.
+
+Recalibrado hoy, dos veces (la compresión de candidatos y después los nombres):
+
+```
+  pos           3      5     10     15     20     25
+  real       1308   1761   2797   3601   4304   5067
+  1250+172n  1766   2110   2970   3830   4690   5550
+  holgura    +35%   +20%    +6%    +6%    +9%    +9%
+```
+
+Sigue calibrado **hacia arriba**: nunca por debajo del payload real. La cartera
+de 3 posiciones se sobreestima un 35% y está bien —es el caso que sale
+centavos—; donde el número importa, con carteras grandes, va pegado.
+
+### Un refactor que no era el objetivo pero había que hacer
+
+`_post_anthropic()` y `_post_openai()`. El transporte vivía adentro de
+`_llamar_cartera`, incluido **el reintento del parámetro `thinking`**, que ya
+nos costó dos llamadas cobradas sin una línea de texto. Al aparecer la segunda
+llamada había dos opciones: copiar cincuenta líneas o sacarlas afuera. Copiarlas
+significaba que el segundo camino redescubriera ese bug en producción.
+
+---
+
 ## 📦 PENDIENTE DE PUSH — lista acumulada
 
 Todo esto está escrito en la carpeta y **todavía no subido**. Verificar con
 `git status` antes de asumir.
+
+### Tanda de ahora (02/09) — doceava parte: la llamada partida en dos
+
+```
+api/informe.py               SISTEMA_CARTERA: la seccion 5 sale (4 secciones)
+                             + SISTEMA_CLIENTE nuevo, con su propio cache
+                             + action=tesis_cliente (POST) y estimar_cliente (GET)
+                             + _comprimir_candidatos: los descartados van cortos
+                               (-43% del bloque de candidatos)
+                             + _sin_nombres: los nombres salen del payload (-5,5%)
+                             + _recortar_decision: la seccion 3 se poda antes
+                               de la segunda llamada (-18% de su insumo)
+                             + _post_anthropic / _post_openai: un solo transporte
+                             + validar_respuesta_cliente
+                             + estimador recalibrado 1250 + 172n, salida 700 + 55n
+src/informe/cartera.js       hechosParaElCliente() — 148 tokens
+                             + `nombre` en el array de candidatos (faltaba)
+src/informe/tesisCartera.jsx <TextoParaElCliente>: segundo boton, caché por
+                             huella de la DECISION, recuadro propio y "copiar"
+test/test_cliente.py         NUEVO — la segunda llamada, 40+ comprobaciones
+test/prueba-cliente.cjs      NUEVO — el bloque de hechos, 22 comprobaciones
+test/medir_payload.py        NUEVO — la medicion del payload, reproducible
+test/volcar_prompts.py       NUEVO — vuelca los dos prompts a .txt desde el
+                             codigo (PROMPT_CARTERA.txt estaba viejo)
+PROMPT_CARTERA.txt           regenerado: 4 secciones, 2.755 tokens
+PROMPT_CLIENTE.txt           NUEVO — 1.931 tokens
+test/test_tesis_cartera.py   al dia: 4 secciones, sin nombres, MEDIDO nuevo
+CONTEXTO_INFORME_AVANZADO.md
+```
+
+Catorce suites: 398 comprobaciones en JS + cuatro suites de Python.
+
+### Tanda de ahora (31/08) — onceava parte: el prompt reescrito
+
+```
+api/informe.py               SISTEMA_CARTERA reescrito: 4.344 -> 3.208 tokens,
+                             organizado por TAREA y no por bloque de datos,
+                             sin las 3 repeticiones ni la contradiccion de L88/L133
+                             + la seccion 5 con el ejemplo de Marcos y antiejemplos
+                             + `nombre` sobrevive el filtro de candidatos
+src/informe/cartera.js       `nombre` en posiciones comprimidas, menu y entradas
+src/informe/riesgo.js        `nombre` en cada candidato medido
+test/test_tesis_cartera.py   +8: el prompt nombra los 18 campos del payload,
+                             las 5 secciones, las 5 reglas del cliente
+                             + centinela ZZQQX en vez de la heuristica de AAPL
+CONTEXTO_INFORME_AVANZADO.md
+PROMPT_CARTERA.txt           el prompt suelto, para poder leerlo sin abrir el .py
+```
 
 ### Tanda de ahora (31/08) — decima parte: menu por sector y las dos opciones
 
@@ -5121,4 +5472,4 @@ y recargar. Si no, seguís viendo datos cacheados de antes.
 
 ---
 
-*Actualizado: 31 de agosto de 2026 · Tabla ACTUAL vs OBJETIVO en el informe · Dos bugs que tiraban el Motor B antes de la llamada · Estimador de costo recalibrado · Build verificado · Universo operable: 268 papeles, 28 candidatos nuevos · Benchmark vs SPY y pares correlacionados · Concentracion por industria · Topes de sector e industria en el optimizador · Excel con cantidades · Afinidad por perfil de riesgo · Tesis fuera del informe del cliente · El plan puede abrir posiciones nuevas · Menu de rotacion por sector · 376 comprobaciones en JS + 3 suites de Python · Anterior: 21 de agosto de 2026 · Sonda corrida y analizada · Tesis híbrida y estética clara confirmadas · Pendiente: alcance del histórico y deploy*
+*Actualizado: 2 de septiembre de 2026 · La llamada partida en dos: decision y texto para el cliente · Dos prompts, dos caches · Candidatos comprimidos (-43% de su bloque) · Nombres fuera del payload (-5,5%) · Seccion 3 podada antes de la segunda llamada · medir_payload.py: la medicion ya no se hace a mano · Estimador recalibrado 1250 + 172n · Segundo boton con recuadro propio y "copiar" · Tres versiones del texto: -62% · El modo profundo pasa de 11 a 19 posiciones · 398 comprobaciones en JS + 4 suites de Python ·  Tabla ACTUAL vs OBJETIVO en el informe · Dos bugs que tiraban el Motor B antes de la llamada · Estimador de costo recalibrado · Build verificado · Universo operable: 268 papeles, 28 candidatos nuevos · Benchmark vs SPY y pares correlacionados · Concentracion por industria · Topes de sector e industria en el optimizador · Excel con cantidades · Afinidad por perfil de riesgo · Tesis fuera del informe del cliente · El plan puede abrir posiciones nuevas · Menu de rotacion por sector · Prompt reescrito -26% · 376 comprobaciones en JS + 3 suites de Python · Anterior: 21 de agosto de 2026 · Sonda corrida y analizada · Tesis híbrida y estética clara confirmadas · Pendiente: alcance del histórico y deploy*

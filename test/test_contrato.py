@@ -41,10 +41,18 @@ I.historico_edgar = lambda t: {'disponible': False, 'avisos': [],
 # Sirve para la concentracion por industria — "Financials 80%" puede ser cuatro
 # bancos o tres bancos y una aseguradora. Puede venir en None para los CEDEAR
 # de afuera del indice hasta que se vuelva a correr fetch_informe.py.
+#
+# Las tres ultimas (02/09/2026) viajan del bot local hasta el optimizador:
+#   riesgo_pais   junta lo que ningun tope de sector junta (los ADR argentinos
+#                 estan repartidos entre seis sectores y son UNA apuesta)
+#   solo_medible  el papel cotiza en pesos: se muestra y suma a la
+#                 concentracion, pero no se puntua ni entra a la matriz
+#   moneda        'USD' salvo los del Merval
 RAIZ = {'ticker', 'nombre', 'sector', 'industry', 'nivel', 'enSp500', 'hasCedear',
         'fundamentales', 'consenso', 'historico', 'senales', 'riesgos',
         'veredicto', 'hechos', 'avisos', 'fuentes', 'sector_contexto',
-        'sentimiento', 'consenso_forward', 'descargo', 'generado_en'}
+        'sentimiento', 'consenso_forward', 'descargo', 'generado_en',
+        'riesgo_pais', 'solo_medible', 'moneda', 'nim'}
 VEREDICTO = {'puntaje', 'etiqueta', 'porque', 'accion', 'limitado_por_bandera',
              'aclaracion'}
 SENAL = {'bloque', 'titulo', 'peso', 'puntaje', 'notas'}

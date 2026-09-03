@@ -29,21 +29,37 @@
 // mayor entre el del perfil y un múltiplo del peso equiponderado: así el
 // informe señala concentración de verdad y no el hecho aritmético de tener
 // pocas posiciones.
+// ⚠️ `maxArgentina` — el tope que ningun tope de sector puede poner.
+//
+// Los ADR argentinos estan repartidos entre Financials (GGAL, BMA, BBAR,
+// SUPV), Energy (YPF, VIST, TGS), Utilities (PAM, CEPU, EDN), Materials
+// (LOMA, TS), Communication Services (TEO) y Real Estate (IRS, CRESY). Cada
+// uno entra comodo en su tope de posicion y ninguno satura su sector, asi que
+// una cartera puede terminar 40% argentina sin que ninguna regla se queje.
+//
+// Pero no son quince apuestas: son una. Cuando el pais se mueve, se mueven
+// todos, y eso no lo captura ni el sector ni —bien— la correlacion historica,
+// porque el periodo de calma la subestima justo antes de que importe.
+//
+// Los numeros los definio Marcos (02/09/2026). No son de mercado: son el techo
+// que quiere que el plan respete. La lista de que papeles cuentan vive en
+// `cedears_informe.ARGENTINA` y viaja en el dato (`riesgo_pais`), no duplicada
+// acá: una lista en dos lenguajes se desincroniza.
 export const PERFILES = {
   conservador: {
     clave: 'conservador', nombre: 'Conservador',
-    maxPosicion: 8, maxSector: 25, factorEquiponderado: 1.4,
+    maxPosicion: 8, maxSector: 25, maxArgentina: 10, factorEquiponderado: 1.4,
     resumen: 'Prioriza no perder. Tolera menos concentración y menos papeles ' +
              'especulativos.',
   },
   moderado: {
     clave: 'moderado', nombre: 'Moderado',
-    maxPosicion: 12, maxSector: 35, factorEquiponderado: 1.8,
+    maxPosicion: 12, maxSector: 35, maxArgentina: 20, factorEquiponderado: 1.8,
     resumen: 'Equilibrio entre crecimiento y control del riesgo.',
   },
   agresivo: {
     clave: 'agresivo', nombre: 'Agresivo',
-    maxPosicion: 20, maxSector: 45, factorEquiponderado: 2.5,
+    maxPosicion: 20, maxSector: 45, maxArgentina: 30, factorEquiponderado: 2.5,
     resumen: 'Acepta posiciones grandes y concentración sectorial a cambio de ' +
              'más crecimiento.',
   },
@@ -391,6 +407,13 @@ export function analizarCartera(informes, posiciones, perfilClave,
       // El nivel FINO. Puede venir null y eso NO es lo mismo que "no tiene":
       // es "todavia no lo sabemos". Se distingue en `concentracionPorIndustria`.
       industry: i.industry || null,
+      // ── Las dos marcas que vienen del bot ────────────────────────────────
+      // `riesgoPais` agrupa lo que el sector no agrupa (ver `maxArgentina`).
+      // `soloMedible` dice que este papel cotiza en pesos: se puede tener y
+      // mostrar, pero no puntuar contra el resto ni medir su riesgo.
+      riesgoPais: i.riesgo_pais || null,
+      soloMedible: !!i.solo_medible,
+      moneda: i.moneda || 'USD',
       clase,
       etiqueta,
       puntajeFundamental: i.veredicto?.puntaje ?? null,
@@ -487,6 +510,31 @@ export function analizarCartera(informes, posiciones, perfilClave,
     activos,
     sectores,
     clases,
+    // ── El riesgo pais, medido igual que un sector ────────────────────────
+    // Se calcula acá y no en `riesgo.js` por el mismo motivo que el tope de
+    // sector: es un numero que el informe MUESTRA, y si cada lado lo
+    // recalculara, la tabla y el objetivo podrian discrepar. `riesgo.js` lo
+    // recibe y lo respeta; no lo vuelve a pensar.
+    argentina: (() => {
+      const suyos = activos.filter(a => a.riesgoPais === 'argentina')
+      if (!suyos.length) return null
+      const pct = hayPesos
+        ? suyos.reduce((acc, a) => acc + (a.peso || 0), 0)
+        : (suyos.length / activos.length) * 100
+      const tope = perfil.maxArgentina ?? null
+      return {
+        pct: round1(pct),
+        tope,
+        n: suyos.length,
+        tickers: suyos.map(a => a.ticker),
+        // El mismo denominador que los sectores: sin montos esto es un
+        // CONTEO, y un conteo leido como exposicion es una alarma falsa.
+        denominador: hayPesos ? 'valor de la cartera' : 'cantidad de posiciones',
+        excede: hayPesos && tope != null && pct > tope,
+        excesoUSD: hayPesos && tope != null && pct > tope
+          ? Math.round((pct - tope) / 100 * valorTotal) : null,
+      }
+    })(),
     porTicker: Object.fromEntries(activos.map(a => [a.ticker, a])),
   }
 }
@@ -857,6 +905,11 @@ export function armarDatosTesis(cart, estres, candidatos = [], scores = {},
       caida_pct: peor.caidaPct,
       caida_usd: peor.caidaUSD,
     } : null,
+
+    // El riesgo pais, si lo hay. Son ~8 tokens y sin esto el modelo no puede
+    // explicar por que se recorta un papel que esta perfecto dentro de su
+    // sector y dentro de su tope de posicion.
+    argentina: cart.argentina,
 
     // El nivel FINO de la concentracion. Solo viajan las industrias que son un
     // hallazgo (2+ papeles pesando >= 15%), no las 12 filas: el modelo no

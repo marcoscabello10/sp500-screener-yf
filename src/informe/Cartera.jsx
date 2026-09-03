@@ -428,7 +428,51 @@ function Pesos({ cart }) {
             sectoresFuera.reduce((a, s) => a + (s.excesoUSD || 0), 0), 0)}.` : ''}
         </p>
       )}
+      <RiesgoArgentino a={cart.argentina} valorTotal={valorTotal} />
     </Seccion>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// EL RIESGO PAÍS — lo que la tabla de sectores no puede mostrar
+//
+// Los ADR argentinos están repartidos entre Financials, Energy, Utilities,
+// Materials, Communication Services y Real Estate. Cada uno entra cómodo en su
+// tope de posición, ninguno satura su sector, y una cartera puede quedar 60%
+// argentina sin que ninguna fila de la tabla de arriba se ponga en ámbar.
+//
+// Pero no son quince apuestas: son una. Cuando el país se mueve, se mueven
+// todos — y eso tampoco lo captura bien la correlación histórica, porque el
+// período de calma la subestima justo antes de que importe.
+//
+// Se muestra SIEMPRE que haya papeles argentinos, exceda o no. Que el número
+// esté dentro del techo también es información: significa que hay lugar.
+// ─────────────────────────────────────────────────────────────────────────────
+function RiesgoArgentino({ a, valorTotal }) {
+  if (!a || !a.n) return null
+  const porConteo = a.denominador === 'cantidad de posiciones'
+  return (
+    <p style={{ fontSize: 13.5, marginTop: 6,
+                color: a.excede ? C.ambar : C.tenue }}>
+      <b>Riesgo Argentina: {num(a.pct, 1)}%</b>
+      {a.tope != null && ` (máximo ${num(a.tope, 0)}% para este perfil)`}
+      {' · '}{a.n} {a.n === 1 ? 'papel' : 'papeles'}: {a.tickers.join(', ')}.
+      {porConteo
+        ? ' Ojo: sin montos cargados esto es la proporción de POSICIONES, no de plata.'
+        : a.excede
+          ? (valorTotal && a.excesoUSD
+              ? ` Volver al tope implica mover unos US$ ${num(a.excesoUSD, 0)}.`
+              : ' Está por encima del techo del perfil.')
+          : ''}
+      {!porConteo && (
+        <span style={{ display: 'block', fontSize: 12.5, color: C.tenue,
+                       marginTop: 3 }}>
+          Están en sectores distintos, así que ningún tope sectorial los junta —
+          pero se mueven con el mismo factor. No es una opinión sobre las
+          empresas.
+        </span>
+      )}
+    </p>
   )
 }
 

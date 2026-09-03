@@ -120,6 +120,7 @@ export default function Informe({ d, onVolver, conTesis = true }) {
                  ? `Comparado contra ${d.sector_contexto.n} empresas del mismo sector en el índice.`
                  : null}>
         <TablaMetricas d={d} ocultar={ocultar} medianas={medianas} notas={notas} />
+        <MargenDeInteres nim={d.nim} />
       </Seccion>
 
       {hist.disponible && (
@@ -331,6 +332,49 @@ function TablaMetricas({ d, ocultar, medianas, notas }) {
         </tbody>
       </table>
     </>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// EL NIM — el dato que quien lee un informe de un banco espera ver
+//
+// Y QUE NO PUNTUA, a propósito. La sonda del 28/08 lo sacó para 17 de 17
+// bancos, así que la tentación era meterlo al score. El rango que dio:
+//
+//     SYF 15,5%  ·  AXP 5,8%  ·  MTB 3,2%  ·  JPM 2,2%  ·  BNY 1,05%
+//
+// Catorce puntos entre el primero y el último, y esa diferencia NO mide
+// calidad: mide modelo de negocio. Un emisor de tarjetas siempre va a tener
+// más NIM que un banco de custodia, porque cobra 20% de interés y el otro
+// cobra comisiones. Puntuarlo sería premiar SER DE UN TIPO en vez de ANDAR
+// BIEN — exactamente el bug del P/B negativo que se arregló en agosto.
+//
+// Así que va acá abajo de la tabla, en gris, con la aclaración de que es
+// aproximado. Se muestra, no se cuenta.
+// ─────────────────────────────────────────────────────────────────────────────
+function MargenDeInteres({ nim }) {
+  if (!nim) return null
+  if (nim.pct == null) {
+    // El motivo también se muestra. "No aparece" y "no se pudo calcular" son
+    // dos cosas distintas, y la segunda es la que dice dónde mirar.
+    return (
+      <p style={{ fontSize: 12.5, color: C.tenue, marginTop: 10 }}>
+        Margen de interés neto (NIM): no se pudo calcular — {nim.motivo}.
+      </p>
+    )
+  }
+  return (
+    <div style={{ marginTop: 12, padding: '10px 13px', borderRadius: 8,
+                  background: C.panel, border: `1px solid ${C.borde}`,
+                  fontSize: 13, lineHeight: 1.55 }}>
+      <strong>Margen de interés neto (NIM): {nim.pct.toFixed(2)}%</strong>
+      <div style={{ color: C.tenue, fontSize: 12.5, marginTop: 4 }}>
+        {nim.nota || ''}{nim.ruta ? ` Calculado de ${nim.ruta}.` : ''}
+        {' '}<strong>No entra al puntaje</strong>: el NIM va de ~15% en emisores
+        de tarjetas a ~1% en bancos de custodia, y esa diferencia mide el
+        negocio, no la calidad del banco.
+      </div>
+    </div>
   )
 }
 

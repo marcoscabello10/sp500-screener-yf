@@ -1344,6 +1344,20 @@ def armar_datos(ticker):
         'industry': fund.get('industry') or (detalle or {}).get('industry'),
         'enSp500': ticker in porsym,
         'hasCedear': fund.get('hasCedear'),
+        # ── Dos marcas que viajan del bot hasta el optimizador ────────────
+        # `riesgo_pais` junta papeles que ningun tope de sector junta: los ADR
+        # argentinos estan repartidos entre seis sectores y son una sola
+        # apuesta. Sin esto, el plan puede llevar la cartera al 40% argentino
+        # sin que nada lo frene.
+        #
+        # `solo_medible` es lo contrario de una recomendacion: dice que este
+        # papel cotiza en pesos, que se puede tener y mostrar pero no comparar
+        # ni meter en la matriz de riesgo. Si esta clave no llegara, un papel
+        # del Merval entraria al calculo como si sus tres años de precios
+        # fueran resultado y no devaluacion.
+        'riesgo_pais': (detalle or {}).get('riesgoPais'),
+        'solo_medible': bool((detalle or {}).get('soloMedible')),
+        'moneda': (detalle or {}).get('moneda') or 'USD',
         'nivel': 'completo' if completo else 'reducido',
         'generado_en': datetime.now(timezone.utc).isoformat(),
         'fuentes': {
@@ -1370,6 +1384,17 @@ def armar_datos(ticker):
             'notas': SECTOR_NOTAS.get(fund.get('sector'), {}),
         },
         'historico': hist,
+        # ── EL NIM DE LOS BANCOS: dato, no puntaje ────────────────────────
+        # Va afuera de `senales` A PROPOSITO. `senales` son los bloques que
+        # SUMAN al puntaje; esto no suma. La sonda del 28/08 dio 17/17 de
+        # cobertura y aun asi no se puntua: el rango va de 15,5% (tarjetas) a
+        # 1,05% (custodia), y esos catorce puntos miden modelo de negocio, no
+        # calidad. Premiarlos seria repetir el bug del P/B negativo — una
+        # metrica que premia SER DE UN TIPO en vez de ANDAR BIEN.
+        #
+        # Lo calcula el bot (`nim_aproximado` en fetch_informe.py) porque sale
+        # de yfinance y Vercel no puede llamar a Yahoo. Acá solo se pasa.
+        'nim': (detalle or {}).get('nim'),
         'senales': ev['senales'],
         'riesgos': ev['riesgos'],
         'veredicto': ev['veredicto'],
@@ -1634,6 +1659,21 @@ Adentro del grupo se recorta más al que más riesgo aporta.
 `industrias.concentradas` — el nivel que el sector no muestra. "Financials 80%"
 puede ser tres bancos y una aseguradora, o cuatro bancos: son cosas distintas y
 la tabla de sectores las dibuja igual. Nombralas con sus tickers.
+
+`argentina` — el riesgo país, que NINGÚN tope de sector captura. Los ADR
+argentinos están repartidos entre seis sectores: cada uno entra cómodo en su
+tope y aun así son UNA apuesta, porque cuando el país se mueve se mueven todos.
+Si `excede` es verdadero, decilo con esas palabras —"tenés X% en riesgo
+argentino y para este perfil el máximo es Y%"— y nombrá los tickers. NO es una
+opinión sobre las empresas: Galicia puede ser un gran banco y aun así sobrar en
+la cartera. Si `denominador` dice "cantidad de posiciones", NO es exposición:
+es un conteo, y decirlo como porcentaje de plata sería una alarma falsa.
+
+`solo_medible` en una posición — cotiza en pesos (acciones del Merval sin ADR).
+Su peso y su sector cuentan para la concentración, pero NO tiene puntaje
+comparable ni entra al cálculo de riesgo: sus tres años de precios incluyen la
+devaluación. Cuando haya una, decí que quedó fuera de los números de riesgo y
+por qué. No inventes un puntaje ni una volatilidad para ella.
 
 `riesgo.pares_que_son_una_apuesta` — pares con correlación ≥ 0,70. Dos papeles
 que se mueven juntos NO son dos posiciones: son una del tamaño de las dos.
@@ -2354,6 +2394,9 @@ def _resumen_cartera(c):
         'riesgo': c.get('riesgo') or {'disponible': False},
         # Otra clave que se perderia en silencio si no se nombra aca.
         'industrias': c.get('industrias'),
+        # Y otra mas. `_resumen_cartera` es whitelist: esta lista es el
+        # contrato entero, y una clave que no este aca no llega nunca.
+        'argentina': c.get('argentina'),
         # El plan son ~200 tokens y es lo unico ejecutable del payload.
         'plan': c.get('plan'),
     })
@@ -2440,10 +2483,12 @@ def estimar_cartera(n_posiciones, proveedor='anthropic', modo=None):
     #
     # Y volvio a bajar al sacar los `nombre` (`_sin_nombres`), otro 5,5%:
     #
+    # Re-medido otra vez el 02/09 al entrar el bloque `argentina` (~35 tokens):
+    #
     #   pos           3      5     10     15     20     25
-    #   real       1308   1761   2797   3601   4304   5067
+    #   real       1343   1796   2832   3636   4339   5102
     #   1250+172n  1766   2110   2970   3830   4690   5550
-    #   holgura    +35%   +20%    +6%    +6%    +9%    +9%
+    #   holgura    +31%   +17%    +5%    +5%    +8%    +9%
     #
     # Sigue calibrada HACIA ARRIBA: nunca por debajo del payload real, y lo mas
     # pegada posible donde la cartera es grande, que es donde el numero importa.

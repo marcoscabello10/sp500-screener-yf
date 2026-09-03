@@ -534,7 +534,7 @@ print(f'  sectores ausentes    -> {len(filtrados)} candidatos de '
 # Ya no hay que medir a mano: `python test/medir_payload.py` imprime esta
 # misma linea lista para pegar. Se hizo reproducible justamente porque este
 # numero se quedo viejo cinco veces en cuatro dias.
-MEDIDO = {3: 1308, 5: 1761, 10: 2797, 15: 3601, 20: 4304, 25: 5067}
+MEDIDO = {3: 1343, 5: 1796, 10: 2832, 15: 3636, 20: 4339, 25: 5102}
 for n_pos, real in MEDIDO.items():
     est = I.estimar_cartera(n_pos, 'anthropic')['tokens_estimados']['entrada']
     chequear(est >= real,

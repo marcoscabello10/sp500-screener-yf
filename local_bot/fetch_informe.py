@@ -50,6 +50,13 @@ Uso
     # sin volver a bajar lo que ya esta fresco (ideal para correrlo seguido)
     python fetch_informe.py --cedears --dias 7
 
+    # opcion B3: las 10 del Merval que NO tienen ADR (Aluar, Ternium
+    # Argentina, Transener, Mirgor, BYMA, Comercial del Plata, Valores,
+    # Metrogas, Cablevision, TGN). Cotizan en PESOS y entran SOLO para poder
+    # medir una cartera que las tiene: nunca son candidatas y no entran ni al
+    # pool de percentiles ni a la matriz de riesgo.
+    python fetch_informe.py --medibles
+
     # opcion C: sin argumentos, lee local_bot/tickers_informe.txt
     python fetch_informe.py
 
@@ -272,6 +279,141 @@ def leer_cedears_extra(base_dir):
         return []
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# EL NIM DE LOS BANCOS — un dato, NO un puntaje
+#
+# LA SONDA (28/08/2026) DIO 17/17. Y aun asi NO se puntua, por lo que mostro:
+#
+#     SYF 15,51%  ·  COF 6,41%  ·  AXP 5,79%   (tarjetas)
+#     MTB  3,25%  ·  RF   3,14%               (regionales)
+#     JPM/WFC/C 2,16-2,25%  ·  BAC 1,76%      (money-center)
+#     BNY  1,05%                              (custodia)
+#
+# Catorce puntos entre el primero y el ultimo. Esa diferencia NO mide calidad,
+# mide MODELO DE NEGOCIO: un emisor de tarjetas siempre va a tener mas NIM que
+# un banco de custodia, porque cobra 20% de interes y el otro cobra comisiones.
+# Puntuarlo seria crear otra vez el bug del P/B negativo premiando el patrimonio
+# negativo: una metrica que premia SER DE UN TIPO en vez de ANDAR BIEN. Y el
+# grupo "Financials" mete a AXP, COF y SYF junto a JPM, asi que el problema
+# estaria garantizado por construccion.
+#
+# Va como DATO en la ficha, con la aclaracion de que es aproximado. Quien lee
+# un informe de un banco quiere ver el NIM; lo que no puede pasar es que el
+# NIM mueva el puntaje.
+#
+# ⚠️ ES UN PROXY. El NIM real usa activos RENTABLES promedio (sin goodwill ni
+# inmuebles), ~10-15% menos que los activos totales, asi que este numero sale
+# un poco BAJO. Para comparar bancos entre si ordena casi igual; para citarlo
+# como el NIM publicado por el banco, no sirve. La ficha lo dice.
+#
+# Se calcula ACA y no en `api/informe.py` por la razon de siempre: sale de
+# `income_stmt` y `balance_sheet` de yfinance, y Vercel no puede llamar a Yahoo.
+# ─────────────────────────────────────────────────────────────────────────────
+FILAS_NII = ['Net Interest Income', 'NetInterestIncome',
+             'Net Interest Income Expense', 'Total Net Interest Income']
+FILAS_ING = ['Interest Income', 'Total Interest Income', 'InterestIncome']
+FILAS_EGR = ['Interest Expense', 'Total Interest Expense', 'InterestExpense']
+FILAS_ACT = ['Total Assets', 'TotalAssets']
+
+
+def _fila(df, nombres):
+    """Busca una fila del estado contable por varios nombres posibles.
+
+    yfinance cambia los nombres entre versiones, asi que se prueban varios y
+    ademas se busca sin distinguir mayusculas. Es literalmente la funcion que
+    uso la sonda: se copia tal cual para que el resultado sea el mismo que se
+    midio, y no uno parecido."""
+    if df is None or getattr(df, 'empty', True):
+        return None
+    idx = {str(i).strip().lower(): i for i in df.index}
+    for n in nombres:
+        real = idx.get(n.strip().lower())
+        if real is not None:
+            serie = df.loc[real].dropna()
+            if len(serie):
+                return serie
+    return None
+
+
+def nim_aproximado(tk, sector):
+    """(nim_pct, ruta) o (None, motivo). Solo para Financials.
+
+    Tres rutas, en el orden en que la sonda las encontro mas confiables:
+      A  fila neta anual        (la mayoria de los bancos)
+      C  ingreso menos egreso   (los que no reportan la fila neta)
+      B  cuatro trimestres      (ultimo recurso)
+    """
+    if sector != 'Financials':
+        return None, None
+    try:
+        bs = tk.balance_sheet
+    except Exception as e:
+        return None, f'balance_sheet fallo: {type(e).__name__}'
+    activos = _fila(bs, FILAS_ACT)
+    if activos is None:
+        return None, 'sin "Total Assets" en el balance'
+    try:
+        act = float(activos.iloc[0])
+    except Exception:
+        return None, 'activos ilegibles'
+    if act <= 0:
+        return None, 'activos <= 0'
+
+    try:
+        ist = tk.income_stmt
+    except Exception:
+        ist = None
+
+    nii = _fila(ist, FILAS_NII)
+    if nii is not None:
+        return round(float(nii.iloc[0]) / act * 100, 2), 'anual, fila neta'
+
+    ing, egr = _fila(ist, FILAS_ING), _fila(ist, FILAS_EGR)
+    if ing is not None and egr is not None:
+        v = float(ing.iloc[0]) - float(egr.iloc[0])
+        return round(v / act * 100, 2), 'anual, ingreso menos egreso'
+
+    try:
+        qst = tk.quarterly_income_stmt
+    except Exception:
+        qst = None
+    qnii = _fila(qst, FILAS_NII)
+    if qnii is not None and len(qnii) >= 4:
+        v = float(qnii.iloc[:4].sum())
+        return round(v / act * 100, 2), 'ultimos cuatro trimestres'
+
+    return None, 'ninguna fila de intereses en el estado de resultados'
+
+
+def _es_argentino(sym):
+    """¿Este papel es riesgo argentino? Import blando: si el archivo del
+    universo no esta, el bot sigue andando y nadie queda marcado."""
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from cedears_informe import es_riesgo_argentino
+        return es_riesgo_argentino(sym)
+    except Exception:
+        return False
+
+
+def leer_medibles(base_dir):
+    """Las del Merval que NO tienen ADR, como pares (clave_BYMA, simbolo_Yahoo).
+
+    Entran para MEDIR una cartera que las tiene, nunca como candidatas. El
+    porque esta escrito arriba de `SOLO_MEDIBLES` en cedears_informe.py y se
+    resume en una linea: cotizan en pesos, y tres años de precios en pesos son
+    tres años de devaluacion disfrazada de volatilidad."""
+    try:
+        sys.path.insert(0, str(base_dir))
+        from cedears_informe import SOLO_MEDIBLES
+        pares = [(k, v[0]) for k, v in sorted(SOLO_MEDIBLES.items())]
+        print(f'  Merval (solo para medir): {len(pares)} papeles en pesos')
+        return pares
+    except Exception as e:
+        print(f'  [aviso] no pude leer SOLO_MEDIBLES ({type(e).__name__}: {e})')
+        return []
+
+
 def edad_dias(activo):
     """Hace cuantos dias se bajo este activo. None si no se sabe."""
     try:
@@ -298,12 +440,42 @@ def leer_lista_tickers(base_dir):
 
 # ─── nucleo ─────────────────────────────────────────────────────────────────
 
-def traer_activo(sym, sp500_map):
+def traer_activo(sym, sp500_map, clave=None, solo_medible=False):
     """Trae todo lo que el informe necesita de un activo. Cada endpoint va por
-    separado: si uno falla, los demas igual se guardan."""
+    separado: si uno falla, los demas igual se guardan.
+
+    `clave` existe para los papeles del Merval: a Yahoo se le pide `ALUA.BA`
+    pero el informe los guarda y los busca como `ALUA`, que es lo que el cliente
+    escribe en el Excel. Cuando no se pasa, la clave es el simbolo — o sea, el
+    comportamiento de siempre para los otros 280.
+    """
     errores = []
     tk = yf.Ticker(sym)
-    r = {'symbol': sym}
+    r = {'symbol': clave or sym}
+    # ── El riesgo PAIS, que no es el riesgo del papel ─────────────────────
+    # Galicia, Macro, Supervielle y BBVA Argentina no son cuatro apuestas
+    # bancarias distintas: son cuatro nombres de la misma apuesta. Y como estan
+    # repartidos entre seis sectores, ningun tope de sector los junta. Esta
+    # marca es lo que le permite al optimizador tratarlos como UN grupo.
+    #
+    # Sale de `cedears_informe.ARGENTINA`, que es donde estan escritos los
+    # casos de borde (VIST entra, TX no). Se escribe en el archivo en vez de
+    # duplicar la lista en JavaScript: una lista en dos lenguajes se
+    # desincroniza, y esta ya cambio dos veces en una semana.
+    if _es_argentino(clave or sym):
+        r['riesgoPais'] = 'argentina'
+
+    if solo_medible:
+        # ⚠️ ESTAS DOS MARCAS SON LO QUE EVITA QUE UN PAPEL EN PESOS CONTAMINE
+        # TODO LO DEMAS. Sin ellas, el market cap en pesos entra al pool de
+        # percentiles de su sector y le corre el percentil a los otros treinta,
+        # y la serie de precios en pesos entra a la matriz de covarianza y
+        # convierte la devaluacion en volatilidad de la empresa.
+        # Quien las lee: `universo.js` (percentiles y candidatos) y
+        # `riesgo.js` (matriz). Ver `SOLO_MEDIBLES` en cedears_informe.py.
+        r['soloMedible'] = True
+        r['moneda'] = 'ARS'
+        r['simboloYahoo'] = sym
 
     # --- fundamentales (misma forma que el snapshot del screener) -----------
     info = {}
@@ -386,10 +558,34 @@ def traer_activo(sym, sp500_map):
         errores.append(f'fundamentales: {type(e).__name__}: {e}')
 
     # CEDEAR: si ya lo sabemos por el snapshot del screener, no repetimos la llamada
-    if en_sp500 and 'hasCedear' in sp500_map[sym]:
+    #
+    # Un papel del Merval NO tiene CEDEAR: ES la accion. Preguntarle a Yahoo por
+    # `ALUA.BA.BA` no tiene sentido y ademas `hasCedear` es lo que decide si un
+    # papel puede ser CANDIDATO — y estos no pueden serlo por diseño.
+    if solo_medible:
+        r['hasCedear'] = False
+    elif en_sp500 and 'hasCedear' in sp500_map[sym]:
         r['hasCedear'] = sp500_map[sym]['hasCedear']
     else:
         r['hasCedear'] = check_cedear(sym)
+
+    # --- NIM: solo bancos, y solo como dato ---------------------------------
+    # No se puntua (ver el bloque de arriba). Dos llamadas mas a yfinance, y
+    # solo para Financials: los otros 400 papeles no pagan nada por esto.
+    if r.get('sector') == 'Financials':
+        try:
+            nim, ruta = nim_aproximado(tk, 'Financials')
+            if nim is not None:
+                r['nim'] = {'pct': nim, 'ruta': ruta,
+                            'aproximado': True,
+                            'nota': 'Aproximado: se calcula sobre activos '
+                                    'TOTALES. El NIM que publica el banco usa '
+                                    'activos rentables promedio, asi que el '
+                                    'real es algo mas alto.'}
+            elif ruta:
+                r['nim'] = {'pct': None, 'motivo': ruta}
+        except Exception as e:
+            errores.append(f'nim: {type(e).__name__}: {e}')
 
     # --- consenso de analistas + dividendos + caja + margenes + riesgo -------
     consenso = {k: info.get(k) for k in CONSENSO_FIELDS}
@@ -439,6 +635,7 @@ def main():
     reset = '--reset' in flags
     cedears = '--cedears' in flags
     cedears_extra = '--cedears-extra' in flags
+    medibles_flag = '--medibles' in flags
     # --dias N: saltear los activos bajados hace menos de N dias
     dias_min = 0.0
     if '--dias' in crudos:
@@ -460,6 +657,14 @@ def main():
         symbols += leer_cedears(data_dir)
     if cedears_extra:
         symbols += leer_cedears_extra(base_dir)
+    # Los del Merval van por un carril aparte: se piden a Yahoo con `.BA` pero
+    # se guardan con el codigo que escribe el cliente. `medibles` es el unico
+    # lugar donde esos dos nombres conviven.
+    medibles = {}
+    if medibles_flag:
+        for clave, yh in leer_medibles(base_dir):
+            medibles[clave] = yh
+            symbols.append(clave)
     if not symbols:
         symbols = leer_lista_tickers(base_dir)
     if not symbols:
@@ -513,7 +718,8 @@ def main():
     for i, s in enumerate(symbols, 1):
         print(f'  [{i}/{len(symbols)}] {s} ...', end='', flush=True)
         try:
-            r = traer_activo(s, sp500_map)
+            r = traer_activo(medibles.get(s, s), sp500_map,
+                             clave=s, solo_medible=s in medibles)
         except Exception as e:
             print(f' ERROR IRRECUPERABLE: {type(e).__name__}: {e}')
             con_errores.append(s)

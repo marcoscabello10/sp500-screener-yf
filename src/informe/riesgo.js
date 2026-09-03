@@ -381,6 +381,10 @@ export async function analizarRiesgo(cart, candidatos = []) {
   // `cart.sectores`. Es el MISMO numero que el informe ya imprime: si acá se
   // recalculara, la tabla y el objetivo podrian discrepar.
   const topeSector = (cart?.sectores || [])[0]?.tope ?? null
+  // El techo de riesgo pais. Sale de `analizarCartera()`, igual que el de
+  // sector: si acá se leyera del perfil por separado, habria dos caminos hacia
+  // el mismo numero y uno se olvidaria de actualizar.
+  const topeArgentina = cart?.argentina?.tope ?? null
   // Cuanto puede pesar una posicion NUEVA. Sale del perfil, igual que todo lo
   // demas: una entrada no puede nacer excedida.
   const topeGeneral = cart?.topeGeneral ?? null
@@ -399,6 +403,22 @@ export async function analizarRiesgo(cart, candidatos = []) {
   // se les inventa una volatilidad.
   const con = [], sin = []
   for (const a of activos) {
+    // ⚠️ LOS QUE COTIZAN EN PESOS NO ENTRAN A LA MATRIZ, Y NO ES POR FALTA DE
+    // DATOS: es porque el dato que hay miente.
+    //
+    // Tres años de precios de Aluar en pesos son tres años de resultado MAS
+    // tres años de devaluacion. Esta funcion no puede separarlos: leeria la
+    // devaluacion como volatilidad de la empresa (alta, y por eso "prudente",
+    // que es lo peor que puede pasar con un numero equivocado) y como
+    // correlacion entre dos papeles que lo unico que comparten es la moneda.
+    //
+    // Se los nombra con motivo en vez de dejarlos caer por el filtro de
+    // MIN_RETORNOS: "no tiene historico" y "su historico esta en otra moneda"
+    // son dos cosas distintas y la segunda no se arregla esperando.
+    if (a.soloMedible) {
+      sin.push({ ticker: a.ticker, puntos: null, motivo: 'cotiza en pesos' })
+      continue
+    }
     const serie = snap.series[a.ticker]
     const r = serie ? retornosDe(serie, desde) : []
     if (r.length >= MIN_RETORNOS) con.push({ ...a, r })
@@ -469,11 +489,30 @@ export async function analizarRiesgo(cart, candidatos = []) {
       // Un grupo de UNO ya está cubierto por el tope de posición; agregarlo
       // como grupo solo duplicaría la restricción.
       if (ids.length < 2) continue
-      grupos.push({ nombre: `${tipo}:${nombre}`, tipo, nombre_corto: nombre,
+      // `nombre_corto` es lo que termina impreso en "recortado por su
+      // grupo: X". Para sector e industria el valor ya es legible; para el
+      // riesgo pais el valor es la clave interna ('argentina'), asi que se
+      // traduce acá y no en el informe — que no tiene por que saber como se
+      // llaman las claves de este modulo.
+      const legible = tipo === 'pais' ? 'riesgo Argentina' : nombre
+      grupos.push({ nombre: `${tipo}:${nombre}`, tipo, nombre_corto: legible,
                     idx: ids, tope: aEscala(tope) })
     }
   }
   juntarPor('sector', topeSector, 'sector')
+  // ── EL GRUPO QUE NINGUN SECTOR JUNTA (02/09/2026) ─────────────────────────
+  // Los ADR argentinos estan repartidos entre seis sectores. Cada uno entra
+  // comodo en su tope de posicion, ninguno satura su sector, y aun asi son UNA
+  // apuesta: cuando el pais se mueve, se mueven todos.
+  //
+  // Va con el MISMO mecanismo que los sectores porque es el mismo problema —un
+  // conjunto de posiciones que no puede pasar de X%— y porque el mecanismo ya
+  // sabe explicar por que recorto (`limitado_por_grupo`). Es una linea, no una
+  // maquinaria nueva.
+  //
+  // El tope viene del perfil (`maxArgentina`: 10 / 20 / 30). La lista de
+  // quienes cuentan viaja en el dato, marcada por el bot: ver `riesgoPais`.
+  juntarPor('riesgoPais', topeArgentina, 'pais')
   // La industria solo entra si el dato está. Los CEDEAR de afuera del índice
   // llegan sin `industry` hasta que se vuelva a correr `fetch_informe.py`, y
   // agrupar a medias sería peor que no agrupar: limitaría a los que SÍ tienen
@@ -661,10 +700,15 @@ export async function analizarRiesgo(cart, candidatos = []) {
       // es mover plata de un bolsillo al otro del mismo pantalon. El numero
       // sigue siendo el que dice la paridad de riesgo —no se falsea— pero se
       // marca, para que el informe no lo ofrezca como destino.
+      // ⚠️ TAMBIEN cuenta el grupo 'pais', no solo el sector. Sin esto el
+      // plan podia ofrecer "reforzar Galicia" con el riesgo argentino ya en su
+      // techo: el papel no excede su tope de posicion ni el de Financials, y
+      // el unico que lo frena es el grupo pais.
       refuerzo_en_sector_al_tope: objetivo[i] > con[i].peso
         && (gruposLimitantes || []).some(g => {
           const def = grupos.find(x => x.nombre === g)
-          return def && def.tipo === 'sector' && def.idx.includes(i)
+          return def && (def.tipo === 'sector' || def.tipo === 'pais')
+                 && def.idx.includes(i)
         }),
     })),
     candidatos: aporteCandidatos,

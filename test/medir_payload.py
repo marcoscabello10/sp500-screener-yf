@@ -107,6 +107,13 @@ def payload(n):
                                          'sector': 'Financials', 'pct': 22.5,
                                          'denominador': 'valor de la cartera',
                                          'tickers': ['TCK1', 'TCK2']}]},
+        # El riesgo pais. Entro el 02/09 y son ~20 tokens: chico, pero la
+        # regla del proyecto es que TODO bloque nuevo se mide, porque el
+        # estimador se quedo corto cinco veces sumando bloques "chicos".
+        'argentina': {'pct': 22.4, 'tope': 20, 'n': 3,
+                      'tickers': ['GGAL', 'YPF', 'PAM'],
+                      'denominador': 'valor de la cartera',
+                      'excede': True, 'exceso_usd': 1160},
         'sectores': secs,
         'posiciones': pos,
         'candidatos': [candidato(i) for i in range(min(40, 6 + n * 2))],

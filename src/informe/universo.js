@@ -125,9 +125,33 @@ export function armarUniverso(stocks, activos) {
   }))
 
   const deAfuera = []
+  const medibles = []
   for (const [sym, a] of Object.entries(det)) {
     if (yaEstan.has(sym)) continue
-    if (!a || !a.sector) continue          // sin sector no hay percentil posible
+    if (!a) continue
+    // ── LOS QUE COTIZAN EN PESOS ──────────────────────────────────────────
+    // Salen por una puerta distinta y no vuelven a mezclarse. El motivo, en
+    // una linea: sus numeros son de otra escala.
+    //
+    //   · el MULTIPLO se puede mostrar (P/E, ROE y margenes son cocientes:
+    //     la moneda se cancela);
+    //   · el PERCENTIL no, porque se calcula contra todo el sector y un
+    //     market cap en pesos le corre el percentil a los otros treinta;
+    //   · la SERIE DE PRECIOS tampoco — y esa es la que decide. Tres años en
+    //     pesos son tres años de devaluacion, que `riesgo.js` leeria como
+    //     volatilidad de la empresa y como correlacion entre dos papeles que
+    //     solo comparten moneda.
+    //
+    // Entonces: no entran a `todos` (que ES el pool de percentiles) ni a
+    // `operables` (de donde salen los candidatos). Entran a `porSymbol`, que
+    // es lo que permite que una POSICION del cliente se encuentre, tenga
+    // sector y sume a la concentracion.
+    if (a.soloMedible) {
+      medibles.push({ ...normalizar(sym, a), soloMedible: true,
+                      moneda: a.moneda || 'ARS' })
+      continue
+    }
+    if (!a.sector) continue                // sin sector no hay percentil posible
     deAfuera.push(normalizar(sym, a))
   }
 
@@ -135,6 +159,10 @@ export function armarUniverso(stocks, activos) {
   const operables = todos.filter(s => s.hasCedear && s.sector)
 
   return {
+    // Los que se pueden MOSTRAR pero no comparar. No estan en `todos` a
+    // proposito: quien quiera el pool de percentiles no los tiene que filtrar,
+    // porque nunca los recibe.
+    medibles,
     // TODOS: es el pool contra el que se calculan los percentiles. Cuantas más
     // empresas comparables tenga un sector, más significativo es el percentil.
     // Acá NO se filtra por CEDEAR: que un papel no se pueda comprar en Buenos
@@ -143,8 +171,12 @@ export function armarUniverso(stocks, activos) {
     // OPERABLES: de acá salen los candidatos. Esto sí se filtra, porque
     // recomendar algo que no se puede comprar no es una recomendación.
     operables,
-    porSymbol: Object.fromEntries(todos.map(s => [s.symbol, s])),
-    resumen: resumir(todos, operables, deAfuera.length),
+    // ⚠️ `porSymbol` SI los incluye, y es el unico lugar donde conviven. Es lo
+    // que permite que una cartera con Aluar encuentre el papel, le ponga
+    // sector y lo sume a la concentracion. Todo lo que compara o puntua sale
+    // de `todos` o de `operables`, nunca de acá.
+    porSymbol: Object.fromEntries([...todos, ...medibles].map(s => [s.symbol, s])),
+    resumen: resumir(todos, operables, deAfuera.length, medibles.length),
   }
 }
 
@@ -155,7 +187,7 @@ export function armarUniverso(stocks, activos) {
  * tiene que decirlo en vez de quedarse callado o —peor— ofrecer el único que
  * hay como si fuera una elección.
  */
-function resumir(todos, operables, nDeAfuera) {
+function resumir(todos, operables, nDeAfuera, nMedibles = 0) {
   const porSector = {}
   for (const s of operables) {
     porSector[s.sector] = (porSector[s.sector] || 0) + 1
@@ -168,6 +200,9 @@ function resumir(todos, operables, nDeAfuera) {
     operables: operables.length,
     delScreener: todos.length - nDeAfuera,
     deAfuera: nDeAfuera,
+    // Los del Merval en pesos. Se cuentan aparte porque no son parte del
+    // universo comparable: son papeles que se pueden tener, no elegir.
+    soloMedibles: nMedibles,
     sectores,
     // Los sectores donde NO hay de dónde elegir. Es un dato del informe, no un
     // error: significa que ahí la única decisión posible es quedarse o salir.

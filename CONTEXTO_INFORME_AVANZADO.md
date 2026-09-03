@@ -4842,10 +4842,294 @@ significaba que el segundo camino redescubriera ese bug en producción.
 
 ---
 
+## 🌎 EL UNIVERSO COMPLETO: +29 PAPELES, Y UN TECHO PARA ARGENTINA (02/09/2026)
+
+### Lo que faltaba, y por qué faltaba
+
+Tres agujeros distintos, con tres causas distintas:
+
+**1. Los 13 CEDEARs de la tanda de Comafi.** Listados en BYMA el **28-31/08**.
+La sonda de Yahoo había corrido el **21/08** y su caché dura 30 días. O sea que
+el snapshot del 31/08 decía `hasCedear: false` para GE Vernova, Dell, Morgan
+Stanley, Linde, Prologis y cinco más — no por un error, sino porque un dato que
+se cachea un mes no puede enterarse de algo que pasó ayer.
+
+```
+en el S&P (solo faltaba la marca)      fuera del índice (había que agregarlos)
+KLAC  Dell  WDC  GEV  MS               SKHY  SK Hynix
+IBKR  WELL  PLD  LIN  SHW              TLN   Talen Energy
+                                       NTRA  Natera
+```
+
+Los 5 ETF de la misma tanda (BBCA, BBAX, GSG, CORN, SOYB) **quedan afuera**,
+como pediste, pero **anotados en `EXCLUIDOS` con el motivo**: la tanda fueron 18
+papeles y tiene que quedar constancia de que se vieron los 18.
+
+**2. Los 16 que se descartaban en silencio.** ITUB, NU, TS y los 13 ADR
+argentinos. `cedears_informe.py` promete en su cabecera que *"ninguno se
+descarta en silencio"* y estos no estaban en ninguna de las tres listas.
+
+**3. Dos de la lista de ADR argentinos están muertos**, y aparecen en todas las
+listas que circulan por internet. Verificado antes de agregarlos:
+
+| | qué pasó |
+|---|---|
+| `DESP` | Despegar dejó de cotizar el **15/05/2025**: Prosus compró la empresa |
+| `IRCP` | IRSA Propiedades se fusionó en IRSA (Nasdaq ECA2022-120). La exposición es `IRS` |
+
+Van a `EXCLUIDOS` con el motivo. Y aparecieron tres que no teníamos anotados:
+**BBAR** (BBVA Argentina), **TGS** (Transportadora Gas del Sur) y **TS**
+(Tenaris).
+
+**Total: 132 → 148 papeles en el universo, 52 excluidos, 200 decididos.**
+
+### La lista curada que le gana a la sonda
+
+El problema del punto 1 no se arregla esperando: se va a repetir en la próxima
+tanda. `CEDEARS_CONFIRMADOS` es una lista escrita a mano, con **fuente y fecha
+en cada entrada**, que gana sobre la sonda de Yahoo — y **gana en una sola
+dirección**: puede decir *"esto SÍ tiene CEDEAR"*, nunca *"esto no tiene"*.
+
+Es el mismo criterio que ya usaba `universo.js` al cruzar las dos fuentes (un
+`false` no le saca el CEDEAR a nadie) y por el mismo motivo: la fuente positiva
+es la que se verificó.
+
+```
+  1. la lista curada  -> solo puede decir SÍ
+  2. el caché         -> 30 días
+  3. Yahoo en vivo
+```
+
+### El techo de riesgo argentino
+
+Los ADR argentinos están repartidos entre **seis sectores**: Financials (GGAL,
+BMA, BBAR, SUPV), Energy (YPF, VIST, TGS), Utilities (PAM, CEPU, EDN),
+Materials (LOMA, TS), Communication Services (TEO) y Real Estate (IRS, CRESY).
+
+**Cada uno entra cómodo en su tope de posición y ninguno satura su sector.** Una
+cartera puede quedar 60% argentina sin que ninguna fila de la tabla se ponga en
+ámbar. Medido en la prueba: cinco ADR al 12% cada uno, cero sectores excedidos,
+60% de riesgo país.
+
+Pero no son quince apuestas: son una. Cuando el país se mueve, se mueven todos,
+y eso tampoco lo captura bien la correlación histórica — el período de calma la
+subestima justo antes de que importe.
+
+| perfil | techo |
+|---|---|
+| Conservador | 10% |
+| Moderado | 20% |
+| Agresivo | 30% |
+
+Se resuelve con el **mismo mecanismo de topes de GRUPO** que ya existía para
+sector e industria desde el 31/08. No hay maquinaria nueva: hay una lista, un
+número por perfil y una línea (`juntarPor('riesgoPais', topeArgentina, 'pais')`).
+En la prueba, una cartera 60% argentina sale con objetivo 20% — exactamente el
+techo.
+
+**Los casos de borde, decididos y anotados para no rediscutirlos:**
+
+- **VIST entra.** Vista está incorporada en México y cotiza en NYSE, pero toda
+  su producción es Vaca Muerta. El riesgo es argentino.
+- **CAAP entra.** Corporación América opera aeropuertos en varios países, pero
+  Argentina es su mercado principal.
+- **TX no entra.** Ternium SA es luxemburguesa y su operación es mayormente
+  México. Su filial argentina es otro papel, que cotiza en pesos.
+- **MELI no entra.** Nació acá, pero hoy su resultado es principalmente Brasil
+  y México y el mercado no lo opera como riesgo argentino.
+
+Si alguno tiene que cambiar de lado, es mover una línea en `ARGENTINA`.
+
+### El Merval en pesos: "sí, pero solo para medir"
+
+**La decisión de Marcos.** Y la mitad de medida tiene un motivo técnico exacto:
+
+| | ¿sobrevive a los pesos? |
+|---|---|
+| **múltiplos** (P/E, P/B, ROE, margen) | **Sí.** Son cocientes: la moneda se cancela |
+| **tamaño** (market cap) | No. Un market cap en pesos le corre el percentil a los otros treinta de su sector |
+| **serie de precios** | **No, y esta es la que decide.** Tres años en pesos son tres años de devaluación |
+
+El tercero es el que manda. `riesgo.js` leería esa devaluación como
+**volatilidad de la empresa** y como **correlación entre dos papeles que solo
+comparten moneda**. Y la leería *alta*, que es lo que parece prudente — que es
+lo peor que puede pasar con un número equivocado.
+
+Entonces: **entran a `porSymbol` y no a `todos` ni a `operables`.** Se pueden
+encontrar, tienen sector, suman a la concentración y cuentan como plata del
+cliente; no puntúan contra nadie y no entran a la matriz. Quedan nombrados en
+`sin_datos` **con el motivo** —`'cotiza en pesos'`— porque *"no tiene
+histórico"* se arregla esperando al bot y *"está en otra moneda"* no.
+
+Las diez sin ADR: **Aluar, BYMA, Comercial del Plata, Cablevisión, Metrogas,
+Mirgor, TGN, Transener, Ternium Argentina, Valores.** Las que **sí** tienen ADR
+no están acá: se traducen y se analizan completas, en dólares.
+
+### `ALIAS_LOCALES`: el código que escribe el cliente
+
+Para la mitad de las empresas con ADR el código de BYMA es el mismo (GGAL, BMA,
+SUPV, LOMA, CEPU, EDN, BBAR, IRSA, TS). Para la otra mitad no, y ahí el papel
+simplemente **no se encontraba**:
+
+```
+    el Excel dice     y el ADR es
+    YPFD              YPF
+    PAMP              PAM
+    TGSU2             TGS
+    TECO2             TEO
+    CRES              CRESY
+```
+
+Es la misma empresa: no se pierde nada y se gana el consenso de analistas y una
+serie comparable.
+
+---
+
+## 🚫 FISV: ESTÁBAMOS EQUIVOCADOS, Y EL BUG ERA OTRO (02/09/2026)
+
+Estaba anotado como *"ticker muerto, Fiserv pasó a FI en 2023"*. **Fiserv sí
+pasó a `FI`, pero volvió**: el 29/10/2025 anunció que se mudaba del NYSE al
+Nasdaq y desde el **11/11/2025 cotiza otra vez como `FISV`**, su ticker
+original. El símbolo del snapshot estaba bien.
+
+**El problema real era el puntaje: 99 con 2 métricas de 6.** Yahoo trae de
+Fiserv el P/E (10,2) y el P/B (1,05) y nada más — ni ROE, ni margen, ni
+EV/EBITDA, ni crecimiento. Y esas dos, en Technology donde todo cotiza caro, lo
+dejan en el percentil más alto de su sector. El número no estaba mal calculado:
+estaba calculado sobre demasiado poco.
+
+O sea que **FISV y la compuerta `DATA_INSUFFICIENT` eran el mismo tema.**
+
+### La compuerta
+
+`puntuarGrupo()` en `src/App.jsx` **calculaba `nUsed` desde siempre y nunca lo
+miraba**. El informe ya resolvía esto (`MIN_METRICAS = 3` en `sugerencias.js`).
+Los dos lados del proyecto decían cosas distintas del mismo papel: uno 99, el
+otro nada.
+
+Ahora el screener usa **el mismo umbral de 3**, y devuelve **`null`, no `0`** —
+y esa distinción no es de estilo:
+
+> Con `0`, FISV ordenaría **última** en su sector y el informe diría que es la
+> peor tecnológica del índice, que es tan falso como decir que es la mejor.
+
+Con `null`, aguas abajo el filtro `marketScore[...] != null` **ya la saca de las
+sugerencias de reemplazo**, que es donde más daño hacía: se la ofrecía como
+alternativa a otro papel. En la pantalla sale `s/d 2/6` en ámbar, con el
+tooltip explicando que Yahoo no trae el resto.
+
+Medido sobre el snapshot real: **1 sin puntaje, 502 con puntaje.**
+
+---
+
+## 🔌 FASE C — el camino que más se rompía, apagado (02/09/2026)
+
+`src/App.jsx` pedía a Yahoo, **en vivo y desde Vercel**, tres endpoints por cada
+papel fuera del S&P 500: `quote` en tandas de 5, `profile` de 20, `ratios` de
+35, con esperas de 150 a 500 ms entre tandas.
+
+Ese es exactamente el camino que se rompe: **Yahoo bloquea IPs de datacenter, y
+cuando bloquea no da error — devuelve vacío.** Es la causa documentada de que
+*"antes todo saliera en $0.00"*. Una cartera con 15 CEDEARs de afuera del
+índice tardaba minutos y podía salir en blanco.
+
+`informe_detalle.json` ya tiene **los mismos campos** para 281 papeles, bajados
+por el bot desde tu PC, donde Yahoo sí responde. No había ningún dato nuevo que
+conseguir: había que leer el archivo que ya existe.
+
+Se baja **solo si hace falta** (pesa ~2 MB, así que una cartera de puro S&P no
+lo toca) y su fracaso no rompe nada: si no está, se sigue por el camino de
+siempre.
+
+---
+
+## 🏦 EL NIM, COMO DATO Y NO COMO PUNTAJE (02/09/2026)
+
+Analizado el 28/08, decidido entonces, implementado ahora. La sonda dio
+**17/17**, y aun así **no se puntúa**:
+
+```
+  SYF 15,51%  COF 6,41%  AXP 5,79%      tarjetas
+  MTB  3,25%  RF   3,14%                regionales
+  JPM/WFC/C 2,16-2,25%  BAC 1,76%       money-center
+  BNY  1,05%                            custodia
+```
+
+Catorce puntos entre el primero y el último, y esa diferencia **no mide calidad,
+mide modelo de negocio**. Un emisor de tarjetas siempre va a tener más NIM que
+un banco de custodia, porque cobra 20% de interés y el otro cobra comisiones.
+Puntuarlo sería premiar **ser de un tipo** en vez de **andar bien** — el mismo
+bug que el P/B negativo. Y el grupo "Financials" mete a AXP, COF y SYF junto a
+JPM, así que el problema estaría garantizado por construcción.
+
+Lo calcula **el bot** (`nim_aproximado` en `fetch_informe.py`, tres rutas: fila
+neta anual → ingreso menos egreso → cuatro trimestres) porque sale de
+`income_stmt` y `balance_sheet` de yfinance, y Vercel no puede llamar a Yahoo.
+Solo para Financials: los otros 400 papeles no pagan nada por esto.
+
+En la ficha aparece abajo de la tabla de múltiplos, en gris, con la aclaración
+de que **es un proxy**: se calcula sobre activos **totales**, y el NIM que
+publica el banco usa activos rentables promedio (~10-15% menos), así que el real
+es algo más alto.
+
+---
+
 ## 📦 PENDIENTE DE PUSH — lista acumulada
 
 Todo esto está escrito en la carpeta y **todavía no subido**. Verificar con
 `git status` antes de asumir.
+
+### Tanda de ahora (02/09) — treceava parte: el universo completo
+
+```
+local_bot/cedears_informe.py 132 -> 148 papeles. Cuatro grupos nuevos con el
+                             motivo de cada uno: LATAM_QUE_FALTABAN (ITUB, NU),
+                             ADR_ARGENTINOS (14), CEDEARS_NUEVOS_2026 (3)
+                             + CEDEARS_CONFIRMADOS: lista curada con fuente y
+                               fecha que le gana a la sonda de Yahoo (13)
+                             + ARGENTINA + TOPE_ARGENTINA_POR_PERFIL
+                             + ALIAS_LOCALES (YPFD->YPF, PAMP->PAM, TGSU2->TGS,
+                               TECO2->TEO, CRES->CRESY, IRSA->IRS)
+                             + SOLO_MEDIBLES: 10 del Merval sin ADR
+                             + EXCLUIDOS: DESP e IRCP (muertos) y los 5 ETF
+local_bot/fetch_fundamentals.py  check_cedear consulta la lista curada PRIMERO
+local_bot/fetch_informe.py   --medibles (pide ALUA.BA, guarda ALUA)
+                             + riesgoPais en cada papel argentino
+                             + nim_aproximado() para Financials
+api/informe.py               riesgo_pais / solo_medible / moneda / nim al datos
+                             + `argentina` en el payload de la tesis
+                             + el prompt nombra el riesgo pais y solo_medible
+                             + estimador re-medido (el prompt paso a 3.002)
+src/App.jsx                  🔴 la compuerta: score null con menos de 3 metricas
+                             (FISV puntuaba 99 con 2 de 6)
+                             + ScoreBar aguanta null y lo dice
+                             + FASE C: lee informe_detalle.json antes de
+                               llamar a Yahoo en vivo
+src/informe/cartera.js       maxArgentina por perfil + cart.argentina
+                             + riesgoPais/soloMedible/moneda en cada posicion
+src/informe/riesgo.js        tope de grupo 'pais' + los que cotizan en pesos
+                             quedan fuera de la matriz CON MOTIVO
+src/informe/universo.js      los soloMedible salen por una puerta aparte:
+                             ni pool de percentiles ni candidatos
+src/informe/Cartera.jsx      <RiesgoArgentino>
+src/informe/Informe.jsx      <MargenDeInteres>
+test/prueba-argentina.cjs    NUEVO — 26 comprobaciones
+test/test_universo_arg.py    NUEVO — el universo no se contradice
+test/prueba-metricas.cjs     +5: la compuerta, con FISV como caso
+test/prueba-riesgo.cjs       +9: el tope de pais y los papeles en pesos
+test/test_contrato.py        4 claves nuevas en el contrato
+test/test_tesis_cartera.py   MEDIDO re-medido
+PROMPT_CARTERA.txt           regenerado (3.002 tokens)
+CONTEXTO_INFORME_AVANZADO.md
+```
+
+Dieciseis suites: 445 comprobaciones en JS + cinco suites de Python.
+
+⚠️ **Esto toca el SCREENER** (`src/App.jsx`), no solo el informe. Son dos
+cambios en dos lugares puntuales —la compuerta en `puntuarGrupo` y la fase C en
+`runClientP1`— y conviene que vayan en **su propio commit**, separado del
+informe, para que dentro de tres meses `git log` pueda contar cuál de los dos
+proyectos se tocó.
 
 ### Tanda de ahora (02/09) — doceava parte: la llamada partida en dos
 
@@ -5472,4 +5756,4 @@ y recargar. Si no, seguís viendo datos cacheados de antes.
 
 ---
 
-*Actualizado: 2 de septiembre de 2026 · La llamada partida en dos: decision y texto para el cliente · Dos prompts, dos caches · Candidatos comprimidos (-43% de su bloque) · Nombres fuera del payload (-5,5%) · Seccion 3 podada antes de la segunda llamada · medir_payload.py: la medicion ya no se hace a mano · Estimador recalibrado 1250 + 172n · Segundo boton con recuadro propio y "copiar" · Tres versiones del texto: -62% · El modo profundo pasa de 11 a 19 posiciones · 398 comprobaciones en JS + 4 suites de Python ·  Tabla ACTUAL vs OBJETIVO en el informe · Dos bugs que tiraban el Motor B antes de la llamada · Estimador de costo recalibrado · Build verificado · Universo operable: 268 papeles, 28 candidatos nuevos · Benchmark vs SPY y pares correlacionados · Concentracion por industria · Topes de sector e industria en el optimizador · Excel con cantidades · Afinidad por perfil de riesgo · Tesis fuera del informe del cliente · El plan puede abrir posiciones nuevas · Menu de rotacion por sector · Prompt reescrito -26% · 376 comprobaciones en JS + 3 suites de Python · Anterior: 21 de agosto de 2026 · Sonda corrida y analizada · Tesis híbrida y estética clara confirmadas · Pendiente: alcance del histórico y deploy*
+*Actualizado: 2 de septiembre de 2026 (segunda tanda) · Universo 132 -> 148 papeles: los 13 CEDEAR de Comafi, ITUB, NU, TS y los 13 ADR argentinos · DESP e IRCP estan muertos y quedan anotados · Lista curada de CEDEARs que le gana a la sonda de Yahoo · Tope de riesgo argentino por perfil (10/20/30%) con el mecanismo de grupos que ya existia · El Merval en pesos entra SOLO para medir: ni percentiles ni matriz de riesgo · FISV no estaba muerto, el bug era el puntaje: compuerta de datos insuficientes en el screener · Fase C: se apagaron las llamadas en vivo a Yahoo · NIM como dato en la ficha de bancos · 445 comprobaciones en JS + 5 suites de Python ·  La llamada partida en dos: decision y texto para el cliente · Dos prompts, dos caches · Candidatos comprimidos (-43% de su bloque) · Nombres fuera del payload (-5,5%) · Seccion 3 podada antes de la segunda llamada · medir_payload.py: la medicion ya no se hace a mano · Estimador recalibrado 1250 + 172n · Segundo boton con recuadro propio y "copiar" · Tres versiones del texto: -62% · El modo profundo pasa de 11 a 19 posiciones · 398 comprobaciones en JS + 4 suites de Python ·  Tabla ACTUAL vs OBJETIVO en el informe · Dos bugs que tiraban el Motor B antes de la llamada · Estimador de costo recalibrado · Build verificado · Universo operable: 268 papeles, 28 candidatos nuevos · Benchmark vs SPY y pares correlacionados · Concentracion por industria · Topes de sector e industria en el optimizador · Excel con cantidades · Afinidad por perfil de riesgo · Tesis fuera del informe del cliente · El plan puede abrir posiciones nuevas · Menu de rotacion por sector · Prompt reescrito -26% · 376 comprobaciones en JS + 3 suites de Python · Anterior: 21 de agosto de 2026 · Sonda corrida y analizada · Tesis híbrida y estética clara confirmadas · Pendiente: alcance del histórico y deploy*

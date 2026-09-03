@@ -432,6 +432,89 @@ async function main() {
   chequear('pero el tope de SECTOR se sigue aplicando igual',
     rn.grupos_limitantes.some(g => g.tipo === 'sector'));
 
+  // ── EL TOPE DE RIESGO PAIS (02/09/2026) ──────────────────────────────────
+  // El problema que resuelve, en un ejemplo: cinco ADR argentinos en cinco
+  // sectores distintos. Ninguno excede su tope de posicion, ningun sector
+  // excede el suyo, y la cartera es 60% Argentina. Ningun tope existente puede
+  // verlo — el grupo pais si.
+  console.log('\n12. El tope de riesgo pais');
+  //
+  // ⚠️ LOS TICKERS NO SON LOS ARGENTINOS DE VERDAD, Y ES A PROPOSITO.
+  // GGAL, YPF, PAM y compañia recien entran al universo hoy, asi que todavia
+  // no estan en `historico_precios.json` y `analizarRiesgo` los descartaria
+  // por falta de serie — la prueba pasaria en verde sin haber probado nada.
+  // Lo que se prueba acá es el MECANISMO de agrupar por `riesgoPais`, asi que
+  // se marcan cinco papeles que SI tienen historico. Cuando Marcos corra el
+  // bot, los reales van a pasar por exactamente este mismo camino.
+  const arg = (t, sector, ind) => ({ ticker: t, peso: 12, topeClase: 20,
+                                     sector, industry: ind,
+                                     riesgoPais: 'argentina' });
+  const ARG = conTope([
+    arg('WFC',  'Financials',             'Banks - Diversified'),
+    arg('XOM',  'Energy',                 'Oil & Gas'),
+    arg('NEE',  'Utilities',              'Utilities - Regulated'),
+    arg('T',    'Communication Services', 'Telecom'),
+    arg('NEM',  'Materials',              'Gold'),
+    otro('KO',   'Consumer Staples', 'Beverages', 20),
+    otro('MSFT', 'Technology',       'Software',  20),
+  ]);
+  // El tope llega por el MISMO camino que el de sector: calculado en
+  // `analizarCartera` y leido de la cartera, no releido del perfil.
+  ARG.argentina = { pct: 60, tope: 20, n: 5, excede: true };
+  const ra = await Rg.analizarRiesgo(ARG, []);
+  if (ra.disponible) {
+    const gp = (ra.grupos_limitantes || []).find(g => g.tipo === 'pais');
+    console.log(`     grupos limitantes: `
+      + `${(ra.grupos_limitantes || []).map(g => `${g.tipo}/${g.nombre}`).join(' · ') || 'ninguno'}`);
+    chequear('el grupo pais limita', !!gp, JSON.stringify(ra.grupos_limitantes));
+    if (gp) {
+      console.log(`     riesgo pais: ${gp.actual_pct}% -> objetivo `
+                + `${gp.objetivo_pct}% (tope ${gp.tope_pct}%)`);
+      chequear('el objetivo respeta el tope, no solo lo denuncia',
+        gp.objetivo_pct <= gp.tope_pct + 0.6,
+        `${gp.objetivo_pct} vs ${gp.tope_pct}`);
+      chequear('se lo nombra de forma legible, no con la clave interna',
+        gp.nombre === 'riesgo Argentina', gp.nombre);
+      chequear('y nombra los cinco papeles', gp.tickers.length === 5,
+        gp.tickers.join(','));
+    }
+    // Y la marca por posicion: un refuerzo dentro del grupo al tope NO se
+    // puede ofrecer, igual que uno dentro de un sector al tope.
+    const bloqueados = ra.posiciones.filter(p => p.refuerzo_en_sector_al_tope);
+    chequear('ningun refuerzo bloqueado apunta a un papel de afuera del grupo',
+      bloqueados.every(p => ['WFC','XOM','NEE','T','NEM'].includes(p.ticker)),
+      bloqueados.map(p => p.ticker).join(','));
+  } else {
+    console.log(`     (sin historico para estos tickers: ${ra.motivo})`);
+  }
+
+  // ── LOS QUE COTIZAN EN PESOS NO ENTRAN A LA MATRIZ ───────────────────────
+  // Y no es por falta de datos: es porque el dato que hay miente. Tres años de
+  // precios en pesos son tres años de devaluacion, que esta funcion leeria
+  // como volatilidad de la empresa. La distincion importa: "no tiene
+  // historico" se arregla esperando al bot, "esta en otra moneda" no.
+  console.log('\n13. Los papeles en pesos quedan fuera del calculo');
+  const CONPESOS = conTope([
+    otro('KO',   'Consumer Staples', 'Beverages', 30),
+    otro('MSFT', 'Technology',       'Software',  30),
+    otro('XOM',  'Energy',           'Oil & Gas', 20),
+    { ticker: 'ALUA', peso: 20, topeClase: 20, sector: 'Materials',
+      industry: null, soloMedible: true },
+  ]);
+  const rp2 = await Rg.analizarRiesgo(CONPESOS, []);
+  chequear('ALUA no entra a la matriz',
+    !rp2.posiciones.some(p => p.ticker === 'ALUA'),
+    rp2.posiciones.map(p => p.ticker).join(','));
+  const fuera = (rp2.sin_datos || []).find(s => s.ticker === 'ALUA');
+  chequear('queda nombrado entre los que no se pudieron medir', !!fuera,
+    JSON.stringify(rp2.sin_datos));
+  chequear('con el MOTIVO, que no es "no hay datos"',
+    fuera && fuera.motivo === 'cotiza en pesos', JSON.stringify(fuera));
+  chequear('y la cobertura del calculo lo refleja',
+    rp2.cobertura_pct < 100, `${rp2.cobertura_pct}%`);
+  console.log(`     cobertura: ${rp2.cobertura_pct}% · fuera: `
+            + `${(rp2.sin_datos || []).map(s => `${s.ticker} (${s.motivo || 'sin historico'})`).join(', ')}`);
+
   resumen();
 }
 

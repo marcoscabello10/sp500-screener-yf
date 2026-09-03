@@ -430,7 +430,7 @@ def _check_cedear_live(sym):
 
 CEDEAR_CACHE_DIAS = 30
 _cedear_cache = {}
-_cedear_stats = {'cache': 0, 'live': 0}
+_cedear_stats = {'cache': 0, 'live': 0, 'confirmado': 0}
 
 
 def _cedear_cache_path():
@@ -470,9 +470,48 @@ def _cedear_vigente(sym):
         return False
 
 
+# ── La lista curada le gana a la sonda ───────────────────────────────────────
+# `cedears_informe.py` vive en esta misma carpeta y es del INFORME, no del
+# screener. Se importa igual, y a proposito: la lista de CEDEARs confirmados a
+# mano es un hecho sobre BYMA, no sobre un proyecto. Tenerla dos veces
+# garantizaria que una de las dos quede vieja.
+#
+# El import es blando: si el archivo no esta, el bot sigue andando exactamente
+# como antes. Un bot de datos no se puede caer porque falte una lista opcional.
+try:
+    from cedears_informe import CEDEARS_CONFIRMADOS
+except Exception:                                          # pragma: no cover
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from cedears_informe import CEDEARS_CONFIRMADOS
+    except Exception as _e:
+        print(f'   AVISO: no pude leer la lista curada de CEDEARs '
+              f'({type(_e).__name__}). Se usa solo la sonda de Yahoo, que '
+              f'tarda hasta {CEDEAR_CACHE_DIAS} dias en ver un listado nuevo.')
+        CEDEARS_CONFIRMADOS = {}
+
+
 def check_cedear(sym):
     """Mismo contrato que antes (devuelve bool), ahora con caché delante.
-    fetch_one no cambia: sigue llamando check_cedear(sym) igual que siempre."""
+    fetch_one no cambia: sigue llamando check_cedear(sym) igual que siempre.
+
+    ⚠️ ORDEN DE PRECEDENCIA, y la primera es nueva (02/09/2026):
+      1. la lista curada  -> solo puede decir SI
+      2. el caché         -> 30 dias
+      3. Yahoo en vivo
+
+    La lista curada va PRIMERA porque la sonda tiene un agujero medido: BYMA
+    listo trece CEDEARs el 28/08/2026, la sonda habia corrido el 21/08, y el
+    snapshot del 31/08 dijo que GE Vernova, Dell, Morgan Stanley, Linde,
+    Prologis y cinco mas no tenian CEDEAR. No es un error de la sonda: es que
+    un dato que se cachea 30 dias no puede enterarse de algo que paso ayer.
+
+    Nunca puede decir que NO. Un papel que no esta en la lista sigue el camino
+    de siempre — la lista agrega certezas, no las quita.
+    """
+    if CEDEARS_CONFIRMADOS.get(sym):
+        _cedear_stats['confirmado'] = _cedear_stats.get('confirmado', 0) + 1
+        return True
     try:
         if _cedear_vigente(sym):
             _cedear_stats['cache'] += 1
@@ -498,7 +537,8 @@ def guardar_cedear_cache():
         p.write_text(json.dumps(
             {'version': 1, 'dias': CEDEAR_CACHE_DIAS, 'entries': _cedear_cache},
             ensure_ascii=False), encoding='utf-8')
-        print(f'   CEDEAR: {_cedear_stats["cache"]} desde caché · '
+        print(f'   CEDEAR: {_cedear_stats["confirmado"]} de la lista curada · '
+              f'{_cedear_stats["cache"]} desde caché · '
               f'{_cedear_stats["live"]} verificados en vivo · '
               f'{len(_cedear_cache)} guardados')
     except Exception as e:

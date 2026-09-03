@@ -1660,6 +1660,16 @@ Adentro del grupo se recorta más al que más riesgo aporta.
 puede ser tres bancos y una aseguradora, o cuatro bancos: son cosas distintas y
 la tabla de sectores las dibuja igual. Nombralas con sus tickers.
 
+`datos` — LO PRIMERO QUE TENÉS QUE MIRAR. Dice si con lo que hay alcanza para
+decidir. Si `puede_decidir` es falso, tu sección 1 es una sola línea: qué falta
+y por qué sin eso no hay conclusión de cartera. NO escribas un plan igual.
+Si `con_reservas` es verdadero, la conclusión va, pero decís de entrada sobre
+qué parte de la cartera estás hablando.
+`no_se_puede_afirmar` es una lista de frases que NO tenés derecho a escribir con
+estos datos. No es una sugerencia: es el límite de lo que se midió. Decir "la
+volatilidad de la cartera es 15,3%" cuando ese número cubre el 60% es más grave
+que no decir nada, porque suena igual de seguro que cuando es cierto.
+
 `argentina` — el riesgo país, que NINGÚN tope de sector captura. Los ADR
 argentinos están repartidos entre seis sectores: cada uno entra cómodo en su
 tope y aun así son UNA apuesta, porque cuando el país se mueve se mueven todos.
@@ -1843,6 +1853,10 @@ EL BLOQUE DE HECHOS
   cobertura_pct              la cartera analizada es una PARTE de lo que tiene.
   pendiente                  frases ya redactadas de lo que este plan NO
                              resuelve. Van en el último párrafo.
+  datos_insuficientes        si está, NO hay recomendación que comunicar.
+                             Escribí dos o tres párrafos diciendo qué falta
+                             para poder opinar y qué haría falta para tenerlo.
+                             No inventes una conclusión tranquilizadora.
 Un campo que no está en el bloque NO EXISTE. No lo deduzcas de la decisión.
 
 FORMATO
@@ -2397,6 +2411,9 @@ def _resumen_cartera(c):
         # Y otra mas. `_resumen_cartera` es whitelist: esta lista es el
         # contrato entero, y una clave que no este aca no llega nunca.
         'argentina': c.get('argentina'),
+        # La compuerta de datos. Es lo primero que el modelo tiene que mirar:
+        # decide con cuanta confianza puede escribir todo lo demas.
+        'datos': c.get('datos'),
         # El plan son ~200 tokens y es lo unico ejecutable del payload.
         'plan': c.get('plan'),
     })
@@ -2481,20 +2498,23 @@ def estimar_cartera(n_posiciones, proveedor='anthropic', modo=None):
     # candidatos (`_comprimir_candidatos`) saco entre 700 y 1.000 tokens de
     # cada llamada y volvio mentirosa —para arriba, esta vez— la recta anterior:
     #
-    # Y volvio a bajar al sacar los `nombre` (`_sin_nombres`), otro 5,5%:
+    # Y volvio a bajar al sacar los `nombre` (`_sin_nombres`), otro 5,5%.
     #
-    # Re-medido otra vez el 02/09 al entrar el bloque `argentina` (~35 tokens):
+    # Re-medido el 03/09 con `argentina` y `datos` (la compuerta) adentro. Van
+    # CUATRO re-mediciones en dos dias, y todas por bloques "chicos" — que es
+    # exactamente por lo que existe `test/medir_payload.py`: la medicion se
+    # corre, no se estima a ojo.
     #
     #   pos           3      5     10     15     20     25
-    #   real       1343   1796   2832   3636   4339   5102
-    #   1250+172n  1766   2110   2970   3830   4690   5550
-    #   holgura    +31%   +17%    +5%    +5%    +8%    +9%
+    #   real       1407   1859   2895   3699   4403   5166
+    #   1300+175n  1825   2175   3050   3925   4800   5675
+    #   holgura    +30%   +17%    +5%    +6%    +9%   +10%
     #
     # Sigue calibrada HACIA ARRIBA: nunca por debajo del payload real, y lo mas
     # pegada posible donde la cartera es grande, que es donde el numero importa.
-    # (La cartera de 3 posiciones se sobreestima un 35% y esta bien: es el caso
+    # (La cartera de 3 posiciones se sobreestima un 30% y esta bien: es el caso
     # que sale centavos, y el bloque de candidatos casi no depende de n.)
-    entrada = 1250 + 172 * n
+    entrada = 1300 + 175 * n
     # ⚠️ LA SALIDA BAJO ~450 TOKENS el 02/09: la seccion "Para el cliente" salio
     # de este prompt y pasó a la segunda llamada. Es la mitad del ahorro de
     # partirlo en dos; la otra mitad es que esa segunda llamada corre siempre en

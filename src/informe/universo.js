@@ -93,6 +93,51 @@ function normalizar(sym, a) {
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// LOS CODIGOS LOCALES — que el Excel del cliente encuentre el papel
+//
+// EL PROBLEMA. Un cliente argentino no escribe "YPF" en su Excel: escribe
+// "YPFD", que es el codigo de YPF en BYMA. Y a veces "YPFD.BA", si exporto del
+// broker. Hasta ahora ninguna de las dos formas encontraba nada, y el sintoma
+// era el peor posible: el papel simplemente no aparecia en el informe, sin
+// error y sin aviso, como si el cliente hubiera escrito cualquier cosa.
+//
+// Para varias empresas el codigo es el mismo en las dos plazas (GGAL, BMA,
+// SUPV, LOMA, CEPU, EDN, BBAR, TS) y no hacia falta nada. Para las otras:
+//
+//     en BYMA        en NYSE/Nasdaq
+//     IRSA           IRS        <- el que mas confunde
+//     YPFD           YPF
+//     PAMP           PAM
+//     TGSU2          TGS
+//     TECO2          TEO
+//     CRES           CRESY
+//
+// EL DICCIONARIO NO ESTA ESCRITO ACA. Viaja en `informe_detalle.json`, que lo
+// escribe el bot desde `cedears_informe.py`. Es la misma decision que con
+// `riesgoPais`: una lista en dos lenguajes se desincroniza, y esta ya se
+// equivoco una vez — el comentario del archivo de Python afirmaba que IRSA
+// usaba el mismo codigo en las dos plazas.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const SUFIJO_BA = '.BA'
+
+/**
+ * El codigo que escribio el cliente -> el simbolo que usa el informe.
+ *
+ * @param alias  `d.alias_locales` de informe_detalle.json. Si no esta, esta
+ *               funcion no rompe: devuelve el ticker limpio, que es el
+ *               comportamiento de antes.
+ *
+ * ⚠️ El sufijo `.BA` se saca ANTES de buscar el alias. Al reves, "YPFD.BA" no
+ * encontraria "YPFD" y el papel se perderia — justo lo que esto viene a evitar.
+ */
+export function resolverTicker(sym, alias) {
+  let t = String(sym || '').trim().toUpperCase()
+  if (t.endsWith(SUFIJO_BA)) t = t.slice(0, -SUFIJO_BA.length)
+  return (alias && alias[t]) || t
+}
+
 /**
  * Une las dos fuentes en UN universo.
  *

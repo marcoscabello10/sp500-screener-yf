@@ -4,6 +4,8 @@ import {
 } from 'recharts'
 import { C, F, semaforo, colorSeveridad, num, pct, dinero, fecha } from './estilos.js'
 import Tesis from './tesis.jsx'
+import { cargarHistorico } from './riesgo.js'
+import { valuacionContraSuHistoria } from './valuacionHistorica.js'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // El informe. Todo lo que se ve aca sale de action=datos, o sea CERO llamadas
@@ -144,6 +146,11 @@ export default function Informe({ d, onVolver, conTesis = true }) {
                      lineas={[{ k: 'v', nombre: 'Acciones', color: C.subtitulo }]}
                      fmtY={dinero} />
           </Seccion>
+
+          {/* FASE D. Va acá y no arriba porque necesita el EPS de la SEC, que
+              es justo lo que este bloque acaba de mostrar. */}
+          <ValuacionHistorica ticker={d.ticker} eps={hist.series?.eps}
+                              peTTM={d.fundamentales?.pe} />
         </>
       )}
 
@@ -332,6 +339,145 @@ function TablaMetricas({ d, ocultar, medianas, notas }) {
         </tbody>
       </table>
     </>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FASE D — EL P/E CONTRA SU PROPIA HISTORIA
+//
+// LA PREGUNTA QUE FALTABA. Todo el resto del informe compara contra el SECTOR:
+// "cotiza a 30x contra una mediana de 24x en Technology". Eso dice si está cara
+// contra sus pares. No dice si está cara para lo que ELLA suele valer — y las
+// dos respuestas se contradicen seguido: un papel puede ser el más caro de su
+// sector y estar en el punto más barato de su propia historia, porque el sector
+// entero se abarató.
+//
+// SE CARGA A PEDIDO, Y ESE ES EL PUNTO. El histórico de precios pesa ~9 MB. Un
+// informe individual no lo necesita para nada más, así que bajarlo siempre
+// sería pagar nueve megas por una sección que a veces nadie abre. Se baja al
+// primer clic — y si el usuario ya vio una cartera, ya está en memoria y el
+// clic es instantáneo: `cargarHistorico()` cachea a nivel de módulo.
+//
+// Cero llamadas a la API. Cero tokens. Los dos ingredientes ya estaban.
+// ─────────────────────────────────────────────────────────────────────────────
+function ValuacionHistorica({ ticker, eps, peTTM }) {
+  const [estado, setEstado] = React.useState('cerrado')
+  const [v, setV] = React.useState(null)
+
+  if (!eps || !Object.keys(eps).length) return null
+
+  async function abrir() {
+    setEstado('cargando')
+    try {
+      const h = await cargarHistorico()
+      if (!h || !h.series?.[ticker]) {
+        setV({ disponible: false,
+               motivo: `${ticker} no está en el snapshot de precios` })
+      } else {
+        setV(valuacionContraSuHistoria(h.fechas, h.series[ticker], eps, peTTM))
+      }
+    } catch (e) {
+      setV({ disponible: false, motivo: `no pude leer el histórico (${e.message})` })
+    }
+    setEstado('abierto')
+  }
+
+  if (estado === 'cerrado') {
+    return (
+      <Seccion titulo="P/E contra su propia historia"
+               nota="Compara el múltiplo de hoy contra el que tuvo este mismo papel, no contra su sector.">
+        <button onClick={abrir} className="no-imprimir"
+          style={{ background: 'transparent', border: `1px solid ${C.bordeFuerte}`,
+                   borderRadius: 8, padding: '8px 14px', fontSize: 13,
+                   cursor: 'pointer', fontFamily: F.texto, color: C.titulo }}>
+          Calcular
+        </button>
+        <p style={{ fontSize: 12.5, color: C.tenue, marginTop: 7 }}>
+          No gasta nada: se calcula con el histórico de precios que ya baja el
+          informe de cartera y con el EPS de la SEC que se muestra arriba. La
+          primera vez tarda unos segundos porque el archivo de precios pesa.
+        </p>
+      </Seccion>
+    )
+  }
+  if (estado === 'cargando') {
+    return (
+      <Seccion titulo="P/E contra su propia historia">
+        <p style={{ fontSize: 13, color: C.tenue }}>Bajando el histórico...</p>
+      </Seccion>
+    )
+  }
+  if (!v?.disponible) {
+    return (
+      <Seccion titulo="P/E contra su propia historia">
+        <p style={{ fontSize: 13, color: C.tenue }}>
+          No se pudo calcular: {v?.motivo}.
+        </p>
+      </Seccion>
+    )
+  }
+
+  // Sin dispersión el percentil existe pero no se puede leer como señal: el
+  // papel cotizó siempre al mismo múltiplo y no tuvo recorrido donde caer.
+  const col = !v.hay_dispersion ? C.tenue
+            : v.percentil >= 80 ? C.rojo
+            : v.percentil <= 20 ? C.verde
+            : C.ambar
+  return (
+    <Seccion titulo="P/E contra su propia historia"
+             nota={`${v.n_puntos} días, de ${v.desde} a ${v.hasta}.`}>
+      <div style={{ display: 'flex', gap: 22, flexWrap: 'wrap',
+                    alignItems: 'baseline', marginBottom: 10 }}>
+        <div>
+          <div style={{ fontSize: 26, fontWeight: 700, color: col }}>
+            {num(v.pe_propio, 1)}x
+          </div>
+          <div style={{ fontSize: 12, color: C.tenue }}>hoy</div>
+        </div>
+        <div>
+          <div style={{ fontSize: 18, color: C.cuerpo }}>{num(v.mediana, 1)}x</div>
+          <div style={{ fontSize: 12, color: C.tenue }}>su mediana</div>
+        </div>
+        <div>
+          <div style={{ fontSize: 18, color: C.cuerpo }}>
+            {num(v.minimo, 1)}x – {num(v.maximo, 1)}x
+          </div>
+          <div style={{ fontSize: 12, color: C.tenue }}>su rango</div>
+        </div>
+        {v.hay_dispersion && (
+          <div>
+            <div style={{ fontSize: 18, color: col }}>percentil {v.percentil}</div>
+            <div style={{ fontSize: 12, color: C.tenue }}>de su propia historia</div>
+          </div>
+        )}
+      </div>
+
+      <p style={{ fontSize: 14.5, color: col, margin: '0 0 8px', fontWeight: 600 }}>
+        Está {v.lectura}
+        {v.hay_dispersion && v.vs_mediana_pct != null
+          ? ` — ${v.vs_mediana_pct > 0 ? 'un ' : 'un '}${num(Math.abs(v.vs_mediana_pct), 0)}% `
+            + `${v.vs_mediana_pct > 0 ? 'por encima' : 'por debajo'} de su mediana.`
+          : '.'}
+      </p>
+
+      {/* `Grafico` espera un objeto fecha -> valor, no un array: la serie
+          adelgazada se convierte acá. El eje X etiqueta por año, que es lo que
+          corresponde para seis años de datos diarios. */}
+      <Grafico serie={Object.fromEntries(v.puntos.map(p => [p.f, p.pe]))}
+               lineas={[{ k: 'v', nombre: 'P/E', color: C.acento }]}
+               fmtY={x => `${num(x, 0)}x`} />
+
+      {/* Los dos P/E son DISTINTOS y hay que decirlo, o uno parece un error. */}
+      {v.pe_ttm_informe != null && (
+        <p style={{ fontSize: 12.5, color: C.tenue, marginTop: 8 }}>
+          Arriba, en la tabla de múltiplos, el P/E dice {num(v.pe_ttm_informe, 1)}x.
+          No es una contradicción: ese es el P/E <b>TTM</b> (últimos doce meses),
+          y este usa el <b>EPS anual reportado a la SEC</b>. Se muestran los dos
+          porque miden cosas distintas.
+        </p>
+      )}
+      <p style={{ fontSize: 12, color: C.tenue, marginTop: 6 }}>{v.nota}</p>
+    </Seccion>
   )
 }
 

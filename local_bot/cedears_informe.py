@@ -212,28 +212,38 @@ TOPE_ARGENTINA_POR_PERFIL = {
 # 2e. LOS CODIGOS LOCALES DE LOS QUE YA TIENEN ADR
 #
 # Un cliente argentino no tiene "GGAL" el ADR: tiene GGAL la accion local, y en
-# el Excel escribe el codigo de BYMA. Para la mitad de estas empresas el codigo
-# local es el MISMO que el del ADR (GGAL, BMA, SUPV, LOMA, CEPU, EDN, BBAR,
-# IRSA, TS) y todo funciona solo. Para la otra mitad NO, y ahi el papel
-# simplemente no se encontraba:
+# el Excel escribe el codigo de BYMA. Para varias de estas empresas el codigo
+# local es el MISMO que el del ADR (GGAL, BMA, SUPV, LOMA, CEPU, EDN, BBAR, TS)
+# y todo funciona solo. Para las otras NO, y ahi el papel simplemente no se
+# encontraba:
 #
-#     el Excel dice     y el ADR es
+#     en BYMA           en NYSE/Nasdaq
+#     IRSA              IRS            <- OJO: son distintos, y confunde
 #     YPFD              YPF
 #     PAMP              PAM
 #     TGSU2             TGS
 #     TECO2             TEO
 #     CRES              CRESY
 #
+# ⚠️ IRSA ES EL CASO QUE MAS SE PRESTA A ERROR y este comentario lo tuvo mal
+# hasta que Marcos lo marco (03/09/2026): decia que IRSA usaba el mismo codigo
+# en las dos plazas. No. `IRSA` es el codigo LOCAL; el ADR es `IRS`. El mapeo
+# de abajo siempre estuvo bien; el que mentia era este texto — que es peor,
+# porque es lo que se lee para decidir si hace falta tocar algo.
+#
 # Se traduce al ADR y se analiza en dolares. Es la MISMA empresa: no se pierde
 # nada y se gana el consenso de analistas y una serie de precios comparable.
+#
+# El valor de la derecha es SIEMPRE una clave del universo; el de la izquierda,
+# nunca. El __main__ de este archivo comprueba las dos cosas.
 # ─────────────────────────────────────────────────────────────────────────────
 ALIAS_LOCALES = {
-    'YPFD':  'YPF',                    # YPF
-    'PAMP':  'PAM',                    # Pampa Energia
-    'TGSU2': 'TGS',                    # Transportadora de Gas del Sur
-    'TECO2': 'TEO',                    # Telecom Argentina
-    'CRES':  'CRESY',                  # Cresud
-    'IRSA':  'IRS',                    # IRSA
+    'IRSA':  'IRS',                    # IRSA          · local IRSA.BA
+    'YPFD':  'YPF',                    # YPF           · local YPFD.BA
+    'PAMP':  'PAM',                    # Pampa Energia · local PAMP.BA
+    'TGSU2': 'TGS',                    # Transportadora de Gas del Sur · TGSU2.BA
+    'TECO2': 'TEO',                    # Telecom Argentina · local TECO2.BA
+    'CRES':  'CRESY',                  # Cresud        · local CRES.BA
 }
 # TXR no va acá aunque sea el codigo local de Ternium: ya vive en TRADUCCION,
 # que es el mecanismo para "el codigo de BYMA no es el ticker". Tenerlo en los
@@ -273,6 +283,7 @@ ALIAS_LOCALES = {
 SOLO_MEDIBLES = {
     'ALUA':  ['ALUA.BA'],              # Aluar Aluminio Argentino
     'BYMA':  ['BYMA.BA'],              # Bolsas y Mercados Argentinos
+    'ECOG':  ['ECOG.BA'],              # Ecogas (Distribuidora de Gas del Centro)
     'COME':  ['COME.BA'],              # Sociedad Comercial del Plata
     'CVH':   ['CVH.BA'],               # Cablevision Holding
     'METR':  ['METR.BA'],              # Metrogas
@@ -386,18 +397,40 @@ def es_riesgo_argentino(sym):
     return sym in ARGENTINA
 
 
+# Sufijo de la plaza de Buenos Aires. Un Excel exportado del broker puede traer
+# `YPFD.BA` en vez de `YPFD`, y las dos formas tienen que resolver igual.
+SUFIJO_BA = '.BA'
+
+
 def resolver_alias(sym):
     """El codigo que escribio el cliente -> el simbolo que usamos.
 
-    Devuelve el mismo simbolo si no hay alias. Es a proposito: quien llama no
-    tiene que saber si habia traduccion o no."""
-    return ALIAS_LOCALES.get((sym or '').strip().upper(), (sym or '').strip().upper())
+    Aguanta las tres formas en que puede venir escrito lo mismo:
+
+        'YPFD'      -> 'YPF'      alias directo
+        'YPFD.BA'   -> 'YPF'      con el sufijo de la plaza
+        'GGAL.BA'   -> 'GGAL'     sin alias, pero hay que sacarle el sufijo
+        'AAPL'      -> 'AAPL'     nada que hacer
+
+    Devuelve el mismo simbolo si no hay nada que traducir. Es a proposito: quien
+    llama no tiene que saber si hubo traduccion.
+
+    ⚠️ El sufijo se saca ANTES de buscar el alias, no despues. Al reves,
+    'YPFD.BA' no encontraria 'YPFD' y el papel se perderia — que es exactamente
+    el sintoma que este modulo existe para evitar."""
+    t = (sym or '').strip().upper()
+    if t.endswith(SUFIJO_BA):
+        t = t[:-len(SUFIJO_BA)]
+    return ALIAS_LOCALES.get(t, t)
 
 
 def es_solo_medible(sym):
     """Cotiza en pesos: se puede mostrar y sumar a la concentracion, pero no
-    puntuar contra el resto ni meter en la matriz de riesgo."""
-    return (sym or '').strip().upper() in SOLO_MEDIBLES
+    puntuar contra el resto ni meter en la matriz de riesgo.
+
+    Pasa por `resolver_alias` para aguantar el sufijo `.BA`: 'ALUA.BA' y 'ALUA'
+    son el mismo papel."""
+    return resolver_alias(sym) in SOLO_MEDIBLES
 
 
 if __name__ == '__main__':

@@ -99,6 +99,102 @@ function retornosDe(serie, desde) {
 
 const media = v => v.reduce((a, b) => a + b, 0) / v.length
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 🔴 EL BUG MÁS CARO QUE TUVO ESTE MÓDULO (03/09/2026)
+//
+// CÓMO SE ENCONTRÓ. Una prueba que venía en verde empezó a fallar sola después
+// de correr los bots: "XOM+CVX se detecta como una sola apuesta" dejó de
+// detectarse. Medido: la correlación entre las dos petroleras más grandes de
+// Estados Unidos daba **0,037**. Eso no es un umbral mal puesto: eso es
+// imposible.
+//
+// LA CAUSA. `retornosDe()` saltea los `null` —los días en que el papel no
+// cotizó— y devuelve un vector más corto. Después el código tomaba los ÚLTIMOS
+// N retornos de cada papel y los pareaba por POSICIÓN:
+//
+//     XOM  757 cierres -> 756 retornos      [r1 r2 r3 ... r756]
+//     CVX  758 cierres -> 757 retornos      [r1 r2 r3 ... r757]
+//     recortado a 756:  XOM[r1..r756] contra CVX[r2..r757]
+//                                            ↑ CORRIDO UN DÍA
+//
+// Y un día de corrimiento destruye la correlación entera: cada retorno de XOM
+// se comparaba contra el retorno de CVX del día siguiente.
+//
+// El comentario del código anterior decía "sin esto, dos papeles con distinta
+// cantidad de días se compararían sobre períodos distintos", o sea que el
+// problema estaba VISTO. Pero recortar desde el final no lo arregla: el hueco
+// está en el MEDIO, no al principio.
+//
+// CUÁNTO ABARCABA. Medido sobre el snapshot real: 85 de 652 papeles (13%)
+// tienen una cantidad de días distinta de la mayoría. Cualquier cartera que
+// mezclara uno de esos con el resto tenía la matriz corrompida — y con ella el
+// peso objetivo, los pares correlacionados, el beta contra el índice y el
+// ranking de candidatos. Todo el Motor B.
+//
+//     par         como estaba    alineado
+//     XOM-CVX          0,037       0,816
+//     AAPL-MSFT        0,347       0,347   (coincidían en días: no se veía)
+//     WFC-JPM          0,738       0,738   (idem)
+//
+// Los pares que coincidían en cantidad de días daban bien, y por eso el bug
+// sobrevivió: la mayoría de las pruebas usaba papeles que coincidían.
+//
+// LA SOLUCIÓN. Los retornos se calculan sobre un ÍNDICE COMÚN DE FECHAS: los
+// días en que TODOS los papeles del análisis tienen precio. Así el retorno
+// número 17 de un papel y el 17 de otro son, por construcción, del mismo día.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Las posiciones del eje de fechas donde TODAS las series tienen precio.
+ *
+ * Es intersección, no unión, y a propósito: para una covarianza los pares
+ * tienen que ser del mismo día. Un papel al que le falta un día le saca ese día
+ * a todos — es el precio de que los números signifiquen algo.
+ */
+function indiceComun(series, desde, hasta) {
+  const idx = []
+  for (let k = desde; k < hasta; k++) {
+    let todos = true
+    for (const s of series) {
+      const v = s[k]
+      if (v == null || !(v > 0)) { todos = false; break }
+    }
+    if (todos) idx.push(k)
+  }
+  return idx
+}
+
+/**
+ * Retornos de una serie sobre un índice de fechas dado.
+ *
+ * ⚠️ Cuando el índice saltea un día (porque a OTRO papel le faltaba), el
+ * retorno de ese tramo abarca dos días. Eso pasa para TODOS los papeles a la
+ * vez —es el mismo índice— así que la correlación sigue siendo correcta. Sería
+ * un problema solo si se usaran estos retornos para reportar el rendimiento de
+ * un papel suelto, y no se hace.
+ */
+function retornosEn(serie, idx) {
+  const r = []
+  for (let j = 1; j < idx.length; j++) {
+    const a = serie[idx[j - 1]], b = serie[idx[j]]
+    if (a > 0 && b != null) r.push((b - a) / a)
+  }
+  return r
+}
+
+/**
+ * Dos series alineadas entre sí, sobre las fechas en que las dos tienen precio.
+ *
+ * Para el benchmark y los candidatos, que NO participan del índice común de la
+ * cartera: si participaran, agregar un candidato cambiaría los números de la
+ * cartera, y entonces "cuánto mejora si entra" mediría dos cosas a la vez.
+ */
+function parAlineado(serieA, serieB, idx) {
+  const comun = idx.filter(k => serieB[k] != null && serieB[k] > 0)
+  return { a: retornosEn(serieA, comun), b: retornosEn(serieB, comun),
+           n: comun.length }
+}
+
 function covarianza(a, b) {
   const ma = media(a), mb = media(b)
   let s = 0
@@ -272,21 +368,31 @@ function aplicarTopes(w, topes, grupos = [], iteraciones = 80) {
 // ⚠️ El retorno es HISTÓRICO, de la ventana del snapshot. No es una proyección
 // y el informe tiene que decirlo así. Se muestra al lado de la volatilidad
 // justamente para que no se lea solo.
-function contraBenchmark(snap, desde, largo, w, con, cov, varCartera) {
+function contraBenchmark(snap, desde, idx, w, con, cov, varCartera) {
   const serie = snap.series?.SPY
   if (!serie) return null
-  const rb = retornosDe(serie, desde)
-  if (rb.length < largo) return null
-  const b = rb.slice(-largo)
+  // ⚠️ SPY se alinea contra el MISMO eje de fechas de la cartera, no contra su
+  // propia ventana. Antes se le tomaban "los últimos N" y se pareaban por
+  // posición, que es exactamente el bug que corrompía las correlaciones: el
+  // beta contra el índice salía de comparar días distintos.
+  const idxB = idx.filter(k => serie[k] != null && serie[k] > 0)
+  const largo = idxB.length - 1
+  if (largo < MIN_RETORNOS) return null
+  const b = retornosEn(serie, idxB)
 
   const volB = anual(covarianza(b, b))
   // Retorno de la cartera: la combinación lineal de los retornos diarios con
   // los pesos actuales. Es lo que habría rendido ESTA cartera, no la suma de
   // lo que rindió cada papel por su cuenta.
+  //
+  // Se recalcula sobre `idxB` y no se reutiliza `con[i].r`: si SPY no cotizó
+  // algún día que la cartera sí, los dos vectores tienen largos distintos y
+  // hay que rehacer el de la cartera sobre el eje del par.
+  const RB = con.map(c => retornosEn(snap.series[c.ticker], idxB))
   const rp = []
   for (let t = 0; t < largo; t++) {
     let x = 0
-    for (let i = 0; i < con.length; i++) x += w[i] * con[i].r.slice(-largo)[t]
+    for (let i = 0; i < con.length; i++) x += w[i] * RB[i][t]
     rp.push(x)
   }
   const anualizar = (r) => (Math.pow(
@@ -429,11 +535,41 @@ export async function analizarRiesgo(cart, candidatos = []) {
              motivo: `solo ${con.length} posición(es) tienen histórico suficiente` }
   }
 
-  // Eje común: todos los retornos recortados al más corto, tomando los ÚLTIMOS.
-  // Sin esto, dos papeles con distinta cantidad de días se compararían sobre
-  // períodos distintos y la covarianza no significaría nada.
-  const largo = Math.min(...con.map(c => c.r.length))
-  const R = con.map(c => c.r.slice(-largo))
+  // ── EL EJE COMÚN DE FECHAS ───────────────────────────────────────────────
+  // Ver el bloque grande arriba de `indiceComun`. Recortar al más corto desde
+  // el final NO alcanza: el hueco de un papel está en el medio, y un solo día
+  // de corrimiento llevó la correlación XOM-CVX de 0,816 a 0,037.
+  let idx = indiceComun(con.map(c => snap.series[c.ticker]), desde,
+                        snap.fechas.length)
+
+  // Si la intersección quedó demasiado corta, el culpable es el papel con menos
+  // historia propia. Se lo saca —nombrándolo, como todo lo que se saca— y se
+  // vuelve a intentar. Sin esto, un papel recién listado le arruinaría la
+  // ventana a los otros catorce.
+  while (idx.length - 1 < MIN_RETORNOS && con.length > 2) {
+    let peor = 0
+    for (let i = 1; i < con.length; i++) {
+      if (con[i].r.length < con[peor].r.length) peor = i
+    }
+    const fuera = con.splice(peor, 1)[0]
+    sin.push({ ticker: fuera.ticker, puntos: fuera.r.length,
+               motivo: 'su historia es más corta que la del resto y recortaba '
+                     + 'la ventana común' })
+    idx = indiceComun(con.map(c => snap.series[c.ticker]), desde,
+                      snap.fechas.length)
+  }
+  if (con.length < 2 || idx.length - 1 < MIN_RETORNOS) {
+    return { disponible: false,
+             motivo: `las posiciones no comparten suficientes días con precio `
+                   + `(${Math.max(0, idx.length - 1)} en común, hacen falta `
+                   + `${MIN_RETORNOS})` }
+  }
+
+  const R = con.map(c => retornosEn(snap.series[c.ticker], idx))
+  const largo = R[0].length
+  // Y los retornos de cada papel pasan a ser los del eje común: si quedaran los
+  // viejos, el resto del módulo mezclaría dos versiones de lo mismo.
+  con.forEach((c, i) => { c.r = R[i] })
 
   const n = con.length
   const cov = Array.from({ length: n }, (_, i) =>
@@ -620,13 +756,24 @@ export async function analizarRiesgo(cart, candidatos = []) {
   const aporteCandidatos = []
   for (const c of enRondas) {
     const serie = snap.series[c.ticker]
-    const r = serie ? retornosDe(serie, desde) : []
-    if (r.length < largo) continue
-    const rc = r.slice(-largo)
+    if (!serie) continue
+    // ⚠️ El candidato se alinea contra el eje de la cartera, no contra el suyo.
+    // Antes se le tomaban "los últimos N" y se pareaban por posición: un
+    // candidato con un día de diferencia daba una correlación cercana a cero y
+    // por lo tanto parecía el mejor diversificador de todos. El ranking entero
+    // podía estar al revés.
+    const idxC = idx.filter(k => serie[k] != null && serie[k] > 0)
+    if (idxC.length - 1 < MIN_RETORNOS) continue
+    const rc = retornosEn(serie, idxC)
+    // Y la cartera se rehace sobre ESE eje, para que los dos vectores de cada
+    // producto escalar tengan el mismo largo y las mismas fechas.
+    const RC = idxC.length === idx.length
+      ? R
+      : con.map(x => retornosEn(snap.series[x.ticker], idxC))
     const cov2 = cov.map(fila => fila.slice())
     cov2.push(new Array(n).fill(0))
     for (let i = 0; i < n; i++) {
-      const v = covarianza(R[i], rc)
+      const v = covarianza(RC[i], rc)
       cov2[i].push(v); cov2[n][i] = v
     }
     cov2[n].push(covarianza(rc, rc))
@@ -729,7 +876,7 @@ export async function analizarRiesgo(cart, candidatos = []) {
         tickers: def.idx.map(i => con[i].ticker),
       }
     }),
-    benchmark: contraBenchmark(snap, desde, largo, w, con, cov, varActual),
+    benchmark: contraBenchmark(snap, desde, idx, w, con, cov, varActual),
     pares_correlacionados: paresCorrelacionados(con, cov, w),
   }
 }
@@ -752,14 +899,22 @@ export async function simular(cart, movimientos) {
   for (const a of (cart?.activos || [])) {
     const nuevo = movimientos[a.ticker] != null ? movimientos[a.ticker] : a.peso
     if (!(nuevo > 0) && !(a.peso > 0)) continue
+    // Los que cotizan en pesos quedan afuera acá también: su serie mezcla
+    // resultado con devaluación. Ver el bloque de `analizarRiesgo`.
+    if (a.soloMedible) continue
     const serie = snap.series[a.ticker]
     const r = serie ? retornosDe(serie, desde) : []
     if (r.length >= MIN_RETORNOS) con.push({ ticker: a.ticker, antes: a.peso, despues: nuevo, r })
   }
   if (con.length < 2) return null
 
-  const largo = Math.min(...con.map(c => c.r.length))
-  const R = con.map(c => c.r.slice(-largo))
+  // El MISMO eje común de fechas que usa `analizarRiesgo`. Esta función tenía
+  // el bug idéntico —recortar al más corto desde el final— y por lo tanto
+  // devolvía "esto baja la volatilidad de X a Y" con una matriz corrompida.
+  const idx = indiceComun(con.map(c => snap.series[c.ticker]), desde,
+                          snap.fechas.length)
+  if (idx.length - 1 < MIN_RETORNOS) return null
+  const R = con.map(c => retornosEn(snap.series[c.ticker], idx))
   const n = con.length
   const cov = Array.from({ length: n }, (_, i) =>
     Array.from({ length: n }, (_, j) => covarianza(R[i], R[j])))

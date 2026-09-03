@@ -385,6 +385,23 @@ def nim_aproximado(tk, sector):
     return None, 'ninguna fila de intereses en el estado de resultados'
 
 
+def _alias_locales():
+    """El mapa codigo de BYMA -> ticker del ADR, para que viaje en el archivo.
+
+    Import blando como todo lo que viene de `cedears_informe`: si el archivo no
+    esta, el snapshot igual se escribe, solo que sin el diccionario, y el
+    navegador se queda con el comportamiento de antes (buscar el ticker tal
+    cual)."""
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from cedears_informe import ALIAS_LOCALES
+        return dict(ALIAS_LOCALES)
+    except Exception as e:
+        print(f'  [aviso] no pude leer ALIAS_LOCALES ({type(e).__name__}); '
+              f'los codigos locales (YPFD, PAMP, TGSU2...) no se van a resolver')
+        return {}
+
+
 def _es_argentino(sym):
     """¿Este papel es riesgo argentino? Import blando: si el archivo del
     universo no esta, el bot sigue andando y nadie queda marcado."""
@@ -737,6 +754,16 @@ def main():
         'generated_at': datetime.now(timezone.utc).isoformat(),
         'yfinance': yf.__version__,
         'count': len(activos),
+        # ── EL DICCIONARIO DE CODIGOS LOCALES, EN EL DATO ────────────────────
+        # El navegador tiene que poder resolver "YPFD" -> "YPF" cuando el
+        # cliente sube un Excel con codigos de BYMA. La lista vive en
+        # `cedears_informe.py`, que es Python y el navegador no lee.
+        #
+        # Las dos salidas eran: copiarla a JavaScript, o hacerla viajar en el
+        # archivo. Copiarla = dos listas que se desincronizan, y esta ya se
+        # equivoco una vez (el comentario decia que IRSA usaba el mismo codigo
+        # en las dos plazas, y no: el local es IRSA, el ADR es IRS). Viaja.
+        'alias_locales': _alias_locales(),
         'activos': activos,
     }
     data_dir.mkdir(parents=True, exist_ok=True)

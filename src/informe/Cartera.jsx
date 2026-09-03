@@ -8,7 +8,8 @@ import { analizarCartera, stressTest, exposicion, concentracionPorIndustria,
          CLASE_TEXTO, ESTADO_TEXTO,
          ACCION_PESO_TEXTO, ORIGEN_PESOS, PERFIL_POR_DEFECTO,
          OBJETIVO_POR_DEFECTO, HORIZONTE_POR_DEFECTO,
-         armarDatosTesis, planDePesos } from './cartera.js'
+         armarDatosTesis, planDePesos,
+         suficienciaDeDatos } from './cartera.js'
 import { C, F, semaforo, colorSeveridad, num, pct, fecha } from './estilos.js'
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -101,6 +102,10 @@ export default function Cartera({ informes, meta, stocks, scores, conAnexo,
   return (
     <div style={{ maxWidth: 940, margin: '0 auto', padding: '26px 22px 70px' }}>
       <Portada meta={meta} n={validos.length} cart={cart} />
+
+      {/* ANTES QUE NADA: ¿alcanza para decidir? Va arriba de todo porque es lo
+          que decide con cuánta confianza hay que leer el resto. */}
+      <CompuertaDeDatos s={suficienciaDeDatos(cart, riesgo, scores)} />
 
       {/* ⚠️ LA TESIS YA NO VIVE ADENTRO DEL INFORME (31/08/2026).
           Estaba arriba de todo, que era lo correcto mientras el informe era
@@ -430,6 +435,51 @@ function Pesos({ cart }) {
       )}
       <RiesgoArgentino a={cart.argentina} valorTotal={valorTotal} />
     </Seccion>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LA COMPUERTA DE DATOS — el cartel que faltaba
+//
+// La cobertura vivía en cinco lugares con cinco escalas: las métricas por
+// posición, la cobertura del cálculo de riesgo, la de la cartera, la de
+// industria y el nivel de cada informe. Cinco números que había que cruzar
+// mentalmente para contestar la única pregunta que importa: ¿alcanza para
+// decidir? Nadie los cruzaba, y el informe salía completo —tabla, objetivo y
+// prosa— sobre una cartera de la que sabíamos la mitad.
+//
+// Cuando los datos están completos NO se dibuja NADA. Es la mitad del valor
+// de esto: un cartel que aparece siempre se ignora siempre.
+// ─────────────────────────────────────────────────────────────────────────────
+function CompuertaDeDatos({ s }) {
+  if (!s || s.nivel === 'completo') return null
+  const rojo = !s.puede_decidir
+  return (
+    <div style={{
+      margin: '0 0 20px', padding: '13px 16px', borderRadius: 9,
+      background: rojo ? C.rojoFondo : C.ambarFondo,
+      color: rojo ? C.rojo : C.ambar, fontSize: 13.5, lineHeight: 1.55 }}>
+      <strong>{s.resumen}</strong>
+      {s.faltantes.length > 0 && (
+        <ul style={{ margin: '7px 0 0', paddingLeft: 18 }}>
+          {s.faltantes.map((f, i) => (
+            <li key={i}>
+              <b>{f.que}:</b> {f.detalle}
+              <span style={{ opacity: 0.85 }}> — {f.consecuencia}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {/* Lo accionable. Sin esto, esto sería un sexto porcentaje. */}
+      {s.no_se_puede_afirmar.length > 0 && (
+        <div style={{ marginTop: 9, fontSize: 12.5 }}>
+          <b>Con estos datos NO se puede afirmar:</b>
+          <ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>
+            {s.no_se_puede_afirmar.map((f, i) => <li key={i}>{f}</li>)}
+          </ul>
+        </div>
+      )}
+    </div>
   )
 }
 

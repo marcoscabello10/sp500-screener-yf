@@ -40,6 +40,15 @@ function fn(nombre) {
 const sandbox = { console, Math, Object, Array, Number, String, JSON, Set, Map,
                   isFinite, isNaN, parseFloat, RegExp };
 vm.createContext(sandbox);
+// `filasAActivos` importa `resolverTicker` de universo.js, y el sandbox no
+// resuelve imports. Se inyecta la funcion REAL, extraida del archivo real: una
+// copia a mano probaria la copia, que es como se cuelan estos errores.
+const SRC_UNI = fs.readFileSync(ruta('universo.js'), 'utf8');
+vm.runInContext(
+  SRC_UNI.slice(SRC_UNI.indexOf("const SUFIJO_BA"),
+                SRC_UNI.indexOf('/**\n * Une las dos fuentes'))
+    .replace(/^export /gm, ''),
+  sandbox);
 vm.runInContext(
   SRC.slice(SRC.indexOf('const ES_TICKER'), SRC.indexOf('async function leerExcel'))
   , sandbox);
@@ -140,6 +149,40 @@ for (const enc of variantes) {
     r[0]?.cantidad === 10 && r[0]?.precioCompra === 100 && r[0]?.pctExcel === 25,
     JSON.stringify(r[0]));
 }
+
+// ── LOS CODIGOS DE BYMA (03/09/2026) ───────────────────────────────────────
+// Un cliente argentino escribe "YPFD", no "YPF". Hasta ahora esa fila
+// desaparecia del informe SIN error: el papel simplemente no existia.
+console.log('\n8. El Excel con codigos de BYMA');
+const ALIAS = { YPFD: 'YPF', PAMP: 'PAM', TGSU2: 'TGS', TECO2: 'TEO',
+                CRES: 'CRESY', IRSA: 'IRS' };
+const enc = ['Ticker', 'Cantidad', 'Precio de compra'];
+const filasBYMA = [['YPFD', 100, 30], ['IRSA', 50, 12],
+                   ['PAMP.BA', 200, 45], ['GGAL', 80, 55], ['AAPL', 10, 190]];
+const conAlias = filasAActivos(filasBYMA, enc, ALIAS);
+console.log('     ' + conAlias.map(a =>
+  `${a.tickerOriginal || a.ticker}->${a.ticker}`).join(' · '));
+chequear('YPFD se resuelve a YPF',
+  conAlias.some(a => a.ticker === 'YPF' && a.tickerOriginal === 'YPFD'));
+chequear('IRSA (local) se resuelve a IRS (el ADR)',
+  conAlias.some(a => a.ticker === 'IRS' && a.tickerOriginal === 'IRSA'));
+chequear('PAMP.BA tambien, con el sufijo de la plaza',
+  conAlias.some(a => a.ticker === 'PAM' && a.tickerOriginal === 'PAMP.BA'));
+chequear('GGAL queda igual: su codigo es el mismo en las dos plazas',
+  conAlias.some(a => a.ticker === 'GGAL' && !a.tickerOriginal));
+chequear('y un papel de EEUU no se toca',
+  conAlias.some(a => a.ticker === 'AAPL' && !a.tickerOriginal));
+chequear('no se pierde ninguna fila', conAlias.length === 5, `${conAlias.length}`);
+chequear('las cantidades sobreviven a la traduccion',
+  conAlias.find(a => a.ticker === 'YPF').cantidad === 100);
+
+// Sin diccionario NO puede romper: es el comportamiento de antes.
+const sinAlias = filasAActivos(filasBYMA, enc);
+chequear('sin diccionario sigue andando, con el ticker tal cual',
+  sinAlias.length === 5 && sinAlias.some(a => a.ticker === 'YPFD'));
+chequear('pero el sufijo .BA se saca igual: nunca es parte del ticker',
+  sinAlias.some(a => a.ticker === 'PAMP'),
+  sinAlias.map(a => a.ticker).join(','));
 
 console.log(`\n${'-'.repeat(64)}`);
 console.log(fail === 0 ? `TODO BIEN -- ${ok} comprobaciones`

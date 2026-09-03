@@ -74,7 +74,39 @@ const CART = {
 };
 
 // ── El calculo de control, hecho aparte y a mano ────────────────────────────
-function retornos(sym, n) {
+//
+// ⚠️ ESTE CONTROL TENIA EL MISMO BUG QUE EL MODULO, y por eso los dos coincidian
+// en verde mientras los dos estaban mal (03/09/2026). `filter(x => x != null)`
+// saca los dias sin cotizar de CADA serie por separado, y despues los retornos
+// se pareaban por POSICION: dos papeles con distinta cantidad de dias quedaban
+// corridos entre si. Medido sobre el snapshot real, XOM-CVX daba 0,037 de
+// correlacion en vez de 0,816.
+//
+// Un control que reproduce el error del codigo que controla no controla nada.
+// Ahora arma un EJE COMUN DE FECHAS —los dias en que todos los papeles del
+// grupo tienen precio— y calcula los retornos ahi. Es la misma idea que usa el
+// modulo, pero escrita aparte: si alguien rompe una de las dos, no coinciden.
+function ejeComun(syms, n) {
+  const L = SNAP.fechas.length;
+  const desde = Math.max(0, (L - 1) - n);
+  const idx = [];
+  for (let k = desde; k < L; k++) {
+    if (syms.every(t => SNAP.series[t] && SNAP.series[t][k] != null
+                        && SNAP.series[t][k] > 0)) idx.push(k);
+  }
+  return idx;
+}
+function retornosEje(sym, idx) {
+  const v = SNAP.series[sym];
+  const r = [];
+  for (let j = 1; j < idx.length; j++) {
+    const a = v[idx[j - 1]], b = v[idx[j]];
+    r.push((b - a) / a);
+  }
+  return r;
+}
+// Se deja la version vieja SOLO para la prueba que demuestra el bug, abajo.
+function retornosSalteando(sym, n) {
   const v = SNAP.series[sym].filter(x => x != null);
   const desde = Math.max(0, v.length - 1 - n);
   const s = v.slice(desde);
@@ -100,9 +132,8 @@ async function main() {
   // ── 1. Contra el calculo de control ─────────────────────────────────────
   console.log('1. Los numeros coinciden con la cuenta hecha aparte');
   const T = CART.activos.map(a => a.ticker);
-  const R = T.map(t => retornos(t, r.ventana_dias));
-  const L = Math.min(...R.map(x => x.length));
-  const RR = R.map(x => x.slice(-L));
+  const IDX = ejeComun(T, r.ventana_dias);
+  const RR = T.map(t => retornosEje(t, IDX));
   const total = CART.activos.reduce((a, x) => a + x.peso, 0);
   const w = CART.activos.map(a => a.peso / total);
   const varC = w.reduce((s, wi, i) =>
@@ -514,6 +545,72 @@ async function main() {
     rp2.cobertura_pct < 100, `${rp2.cobertura_pct}%`);
   console.log(`     cobertura: ${rp2.cobertura_pct}% · fuera: `
             + `${(rp2.sin_datos || []).map(s => `${s.ticker} (${s.motivo || 'sin historico'})`).join(', ')}`);
+
+  // ── 14. 🔴 LA REGRESION DEL BUG DE ALINEACION (03/09/2026) ───────────────
+  // Dos series identicas salvo por UN dia que a una le falta. Correlacion
+  // real: 1,0 (es el mismo papel). Con el metodo viejo —saltear los nulos de
+  // cada una y parear por posicion— la correlacion se desploma, porque cada
+  // retorno de A se compara contra el del dia siguiente de B.
+  //
+  // Esta prueba no depende de ningun papel real ni de ningun umbral de
+  // mercado: es aritmetica. Por eso es la que hay que mirar si esto vuelve.
+  console.log('\n14. Dos series con un dia de diferencia');
+  const base = [];
+  let px = 100;
+  for (let i = 0; i < 400; i++) { px *= 1 + Math.sin(i * 0.7) * 0.02; base.push(px); }
+  const A = base.slice();
+  const B = base.slice();
+  B[200] = null;                       // a B le falta UN dia, en el medio
+
+  const idxDos = [];
+  for (let k = 0; k < A.length; k++) if (A[k] != null && B[k] != null) idxDos.push(k);
+  const rA = [], rB = [];
+  for (let j = 1; j < idxDos.length; j++) {
+    rA.push((A[idxDos[j]] - A[idxDos[j - 1]]) / A[idxDos[j - 1]]);
+    rB.push((B[idxDos[j]] - B[idxDos[j - 1]]) / B[idxDos[j - 1]]);
+  }
+  const corrDe = (x, y) => cov(x, y) / Math.sqrt(cov(x, x) * cov(y, y));
+  const alineada = corrDe(rA, rB);
+
+  // Y la version vieja: saltear nulos por separado y recortar al mas corto.
+  const vA = A.filter(x => x != null), vB = B.filter(x => x != null);
+  const rr = v => { const o = []; for (let i = 1; i < v.length; i++) o.push((v[i] - v[i - 1]) / v[i - 1]); return o; };
+  const oA = rr(vA), oB = rr(vB);
+  const m = Math.min(oA.length, oB.length);
+  const vieja = corrDe(oA.slice(-m), oB.slice(-m));
+
+  console.log(`     alineada por fecha: ${alineada.toFixed(3)} · `
+            + `salteando nulos: ${vieja.toFixed(3)}`);
+  chequear('alineada por fecha, dos series iguales dan correlacion 1',
+    Math.abs(alineada - 1) < 1e-9, `${alineada}`);
+  chequear('y el metodo viejo la destruye (es la prueba de que era un bug)',
+    vieja < 0.9, `${vieja}`);
+
+  // Y ahora el modulo de verdad, sobre dos papeles REALES con distinta
+  // cantidad de dias. Si vuelve el bug, esta correlacion se desploma.
+  const conDistintos = ['XOM', 'CVX'].filter(t => SNAP.series[t]);
+  if (conDistintos.length === 2) {
+    const nA = SNAP.series.XOM.filter(x => x != null).length;
+    const nB = SNAP.series.CVX.filter(x => x != null).length;
+    const idxR = ejeComun(conDistintos, r.ventana_dias);
+    const cXOM = retornosEje('XOM', idxR), cCVX = retornosEje('CVX', idxR);
+    const real = corrDe(cXOM, cCVX);
+    console.log(`     XOM (${nA} dias) vs CVX (${nB} dias) -> ${real.toFixed(3)}`);
+    chequear('dos petroleras grandes correlacionan alto, como corresponde',
+      real > 0.6, `${real.toFixed(3)}`);
+    const rp = await Rg.analizarRiesgo(conTope([
+      { ticker: 'XOM', peso: 25, topeClase: 30, sector: 'Energy', industry: 'Oil & Gas' },
+      { ticker: 'CVX', peso: 25, topeClase: 30, sector: 'Energy', industry: 'Oil & Gas' },
+      otro('KO',   'Consumer Staples', 'Beverages', 25),
+      otro('MSFT', 'Technology',       'Software',  25),
+    ]), []);
+    if (rp.disponible) {
+      const par = (rp.pares_correlacionados || [])
+        .find(p => [p.a, p.b].sort().join('') === 'CVXXOM');
+      chequear('y el modulo las detecta como UNA sola apuesta', !!par,
+        JSON.stringify(rp.pares_correlacionados));
+    }
+  }
 
   resumen();
 }

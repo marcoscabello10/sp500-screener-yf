@@ -906,6 +906,24 @@ export function armarDatosTesis(cart, estres, candidatos = [], scores = {},
       caida_usd: peor.caidaUSD,
     } : null,
 
+    // ── LA COMPUERTA DE DATOS ────────────────────────────────────────────
+    // Va PRIMERO en el payload a proposito: es lo que decide con cuanta
+    // confianza se puede escribir todo lo demas. ~60 tokens, y evita el error
+    // mas caro que puede cometer este informe — sonar seguro sobre una cartera
+    // de la que sabemos la mitad.
+    datos: (() => {
+      const s = suficienciaDeDatos(cart, riesgo, scores)
+      if (!s) return null
+      return {
+        nivel: s.nivel,
+        puede_decidir: s.puede_decidir,
+        con_reservas: s.con_reservas,
+        // Solo lo accionable: la lista de frases prohibidas. Los detalles de
+        // cada hueco ya viajan en `riesgo`, `cartera` y `posiciones`.
+        no_se_puede_afirmar: s.no_se_puede_afirmar,
+      }
+    })(),
+
     // El riesgo pais, si lo hay. Son ~8 tokens y sin esto el modelo no puede
     // explicar por que se recorta un papel que esta perfecto dentro de su
     // sector y dentro de su tope de posicion.
@@ -1541,5 +1559,207 @@ export function hechosParaElCliente(datos) {
   const pendiente = loQueQuedaPendiente(datos)
   if (pendiente.length) h.pendiente = pendiente
 
+  // Si con los datos que hay no se puede decidir, el texto del cliente NO
+  // puede sonar como una recomendacion. Es el unico campo de este bloque que
+  // puede cambiar el TONO entero del texto, y por eso viaja aunque cueste.
+  const d = datos.datos || null
+  if (d && d.puede_decidir === false) h.datos_insuficientes = true
+
   return h
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LA COMPUERTA DE DATOS — un solo lugar que diga "con esto no alcanza"
+//
+// EL PROBLEMA QUE RESUELVE (03/09/2026)
+// ------------------------------------
+// La cobertura de datos estaba repartida en CINCO campos, cada uno con su
+// propia escala y su propio silencio:
+//
+//   1. `metricas_usadas` por posición    "4/6" — ¿y eso alcanza o no?
+//   2. `riesgo.cobertura_del_calculo_pct` 87% — ¿de qué? ¿de las acciones?
+//   3. `cartera.cobertura_analizada_pct`  71% — otra cosa distinta
+//   4. `industrias.cobertura_pct`         60% — otra más
+//   5. `nivel: completo | reducido`       por informe individual
+//
+// Cinco números que hay que leer juntos y cruzar mentalmente para contestar la
+// única pregunta que importa: **¿alcanza para decidir?**. Nadie los cruza. Y el
+// resultado era el peor posible: el informe salía COMPLETO, con su tabla, su
+// objetivo y su prosa, sobre una cartera de la que sabíamos la mitad — y el
+// único rastro eran cinco porcentajes en cinco lugares distintos.
+//
+// LO QUE ESTA FUNCIÓN AGREGA, Y NO ES UN SEXTO NÚMERO
+// --------------------------------------------------
+// `no_se_puede_afirmar`: la lista de frases que el informe NO tiene derecho a
+// decir con los datos que hay. Eso es lo accionable. Un "87% de cobertura" no
+// le dice nada a nadie; "no se puede decir que la volatilidad de la cartera es
+// 15,3%, porque ese número cubre el 87%" sí.
+//
+// LO QUE NO HACE: no bloquea. Un informe con datos parciales sigue siendo útil
+// —a veces es todo lo que hay— y esconderlo sería peor. Lo que no puede pasar
+// es que se lea como si fuera completo.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Los tres umbrales. Se nombran para poder discutirlos de a uno.
+//
+// MINIMO_POSICIONES: con una sola posición no hay cartera que analizar — no hay
+// concentración, no hay correlación, no hay rebalanceo posible.
+export const MINIMO_POSICIONES = 2
+// Debajo de esto, los porcentajes son sobre un universo que no es la cartera
+// del cliente y no hay forma honesta de presentarlos.
+export const COBERTURA_MINIMA_PCT = 50
+// Y desde acá para arriba se considera cobertura plena. No es 100 a propósito:
+// exigir el 100% haría que cualquier papel raro degrade el informe entero.
+export const COBERTURA_PLENA_PCT = 95
+// Desde acá NO se puede seguir hablando de "la calidad promedio de la cartera":
+// con un tercio sin puntaje, el promedio es sobre otra cosa. Debajo de esto el
+// hueco se anota igual, pero no calla nada — una compuerta que se queja siempre
+// se ignora siempre, y entonces no protege de nada.
+export const SIN_PUNTAJE_CALLA_PCT = 33
+// Y desde acá el hueco es grave: media cartera sin puntaje no es un detalle.
+export const SIN_PUNTAJE_GRAVE_PCT = 50
+
+/**
+ * @param cart    lo que devuelve `analizarCartera()`
+ * @param riesgo  lo que devuelve `analizarRiesgo()`, o null
+ * @param scores  { ticker: {score, nUsadas, nAplicables} } de `sugerencias.js`
+ */
+export function suficienciaDeDatos(cart, riesgo = null, scores = {}) {
+  if (!cart) return null
+  const activos = cart.activos || []
+  const conPeso = activos.filter(a => (a.peso || 0) > 0)
+  const faltantes = []
+  const noSePuedeAfirmar = []
+
+  // ── 1. ¿Hay cartera? ────────────────────────────────────────────────────
+  if (activos.length < MINIMO_POSICIONES) {
+    faltantes.push({
+      que: 'posiciones',
+      detalle: `hay ${activos.length}, hacen falta al menos ${MINIMO_POSICIONES}`,
+      consecuencia: 'no hay cartera que analizar, solo un papel suelto',
+    })
+    noSePuedeAfirmar.push('nada sobre diversificación ni sobre concentración')
+  }
+
+  // ── 2. ¿Cuánto de la cartera del cliente estamos mirando? ───────────────
+  const cob = cart.cobertura
+  if (cob != null && cob < COBERTURA_PLENA_PCT) {
+    const grave = cob < COBERTURA_MINIMA_PCT
+    faltantes.push({
+      que: 'cobertura de la cartera',
+      detalle: `se analiza el ${r1(cob)}% de lo que tiene el cliente`,
+      consecuencia: grave
+        ? 'los porcentajes son sobre menos de la mitad de la cartera'
+        : 'los porcentajes son sobre la parte analizada, no sobre el total',
+      grave,
+    })
+    noSePuedeAfirmar.push(
+      `que la cartera esté concentrada o diversificada: se mira el ${r1(cob)}%`)
+  }
+
+  // ── 3. ¿Cuántas posiciones tienen un puntaje publicable? ────────────────
+  // Un puntaje null NO es un puntaje bajo: es "no sabemos". La diferencia
+  // importa porque un null se lee como cero en cualquier promedio.
+  const sinPuntaje = activos.filter(a => {
+    const s = scores[a.ticker]
+    return !s || s.score == null
+  })
+  if (sinPuntaje.length) {
+    // ⚠️ SE MIDE POR PESO, NO POR CONTEO, y es la misma leccion que este
+    // proyecto ya aprendio dos veces con los sectores: una posicion del 1% sin
+    // puntaje no invalida nada, una del 40% si. Contando papeles, las dos
+    // pesan igual — y entonces un papel chico y raro apagaria el informe.
+    //
+    // Cuando no hay montos cargados no queda otra que contar, y ahi el numero
+    // es un conteo: se dice.
+    const hayPesos = conPeso.length > 0
+    const pct = hayPesos
+      ? Math.round(sinPuntaje.reduce((a, x) => a + (x.peso || 0), 0))
+      : Math.round(sinPuntaje.length / activos.length * 100)
+    faltantes.push({
+      que: 'puntaje fundamental',
+      detalle: `${sinPuntaje.length} de ${activos.length} posiciones sin puntaje `
+             + `(${sinPuntaje.map(a => a.ticker).join(', ')})`
+             + (hayPesos ? ` · pesan el ${pct}% de la cartera` : ''),
+      consecuencia: 'no se las puede comparar contra su sector',
+      grave: pct >= SIN_PUNTAJE_GRAVE_PCT,
+    })
+    if (pct >= SIN_PUNTAJE_CALLA_PCT) {
+      noSePuedeAfirmar.push(
+        'que la calidad promedio de la cartera sea alta o baja: '
+        + `${pct}% ${hayPesos ? 'de la cartera' : 'de las posiciones'} `
+        + `no tiene puntaje`)
+    }
+  }
+
+  // ── 4. ¿El riesgo se pudo medir, y sobre qué parte? ─────────────────────
+  if (!riesgo || riesgo.disponible === false) {
+    faltantes.push({
+      que: 'riesgo del conjunto',
+      detalle: riesgo?.motivo || 'no se calculó',
+      consecuencia: 'sin volatilidad, correlaciones ni peso objetivo',
+      grave: true,
+    })
+    noSePuedeAfirmar.push('ningún número de volatilidad ni de aporte al riesgo')
+    noSePuedeAfirmar.push('que una posición aporte más riesgo del que su peso sugiere')
+  } else {
+    const cr = riesgo.cobertura_pct
+    if (cr != null && cr < COBERTURA_PLENA_PCT) {
+      const fuera = (riesgo.sin_datos || [])
+      faltantes.push({
+        que: 'histórico de precios',
+        detalle: `los números de riesgo cubren el ${r1(cr)}% de las acciones`
+               + (fuera.length
+                  ? ` · fuera: ${fuera.map(s => `${s.ticker} (${s.motivo || 'sin histórico'})`).join(', ')}`
+                  : ''),
+        consecuencia: 'la volatilidad es la del pedazo que sí se pudo medir',
+        grave: cr < COBERTURA_MINIMA_PCT,
+      })
+      noSePuedeAfirmar.push(
+        `que la volatilidad de la cartera sea X%: ese número cubre el ${r1(cr)}%`)
+    }
+  }
+
+  // ── 5. La industria, que es el nivel fino ───────────────────────────────
+  // Se recalcula acá en vez de leerse de `cart`: `analizarCartera` no la
+  // guarda, la arma `concentracionPorIndustria` cuando se la pide. Leer un
+  // campo que no existe habria dado `undefined` y esta comprobacion nunca
+  // habria disparado — en silencio, que es el error que este modulo combate.
+  const ind = concentracionPorIndustria(cart)
+  if (ind && ind.confiable === false && (ind.industrias || []).length) {
+    faltantes.push({
+      que: 'industria',
+      detalle: `solo el ${r1(ind.cobertura_pct)}% de las posiciones traen `
+             + `industria` + (ind.sin_dato?.length
+                ? ` · sin dato: ${ind.sin_dato.join(', ')}` : ''),
+      consecuencia: 'no se puede distinguir cuatro bancos de un sector repartido',
+    })
+    noSePuedeAfirmar.push(
+      'que un sector concentrado esté repartido entre negocios distintos')
+  }
+
+  // ── El veredicto ────────────────────────────────────────────────────────
+  const hayGrave = faltantes.some(f => f.grave)
+  const insuficiente = activos.length < MINIMO_POSICIONES
+    || (cob != null && cob < COBERTURA_MINIMA_PCT)
+  const nivel = insuficiente ? 'insuficiente'
+              : (faltantes.length ? 'parcial' : 'completo')
+
+  return {
+    nivel,
+    // La única pregunta que importa, contestada con un booleano.
+    puede_decidir: nivel !== 'insuficiente',
+    // Y si hay algo grave, se dice aunque se pueda decidir: "parcial con un
+    // agujero grande" y "parcial con un detalle" no son lo mismo.
+    con_reservas: hayGrave,
+    faltantes,
+    // LO ACCIONABLE. Sin esto, esta función sería un sexto porcentaje.
+    no_se_puede_afirmar: noSePuedeAfirmar,
+    resumen: nivel === 'completo'
+      ? 'Los datos alcanzan para decidir.'
+      : nivel === 'parcial'
+        ? `Alcanza para decidir, con reservas: ${faltantes.length} `
+          + `${faltantes.length === 1 ? 'hueco' : 'huecos'} de datos.`
+        : 'Con estos datos no se puede sacar una conclusión de cartera.',
+  }
 }

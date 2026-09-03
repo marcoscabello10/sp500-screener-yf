@@ -457,8 +457,25 @@ chequear(sinB['plan'] is None, 'sin Motor B no puede haber plan')
 CLAVES_DEL_NAVEGADOR = {'perfil', 'objetivo', 'horizonte', 'cartera', 'topes',
                         'estres', 'sectores', 'posiciones', 'candidatos',
                         'riesgo', 'plan'}
+# La compuerta de datos y el riesgo pais entraron el 02-03/09. Se nombran
+# aparte porque el payload de prueba (`cartera()`) no los trae: lo que se
+# comprueba es que `_resumen_cartera` los DEJE PASAR cuando estan.
+CLAVES_OPCIONALES = {'datos', 'argentina', 'industrias'}
 faltan = CLAVES_DEL_NAVEGADOR - set(d2.keys())
 chequear(not faltan, f'estas claves se pierden en _resumen_cartera: {faltan}')
+# Y las opcionales: si el navegador las manda, tienen que llegar. Es la misma
+# compuerta que ya se comio dos bugs (`riesgo` y los campos de los candidatos).
+opc = dict(conB)
+opc['datos'] = {'nivel': 'parcial', 'puede_decidir': True,
+                'con_reservas': True,
+                'no_se_puede_afirmar': ['que la volatilidad sea X%']}
+opc['argentina'] = {'pct': 22.4, 'tope': 20, 'excede': True}
+d3 = I._resumen_cartera(opc)
+for k in ('datos', 'argentina'):
+    chequear(d3.get(k) == opc[k],
+             f'"{k}" se pierde en _resumen_cartera: se calcula y se tira')
+chequear('no_se_puede_afirmar' in (d3.get('datos') or {}),
+         'la lista de frases prohibidas no llega al modelo')
 print(f'  Motor B completo    -> riesgo + plan + {len(d2["candidatos"])} '
       f'candidatos con delta, mejor primero')
 
@@ -534,7 +551,7 @@ print(f'  sectores ausentes    -> {len(filtrados)} candidatos de '
 # Ya no hay que medir a mano: `python test/medir_payload.py` imprime esta
 # misma linea lista para pegar. Se hizo reproducible justamente porque este
 # numero se quedo viejo cinco veces en cuatro dias.
-MEDIDO = {3: 1343, 5: 1796, 10: 2832, 15: 3636, 20: 4339, 25: 5102}
+MEDIDO = {3: 1407, 5: 1859, 10: 2895, 15: 3699, 20: 4403, 25: 5166}
 for n_pos, real in MEDIDO.items():
     est = I.estimar_cartera(n_pos, 'anthropic')['tokens_estimados']['entrada']
     chequear(est >= real,

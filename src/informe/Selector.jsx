@@ -1,5 +1,6 @@
 import React, { useState, useRef, useMemo } from 'react'
 import { C, F } from './estilos.js'
+import { resolverTicker } from './universo.js'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Selector de activo — tres caminos que conviven
@@ -140,7 +141,7 @@ function aNumero(v) {
   return Number.isFinite(n) ? n : null
 }
 
-function filasAActivos(filas, encabezado) {
+function filasAActivos(filas, encabezado, alias = null) {
   const iTicker = encabezado.findIndex(esColumnaTicker)
   if (iTicker < 0) return []
   const norm = h => String(h || '').toLowerCase()
@@ -171,11 +172,25 @@ function filasAActivos(filas, encabezado) {
   const vistos = new Set()
   const out = []
   for (const f of filas) {
-    const t = String(f[iTicker] ?? '').trim().toUpperCase()
+    const crudo = String(f[iTicker] ?? '').trim().toUpperCase()
+    // ── EL CODIGO DE BYMA NO ES EL TICKER (03/09/2026) ────────────────────
+    // Un cliente argentino escribe "YPFD", no "YPF"; "PAMP", no "PAM"; y a
+    // veces "YPFD.BA" si exporto del broker. Hasta ahora ninguna de esas
+    // formas encontraba el papel, y el sintoma era el peor: la posicion
+    // desaparecia del informe SIN error y SIN aviso, como si el cliente
+    // hubiera escrito cualquier cosa.
+    //
+    // `resolverTicker` saca el sufijo `.BA` y traduce con el diccionario que
+    // viaja en informe_detalle.json. Si el diccionario no esta, devuelve el
+    // ticker limpio: el comportamiento de antes, nunca peor.
+    const t = resolverTicker(crudo, alias)
     if (!t || !ES_TICKER.test(t) || vistos.has(t)) continue
     vistos.add(t)
     out.push({
       ticker: t,
+      // Lo que el cliente escribio, cuando NO es lo mismo. El informe lo
+      // muestra: "Aparece como YPFD en tu Excel" evita la pregunta obvia.
+      ...(crudo !== t ? { tickerOriginal: crudo } : {}),
       sector: iSector >= 0 ? f[iSector] : null,
       nombre: iNombre >= 0 ? f[iNombre] : null,
       score:  iScore  >= 0 ? parseFloat(f[iScore]) : null,
@@ -211,7 +226,7 @@ function normalizarPorcentajes(activos) {
   }))
 }
 
-async function leerExcel(file) {
+async function leerExcel(file, alias) {
   // Carga diferida: la libreria xlsx pesa ~940 kB y solo hace falta si el
   // usuario efectivamente sube un Excel. Asi /informe arranca liviano.
   const XLSX = await import('xlsx')
@@ -224,14 +239,14 @@ async function leerExcel(file) {
     if (!aoa.length) continue
     // El encabezado no siempre esta en la primera fila (puede haber titulo)
     for (let i = 0; i < Math.min(5, aoa.length); i++) {
-      const activos = filasAActivos(aoa.slice(i + 1), aoa[i] || [])
+      const activos = filasAActivos(aoa.slice(i + 1), aoa[i] || [], alias)
       if (activos.length) return { activos, hoja: nombreHoja }
     }
   }
   return { activos: [], hoja: null }
 }
 
-async function leerHTML(file) {
+async function leerHTML(file, alias) {
   const texto = await file.text()
   const doc = new DOMParser().parseFromString(texto, 'text/html')
   for (const tabla of Array.from(doc.querySelectorAll('table'))) {
@@ -239,7 +254,7 @@ async function leerHTML(file) {
       .map(tr => Array.from(tr.querySelectorAll('th,td')).map(c => c.textContent.trim()))
     if (filas.length < 2) continue
     for (let i = 0; i < Math.min(3, filas.length); i++) {
-      const activos = filasAActivos(filas.slice(i + 1), filas[i])
+      const activos = filasAActivos(filas.slice(i + 1), filas[i], alias)
       if (activos.length) return { activos, hoja: 'tabla HTML' }
     }
   }
@@ -255,7 +270,7 @@ function nombreDe(universo, ticker) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export default function Selector({ universo, completos, onElegir, onCartera,
-                                  cargando, precios = null }) {
+                                  cargando, precios = null, alias = null }) {
   const [seleccion, setSeleccion] = useState(() => new Set())
 
   const alternar = t => setSeleccion(s => {
@@ -335,7 +350,7 @@ export default function Selector({ universo, completos, onElegir, onCartera,
     if (!file) return
     try {
       const esHtml = /\.html?$/i.test(file.name)
-      const r = esHtml ? await leerHTML(file) : await leerExcel(file)
+      const r = esHtml ? await leerHTML(file, alias) : await leerExcel(file, alias)
       if (!r.activos.length) {
         setErrorArchivo(
           `No encontré una columna de tickers en "${file.name}". ` +

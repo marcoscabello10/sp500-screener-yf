@@ -58,6 +58,32 @@ chequear(not secuestro, f'estos alias pisan un ticker real: {secuestro}')
 chequear(C.resolver_alias('ypfd') == 'YPF', 'resolver_alias no normaliza a mayusculas')
 chequear(C.resolver_alias('AAPL') == 'AAPL', 'resolver_alias rompe lo que no es alias')
 chequear(C.resolver_alias(None) == '', 'resolver_alias no aguanta None')
+
+# ── EL SUFIJO DE LA PLAZA ────────────────────────────────────────────────
+# Un Excel exportado del broker puede traer `YPFD.BA` en vez de `YPFD`. Si el
+# sufijo se sacara DESPUES de buscar el alias, 'YPFD.BA' no encontraria nada y
+# el papel se perderia — el sintoma exacto que este modulo evita.
+chequear(C.resolver_alias('YPFD.BA') == 'YPF',
+         'con el sufijo .BA el alias no resuelve')
+chequear(C.resolver_alias('GGAL.BA') == 'GGAL',
+         'un papel sin alias no pierde el sufijo .BA')
+chequear(C.resolver_alias('ALUA.BA') == 'ALUA' and C.es_solo_medible('ALUA.BA'),
+         'un solo-medible con sufijo no se reconoce')
+
+# ── IRSA: EL CASO QUE MAS SE PRESTA A ERROR ──────────────────────────────
+# El comentario de este archivo decia que IRSA usaba el mismo codigo en las dos
+# plazas, y no: `IRSA` es el LOCAL, `IRS` es el ADR. El mapeo siempre estuvo
+# bien; mentia el texto. Se clava acá para que no vuelva a pasar.
+chequear(C.resolver_alias('IRSA') == 'IRS',
+         'IRSA (codigo local) tiene que resolver al ADR IRS')
+chequear('IRS' in u and 'IRSA' not in u,
+         'IRSA no puede ser una clave del universo: la clave es el ADR, IRS')
+for local, adr in (('YPFD', 'YPF'), ('PAMP', 'PAM'), ('TGSU2', 'TGS'),
+                   ('TECO2', 'TEO'), ('CRES', 'CRESY')):
+    chequear(C.resolver_alias(local) == adr,
+             f'{local} (BYMA) no resuelve a {adr} (NYSE)')
+    chequear(C.resolver_alias(f'{local}.BA') == adr,
+             f'{local}.BA no resuelve a {adr}')
 print(f'  alias locales       -> {len(C.ALIAS_LOCALES)}, todos apuntan a un papel real')
 
 # ── 3. La lista curada de CEDEARs ─────────────────────────────────────────
@@ -134,6 +160,10 @@ chequear(all(isinstance(v, list) and v and v[0].endswith('.BA')
          'un solo-medible sin simbolo .BA: a Yahoo hay que pedirle la plaza')
 chequear(C.es_solo_medible('ALUA') and not C.es_solo_medible('AAPL'),
          'es_solo_medible no distingue')
+# Ecogas entro al panel lider del S&P Merval en 2026 y no tiene ADR.
+chequear(C.es_solo_medible('ECOG'), 'falta Ecogas entre los solo medibles')
+chequear(C.SOLO_MEDIBLES['ECOG'] == ['ECOG.BA'],
+         f'el simbolo de Ecogas no es ECOG.BA: {C.SOLO_MEDIBLES.get("ECOG")}')
 chequear(C.es_solo_medible('alua'), 'es_solo_medible no normaliza a mayusculas')
 # Ninguna de estas puede tener ADR: si lo tuviera, el papel correcto seria el
 # ADR (en dolares, con consenso e historico comparable) y tenerlo de las dos

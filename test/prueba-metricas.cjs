@@ -64,6 +64,9 @@ function bloque(desde, hasta) {
 }
 
 const codigo = [
+  // El umbral de la compuerta. Se EXTRAE en vez de escribirse acá: si alguien
+  // lo cambia en App.jsx, la prueba tiene que probar el nuevo, no el viejo.
+  bloque('const MIN_METRICAS_SCORE = ', ';'),
   bloque('const FUND_METRICS = [', '\n];'),
   bloque('const SECTOR_NO_APLICA = {', '\n};'),
   bloque('function metricaEfectiva', '\n}'),
@@ -76,7 +79,7 @@ const sandbox = { console, Math, Array, Object, Number, isFinite, Map, Set, JSON
 vm.createContext(sandbox);
 vm.runInContext(codigo, sandbox);
 const API = vm.runInContext(
-  '({FUND_METRICS, SECTOR_NO_APLICA, metricaEfectiva, puntuarGrupo, norm})', sandbox);
+  '({FUND_METRICS, SECTOR_NO_APLICA, metricaEfectiva, puntuarGrupo, norm, MIN_METRICAS_SCORE})', sandbox);
 
 let ok = 0, fail = 0;
 function chequear(nombre, cond, detalle) {
@@ -195,7 +198,7 @@ const gTech = porSector['Technology'];
 const rTech = API.puntuarGrupo(gTech, 'Technology', API.norm);
 let malos = 0;
 for (const r of rTech) {
-  let sc = 0, tw = 0;
+  let sc = 0, tw = 0, usadas = 0;
   const res = API.FUND_METRICS.map(m => ({ m, e: API.metricaEfectiva(r, m, 'Technology') }));
   for (const { m, e } of res) {
     if (e.campo == null) continue;
@@ -203,10 +206,15 @@ for (const r of rTech) {
     // no solo los que lo usan como reemplazo.
     const vals = gTech.map(s => s[e.campo]);
     const n = API.norm(vals, e.valor, m.hb);
-    if (n != null) { sc += n * m.w; tw += m.w; }
+    if (n != null) { sc += n * m.w; tw += m.w; usadas++; }
   }
-  const esperado = tw > 0 ? (sc / tw) * 100 : 0;
-  if (Math.abs(esperado - r.score) > 1e-9) malos++;
+  // La compuerta tambien va en el calculo a mano: si no, esta prueba diria que
+  // el codigo se equivoco justo en el unico papel donde hace lo correcto.
+  const esperado = usadas < API.MIN_METRICAS_SCORE
+    ? null : (tw > 0 ? (sc / tw) * 100 : 0);
+  if (esperado === null || r.score === null) {
+    if (esperado !== r.score) malos++;
+  } else if (Math.abs(esperado - r.score) > 1e-9) malos++;
 }
 chequear('recalculado a mano, los 75 scores de Technology coinciden', malos === 0, `${malos} no coinciden`);
 chequear('todos los scores caen entre 0 y 100',
@@ -251,12 +259,65 @@ for (const [sec, g] of Object.entries(porSector)) {
 }
 for (const k of Object.keys(conteo).sort()) console.log(`     ${k}: ${conteo[k]}`);
 console.log(`     usan al menos un reemplazo: ${conAlt}`);
-// FISV queda con 2 de 6 y aun asi puntua 99 -- ver el informe al respecto.
-// Es un caso REAL que hay que decidir, no una falla del arreglo: se deja
-// registrado para que la prueba avise si aparecen mas.
 const pocas = Object.entries(conteo).filter(([k]) => +k.split('/')[0] <= 2);
-chequear('a lo sumo UNA empresa con 2 metricas o menos (hoy: FISV)',
-  pocas.reduce((a,[,v]) => a+v, 0) <= 1, JSON.stringify(pocas));
+console.log(`     con 2 metricas o menos: ${pocas.reduce((a,[,v]) => a+v, 0)}`);
+
+// ── LA COMPUERTA DE DATOS INSUFICIENTES ────────────────────────────────────
+// El caso que la motivo, y esta prueba lo tenia ANOTADO como pendiente desde
+// el 31/08: FISV puntuaba 99 con dos metricas de seis. Yahoo trae de Fiserv el
+// P/E y el P/B y nada mas, y esas dos en Technology lo dejan en el percentil
+// mas alto de su sector. El numero no estaba mal calculado: estaba calculado
+// sobre demasiado poco.
+//
+// (Y de paso: FISV NO es un ticker muerto. Fiserv paso a `FI` en 2023 y volvio
+// a `FISV` el 11/11/2025 al mudarse del NYSE al Nasdaq. El simbolo esta bien;
+// lo que estaba mal era el puntaje.)
+console.log('\n8. La compuerta: menos de ' + API.MIN_METRICAS_SCORE + ' metricas, sin puntaje');
+chequear('el umbral es el mismo que el del informe (MIN_METRICAS = 3)',
+  API.MIN_METRICAS_SCORE === 3, `${API.MIN_METRICAS_SCORE}`);
+
+let sinPuntaje = 0, conPuntaje = 0;
+const incoherentes = [];
+for (const [sec, g] of Object.entries(porSector)) {
+  for (const r of API.puntuarGrupo(g, sec, API.norm)) {
+    if (r.nUsed < API.MIN_METRICAS_SCORE) {
+      sinPuntaje++;
+      if (r.score !== null) incoherentes.push(`${r.symbol} ${r.nUsed}/${r.nTotal} -> ${r.score}`);
+    } else {
+      conPuntaje++;
+      if (r.score == null) incoherentes.push(`${r.symbol} tiene ${r.nUsed} metricas y NO puntua`);
+    }
+  }
+}
+console.log(`     sin puntaje: ${sinPuntaje} · con puntaje: ${conPuntaje}`);
+chequear('ninguna con pocas metricas conserva puntaje, ninguna con datos lo pierde',
+  incoherentes.length === 0, incoherentes.join(' | '));
+
+const fisv = (porSector['Technology'] || []).find(s => s.symbol === 'FISV');
+if (fisv) {
+  const r = API.puntuarGrupo(porSector['Technology'], 'Technology', API.norm)
+    .find(x => x.symbol === 'FISV');
+  console.log(`     FISV: ${r.nUsed}/${r.nTotal} metricas -> score ${r.score}`);
+  chequear('FISV ya no puntua 99 con dos metricas', r.score === null,
+    `score ${r.score}`);
+  chequear('y queda marcada como datos insuficientes', r.datosInsuficientes === true);
+} else {
+  console.log('     (FISV no esta en el snapshot: se saltea ese caso)');
+}
+
+// `null` y no 0, y esto NO es un detalle de estilo: 0 es "malisimo" y esto es
+// "no sabemos". Con 0, FISV ordenaria ULTIMA en su sector y el informe diria
+// que es la peor tecnologica del indice, que es tan falso como decir que es la
+// mejor. Con null, aguas abajo el filtro `marketScore[...] != null` la saca de
+// las sugerencias de reemplazo, que es donde mas dano hacia.
+const conNull = [];
+for (const [sec, g] of Object.entries(porSector)) {
+  for (const r of API.puntuarGrupo(g, sec, API.norm)) {
+    if (r.nUsed < API.MIN_METRICAS_SCORE) conNull.push(r.score);
+  }
+}
+chequear('el puntaje que falta es null, nunca 0',
+  conNull.every(v => v === null), JSON.stringify(conNull));
 
 console.log(`\n${'-'.repeat(62)}`);
 console.log(fail === 0 ? `TODO BIEN -- ${ok} comprobaciones` : `${fail} FALLAS de ${ok + fail}`);

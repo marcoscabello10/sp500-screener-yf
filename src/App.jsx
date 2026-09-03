@@ -168,6 +168,13 @@ function metricaEfectiva(stk, m, sector) {
 // El score de F1, en UN solo lugar. Antes esta misma cuenta estaba escrita tres
 // veces (F1, el recálculo de F1 y el marketScore de las sugerencias) y las tres
 // habrían necesitado el mismo arreglo por separado.
+// Mínimo de métricas para que un puntaje signifique algo. Es EL MISMO número
+// que usa el informe (`MIN_METRICAS` en `src/informe/sugerencias.js`), y tiene
+// que seguir siéndolo: si los dos lados aplican umbrales distintos, el mismo
+// papel puede puntuar en uno y no en el otro, que es la clase de discrepancia
+// que nadie encuentra hasta que un cliente la señala.
+const MIN_METRICAS_SCORE = 3;
+
 function puntuarGrupo(pool, sector, norm) {
   const aplicables = FUND_METRICS.filter(m => !SECTOR_NO_APLICA[sector]?.has(m.key));
   // Se resuelve una vez por papel y métrica: sin esto sería O(n²) resolviendo
@@ -206,7 +213,29 @@ function puntuarGrupo(pool, sector, norm) {
         if (e.alt) { nAlt++; usando[m.key] = e.campo; }
       }
     }
-    return { ...stk, score: tw > 0 ? (score / tw) * 100 : 0,
+    // ⚠️ LA COMPUERTA DE DATOS INSUFICIENTES (02/09/2026)
+    //
+    // EL CASO QUE LA MOTIVA, y es real: FISV puntuaba **99** con dos métricas
+    // de seis. Yahoo trae de Fiserv el P/E (10,2) y el P/B (1,05) y nada más
+    // — ni ROE, ni margen, ni EV/EBITDA, ni crecimiento—. Y esas dos, en
+    // Technology, donde todo cotiza caro, lo dejan en el percentil más alto de
+    // su sector. El número no estaba mal calculado: estaba calculado sobre
+    // demasiado poco. Con 2 de 6 el puntaje no ordena por calidad, ordena por
+    // qué campos trajo Yahoo.
+    //
+    // El informe ya resolvía esto (`MIN_METRICAS` en `sugerencias.js`, mismo
+    // umbral de 3). El screener calculaba `nUsed` desde siempre y NUNCA lo
+    // miraba. O sea que los dos lados del proyecto decían cosas distintas del
+    // mismo papel: uno 99, el otro nada.
+    //
+    // `null` y no 0, a propósito: 0 es "malísimo" y esto es "no sabemos".
+    // Aguas abajo el `null` hace lo correcto solo — al ordenar cae al final,
+    // y `marketScore[...]!=null` ya lo saca de las sugerencias de reemplazo,
+    // que es exactamente donde más daño hacía.
+    const alcanza = nUsed >= MIN_METRICAS_SCORE;
+    return { ...stk,
+             score: !alcanza ? null : (tw > 0 ? (score / tw) * 100 : 0),
+             datosInsuficientes: !alcanza,
              nUsed, nAlt, usando, nTotal: aplicables.length };
   });
 }
@@ -632,6 +661,20 @@ function corrColor(r) {
 
 // ── Small UI components ───────────────────────────────────────────────────────
 function ScoreBar({score, nUsed, nTotal}) {
+  // Sin puntaje no hay barra: dibujar una vacía se lee como "cero", y cero es
+  // "malísimo", no "no sabemos". Son dos cosas distintas y esta es la única
+  // parte de la pantalla donde se pueden confundir.
+  if (score == null) {
+    return (
+      <div style={{display:"flex",alignItems:"center",gap:6}}>
+        <span style={{fontSize:11,color:"#475569",fontFamily:"monospace"}}>—</span>
+        <span title={`Solo ${nUsed} de ${nTotal} métricas: no alcanza para un puntaje comparable. Yahoo no trae el resto de los datos de este papel.`}
+          style={{fontSize:9,color:"#f97316",fontFamily:"monospace",background:"#1e1208",border:"1px solid #7c3a0a",borderRadius:3,padding:"1px 4px",cursor:"help",whiteSpace:"nowrap"}}>
+          datos insuf. {nUsed}/{nTotal}
+        </span>
+      </div>
+    );
+  }
   const c = score>=70?"#34d399":score>=45?"#fbbf24":"#f87171";
   const incomplete = nTotal!=null && nUsed < nTotal;
   return (
@@ -1646,6 +1689,49 @@ export default function App() {
         }
       } catch { /* si falla, se sigue con fetch en vivo para todos */ }
 
+      // ── FASE C: el snapshot del INFORME cubre lo que el índice no ────────
+      //
+      // EL PROBLEMA QUE RESUELVE. `sp500_fundamentals.json` son las 504 del
+      // índice. Todo lo demás —Itaú, Bradesco, Vale, Mercado Libre, los ADR
+      // argentinos, las mineras canadienses— caía en `liveNeeded`, y eso
+      // significaba pedirle a Yahoo, EN VIVO Y DESDE VERCEL, tres endpoints
+      // por papel en tandas de 5/20/35 con esperas de 150 a 500 ms.
+      //
+      // Ese es exactamente el camino que se rompe: Yahoo bloquea IPs de
+      // datacenter, y cuando bloquea no da error — devuelve vacío. Es la causa
+      // documentada de que "antes todo saliera en $0.00". Una cartera con 15
+      // CEDEARs de afuera del índice tardaba minutos y podía salir en blanco.
+      //
+      // `informe_detalle.json` ya tiene esos mismos campos para 281 papeles,
+      // bajados por el bot desde la PC de Marcos, donde Yahoo sí responde. No
+      // hay ningún dato nuevo que conseguir: hay que leer el archivo que ya
+      // existe.
+      //
+      // Se baja SOLO si hace falta (pesa ~2 MB) y su fracaso no rompe nada: si
+      // no está, se sigue por el camino de siempre.
+      let faltan = tickers.filter(t => !snapshotMap[t]);
+      if (faltan.length) {
+        setLp({step:`Buscando ${faltan.length} papeles fuera del índice en el snapshot del informe...`,pct:5,phase:1});
+        try {
+          const detRes = await fetch(`/data/informe_detalle.json?t=${Date.now()}`);
+          if (detRes.ok) {
+            const det = await detRes.json();
+            const act = det.activos || {};
+            let cubiertos = 0;
+            for (const t of faltan) {
+              const a = act[t];
+              // Sin sector no sirve: todo el puntaje es un percentil DENTRO
+              // del sector. Mejor que caiga al camino en vivo.
+              if (!a || !a.sector) continue;
+              snapshotMap[t] = a;
+              if (a.hasCedear != null) cedearMap[t] = a.hasCedear;
+              cubiertos++;
+            }
+            if (cubiertos) console.info(`[fase C] ${cubiertos} de ${faltan.length} papeles fuera del indice salieron del snapshot del informe, sin llamar a Yahoo`);
+          }
+        } catch { /* si falla, quedan en liveNeeded y se piden en vivo */ }
+      }
+
       const inSnapshot = tickers.filter(t => snapshotMap[t]);
       const liveNeeded  = tickers.filter(t => !snapshotMap[t]);
 
@@ -1836,7 +1922,11 @@ export default function App() {
         };
       };
       for (const [sector, items] of Object.entries(results)) {
-        results[sector] = items.map(stk => stk.score < 45
+        // ⚠️ `stk.score < 45` con score null da TRUE (null se convierte en 0),
+        // así que un papel sin datos suficientes recibía una sugerencia de
+        // reemplazo con el texto "tiene score bajo (0/100)". No tiene score
+        // bajo: no tiene score. Se lo deja en paz.
+        results[sector] = items.map(stk => (stk.score != null && stk.score < 45)
           ? {...stk, replacement: suggestReplacement(stk.symbol, sector)}
           : stk
         );
@@ -2956,7 +3046,9 @@ export default function App() {
                             <td style={{...TD,color:s.gananciaPct==null?"#334155":s.gananciaPct>=0?"#34d399":"#f87171"}}>{s.gananciaPct!=null?`${s.gananciaPct>=0?"+":""}${s.gananciaPct.toFixed(1)}%`:"—"}</td>
                             <td style={TD}>{s.pctActual!=null?`${s.pctActual.toFixed(1)}%`:"—"}</td>
                             <td style={{...TD,color:"#475569"}}>{s.pctExcel!=null?`${s.pctExcel.toFixed(1)}%`:"—"}</td>
-                            <td style={{...TD,color:s.score<45?"#f87171":s.score<70?"#fbbf24":"#34d399",fontWeight:700}}>{s.score?.toFixed(0)}</td>
+                            <td style={{...TD,color:s.score==null?"#f97316":s.score<45?"#f87171":s.score<70?"#fbbf24":"#34d399",fontWeight:700}}
+                                title={s.score==null?`Solo ${s.nUsed} de ${s.nTotal} métricas: no alcanza para un puntaje comparable`:undefined}>
+                              {s.score==null?`s/d ${s.nUsed}/${s.nTotal}`:s.score.toFixed(0)}</td>
                           </tr>
                           {s.replacement && (s.replacement.sameSector || s.replacement.otherSector) && (
                             <tr style={{borderBottom:"1px solid #0a1628"}}>
@@ -3197,7 +3289,7 @@ export default function App() {
                         <span style={{fontSize:9,fontFamily:"monospace",color:"#475569"}}>{cpL}: <span style={{color:(leader.rcp.sharpe||0)>=0?"#34d399":"#f87171",fontWeight:700}}>{leader.rcp.sharpe?.toFixed(2)||"—"}</span></span>
                       </div>
                     )}
-                    {!isRisk&&<div style={{fontSize:10,color:"#475569",marginTop:4,fontFamily:"monospace"}}>Score: <span style={{color:col,fontWeight:700}}>{leader.score?.toFixed(0)}</span></div>}
+                    {!isRisk&&<div style={{fontSize:10,color:"#475569",marginTop:4,fontFamily:"monospace"}}>Score: <span style={{color:col,fontWeight:700}}>{leader.score==null?"s/d":leader.score.toFixed(0)}</span></div>}
                   </div>
                 );
               })}

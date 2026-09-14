@@ -5304,10 +5304,215 @@ ahora está entre los `SOLO_MEDIBLES`. Son 11.
 
 ---
 
+## 🕳️ TRES HUECOS QUE NO SE VEÍAN (14/09/2026)
+
+Marcos preguntó qué convenía revisar. Salieron tres, y los tres son de la misma
+familia: **el número existe, se ve bien, y describe otra cosa.**
+
+---
+
+### 1. La ventana que se encoge en silencio
+
+**La pregunta de Marcos, que era la correcta:** *"¿por qué si entra GEV bajaría
+a medir la volatilidad entera sobre 10 meses, cuando una sola corresponde a
+eso?"*
+
+**Por qué pasa.** Una matriz de covarianza tiene que medirse sobre **un período
+común**. Si AAPL–MSFT se mide sobre tres años y AAPL–GEV sobre dos y medio, la
+matriz mezcla dos regímenes y deja de ser internamente consistente: la paridad
+de riesgo puede devolver pesos absurdos. No es prolijidad, es lo que hace que el
+número exista.
+
+**Cuánto cuesta, medido** sobre el snapshot del 03/09 con una cartera de siete
+(AAPL, MSFT, JPM, KO, XOM, JNJ, PG):
+
+| | volatilidad | ventana |
+|---|---|---|
+| los 7 solos | 11,17% | 755 días |
+| + GE Vernova (611 días) | 12,91% | 610 días |
+| **los mismos 7, en 610 días** | **11,66%** | **+0,49 pts** |
+| **los mismos 7, en 211 días** | **10,26%** | **−0,91 pts** |
+
+Esos puntos son **daño colateral puro**: lo que cambia la medición de los otros
+siete solo por haber perdido días. Y fijate el signo: con GEV sube, con un papel
+de 214 días **baja casi un punto**. No es un sesgo chico y consistente — es un
+corrimiento arbitrario cuyo **signo depende de qué le tocó contener a la ventana
+recortada**. Por eso no podía quedar en silencio.
+
+**La regla, en dos mitades:**
+
+1. **Un piso** (`VENTANA_MINIMA = 378`, año y medio). Un papel que la llevaría
+   por debajo se saca y se nombra, igual que los que cotizan en pesos.
+2. **Pero no a cualquiera** (`PESO_MAXIMO_DESCARTABLE = 10%`). Sacar una
+   posición grande cambiaría *de qué cartera estamos hablando*, y eso es peor
+   que medir sobre menos días. Los grandes se quedan, la ventana se acorta, y
+   **`ventana_recortada_por` dice quién fue**.
+
+Probado con los dos casos sobre datos reales: el mismo papel al 5% se saca y la
+ventana vuelve a 755; al 30% se queda, la ventana queda en 213 y se dice.
+
+**Dos bugs míos en el camino, los dos encontrados por la prueba:**
+
+- El guard iba con `>=` cuando tenía que ir con `>`. Cuando un papel **es** la
+  restricción, su historia propia mide *exactamente lo mismo* que la ventana
+  común — así que el guard se disparaba justo en el caso que venía a resolver.
+- La lista de culpables usaba `R[i].length`, que sobre el eje común mide lo
+  mismo para todos **por construcción** — ese es el punto del eje común. Marcaba
+  a los cuatro papeles como culpables, incluidos los tres con historia completa.
+
+---
+
+### 2. 🔴 La "correlación en las caídas" es un artefacto, y casi la escribo
+
+La idea era buena: las correlaciones suben en las caídas, y eso no lo ve un
+promedio de tres años. La implementación obvia —*calcular la correlación solo en
+el peor decil de días*— **da un número que parece un hallazgo y es una
+ilusión**.
+
+Se comprobó con una serie sintética de **correlación fija por construcción**:
+
+```
+  correlación real, fija          0,600
+  medida sobre toda la serie      0,598   ✓
+  medida en el peor decil         0,245   ✗
+```
+
+**La correlación no cambió: cambió la medición.** Condicionar la muestra a que
+una variable sea extrema trunca el rango y sesga la correlación hacia abajo. Es
+un resultado conocido (Boyer-Gibson-Loretan 1999; Forbes-Rigobon 2002 mostraron
+que buena parte del famoso "contagio" entre mercados es este artefacto).
+
+Lo detecté porque la primera corrida dio esto:
+
+```
+  cartera de cuatro tecnologicas:  correlacion media 0,39  ->  en caidas 0,18
+```
+
+Cuatro tecnológicas "diversificándose" en las caídas. Eso es lo contrario de la
+verdad, dicho con cara de número — y si no hubiera parado a verificarlo, habría
+quedado en el informe.
+
+**Lo que sí se mide: la CAPTURA.** Cuando el índice cayó, ¿cuánto cayó esto? Y
+cuando subió, ¿cuánto subió? Es un cociente de promedios, no una correlación,
+así que el truncado no lo distorsiona igual — y se lee sin explicar nada:
+
+```
+                        caidas   subas   asimetria
+  cartera defensiva       0,11    0,33     -0,22     beta 0,23
+  cuatro tecnologicas     1,51    1,62     -0,11     beta 1,52
+  mixta                   0,41    0,64     -0,23     beta 0,59
+```
+
+Coherente con los betas, que es la comprobación que ata el número nuevo a uno
+que ya existía.
+
+**La asimetría es lo que importa, y es lo que ni el beta ni la volatilidad
+muestran.** Un papel que capta 1,2 de las caídas y 0,8 de las subas tiene beta
+~1 y es el peor de los mundos: te sigue para abajo y no para arriba. El beta es
+un promedio de los dos lados y los tapa; la volatilidad no distingue lados.
+
+> En el prompt quedó escrito que esto **no** es una correlación en el estrés y
+> que no se deduzca una de acá. Es el tipo de error que vuelve solo.
+
+---
+
+### 3. El informe nunca dijo de cuándo eran los precios
+
+No había **ningún lugar** donde dijera qué tan viejo era el snapshot. Hoy le
+habría avisado a Marcos que estaba mirando datos de hace once días.
+
+Va como un faltante más de la compuerta, con **dos umbrales y no uno**:
+
+- **a los 7 días se avisa** (`DIAS_DATO_VIEJO`);
+- **pasados los 14 se prohíbe** la frase *"estos son los pesos de hoy"*.
+
+El segundo umbral existe porque el bot corre semanalmente: prohibir a los siete
+días dejaría la prohibición puesta casi siempre, y **una prohibición permanente
+se ignora igual que un cartel permanente**.
+
+⚠️ El umbral está **en dos archivos** (`riesgo.js` y `cartera.js`) y no se
+importa a propósito: las pruebas cargan estos módulos en un sandbox que **borra
+los `import`**, así que una constante importada llegaría `undefined` y la
+comprobación de frescura se apagaría en silencio, sin fallar ninguna prueba.
+`prueba-datos.cjs` lee los dos archivos y comprueba que valgan lo mismo.
+
+---
+
+## 🔍 EL ESTADO REAL, MEDIDO (14/09/2026)
+
+Antes de tocar nada se verificó qué había pasado en los once días:
+
+- **Todo pusheado.** `e4f2350` está en `origin/main`.
+- **Los 29 papeles nuevos entraron bien**: los 16 ADR argentinos + ITUB/NU, los
+  3 de afuera del índice y los 10 CEDEAR del S&P, todos con datos y con
+  `hasCedear=True`.
+
+Y dos cosas que **no** entraron:
+
+- 🔴 **`alias_locales` NO está en `informe_detalle.json`.** El bot corrió a las
+  13:59 del 03/09 y la línea que lo escribe se agregó más tarde ese mismo día.
+  O sea: **la función existe y el dato no**, así que un Excel con "YPFD" o
+  "IRSA" sigue sin encontrar el papel — en silencio, que es lo peor. Se arregla
+  volviendo a correr `fetch_informe.py`.
+- **Ecogas tampoco**, por el mismo motivo.
+
+También: el caché de CEDEAR se sondeó el **21/08** y vence a los 30 días, así
+que la próxima corrida de `fetch_fundamentals.py` va a re-sondear los 504 en
+vivo y va a tardar más de lo habitual.
+
+### Una falsa alarma que valió la pena
+
+`prueba-excel.cjs` falló al correr por primera vez con `xlsx` instalado. Parecía
+que el alias de BYMA estaba roto — pero era **la copia local del contenedor**,
+que estaba vieja. El disco de Marcos estaba bien.
+
+**La lección operativa**: siempre re-`stage` antes de editar. Ya pasó tres veces
+en esta sesión que una copia vieja de `/mnt/user-data/uploads/` pisó un archivo
+editado.
+
+---
+
 ## 📦 PENDIENTE DE PUSH — lista acumulada
 
 Todo esto está escrito en la carpeta y **todavía no subido**. Verificar con
 `git status` antes de asumir.
+
+### Tanda de ahora (14/09) — quinceava parte: los tres huecos
+
+```
+src/informe/riesgo.js        VENTANA_MINIMA + PESO_MAXIMO_DESCARTABLE: piso a
+                             la ventana, pero sin sacar posiciones grandes
+                             + ventana_pedida_dias / ventana_recortada_por
+                             + datos_al: hasta que dia llegan los precios
+                             + capturaDeMercado(): caidas, subas y asimetria
+                             🔴 y NO la correlacion en las caidas, que es un
+                               artefacto (0,60 real -> 0,25 medida)
+                             + dos bugs propios: el guard con >= en vez de >,
+                               y la lista de culpables con la longitud del eje
+                               comun en vez de la historia propia
+src/informe/cartera.js       la compuerta mira la ventana y la frescura
+                             + captura al plan y al payload
+                             + DIAS_DATO_VIEJO (duplicado a proposito, con
+                               prueba que comprueba que no derive)
+src/informe/Cartera.jsx      <Captura>
+api/informe.py               el prompt nombra captura, ventana y datos_al
+                             + la advertencia de que NO es una correlacion
+                             + estimador re-medido: 1340 + 178n
+test/prueba-riesgo.cjs       +17: la demostracion del artefacto con una serie
+                             de correlacion fija, la captura, y el piso con
+                             los dos casos (papel chico se saca, grande no)
+test/prueba-datos.cjs        +13: ventana corta, frescura, los dos umbrales
+test/medir_payload.py        los bloques nuevos entran a la medicion
+test/test_tesis_cartera.py   MEDIDO re-medido
+CONTEXTO_INFORME_AVANZADO.md
+```
+
+Diecinueve suites: 552 comprobaciones en JS + cinco suites de Python.
+
+⚠️ **El shell del puente no funciona** desde una actualizacion de Windows del
+8/09: se pueden leer y escribir archivos, pero no correr comandos en la maquina
+de Marcos. Las pruebas de esta tanda corrieron en el contenedor con una copia
+del repo y del snapshot real.
 
 ### Tanda de ahora (03/09) — catorceava parte: la matriz, la compuerta y la fase D
 
@@ -6030,4 +6235,4 @@ y recargar. Si no, seguís viendo datos cacheados de antes.
 
 ---
 
-*Actualizado: 3 de septiembre de 2026 · 🔴 LA MATRIZ DEL MOTOR B ESTABA DESALINEADA: los retornos se pareaban por posicion y no por fecha, y XOM-CVX daba 0,037 de correlacion en vez de 0,816 · Afectaba al 13% de los papeles y a todo el Motor B · El control de la prueba tenia el mismo bug · Compuerta de datos: un solo lugar que dice si alcanza para decidir, con la lista de frases prohibidas · Fase D: el P/E contra su propia historia, sin una sola llamada nueva · Los codigos de BYMA ahora se resuelven de verdad (YPFD, IRSA, PAMP, TGSU2, TECO2, CRES y el sufijo .BA) · Ecogas · Estimador re-medido 1300 + 175n · 494 comprobaciones en JS + 5 suites de Python ·  Universo 132 -> 148 papeles: los 13 CEDEAR de Comafi, ITUB, NU, TS y los 13 ADR argentinos · DESP e IRCP estan muertos y quedan anotados · Lista curada de CEDEARs que le gana a la sonda de Yahoo · Tope de riesgo argentino por perfil (10/20/30%) con el mecanismo de grupos que ya existia · El Merval en pesos entra SOLO para medir: ni percentiles ni matriz de riesgo · FISV no estaba muerto, el bug era el puntaje: compuerta de datos insuficientes en el screener · Fase C: se apagaron las llamadas en vivo a Yahoo · NIM como dato en la ficha de bancos · 445 comprobaciones en JS + 5 suites de Python ·  La llamada partida en dos: decision y texto para el cliente · Dos prompts, dos caches · Candidatos comprimidos (-43% de su bloque) · Nombres fuera del payload (-5,5%) · Seccion 3 podada antes de la segunda llamada · medir_payload.py: la medicion ya no se hace a mano · Estimador recalibrado 1250 + 172n · Segundo boton con recuadro propio y "copiar" · Tres versiones del texto: -62% · El modo profundo pasa de 11 a 19 posiciones · 398 comprobaciones en JS + 4 suites de Python ·  Tabla ACTUAL vs OBJETIVO en el informe · Dos bugs que tiraban el Motor B antes de la llamada · Estimador de costo recalibrado · Build verificado · Universo operable: 268 papeles, 28 candidatos nuevos · Benchmark vs SPY y pares correlacionados · Concentracion por industria · Topes de sector e industria en el optimizador · Excel con cantidades · Afinidad por perfil de riesgo · Tesis fuera del informe del cliente · El plan puede abrir posiciones nuevas · Menu de rotacion por sector · Prompt reescrito -26% · 376 comprobaciones en JS + 3 suites de Python · Anterior: 21 de agosto de 2026 · Sonda corrida y analizada · Tesis híbrida y estética clara confirmadas · Pendiente: alcance del histórico y deploy*
+*Actualizado: 14 de septiembre de 2026 · Piso a la ventana de medicion: un papel con poca historia ya no le recorta la ventana a todos en silencio (medido: +0,49 y -0,91 puntos de dano colateral) · 🔴 La "correlacion en las caidas" es un artefacto estadistico y NO se implemento: 0,60 real medido como 0,25 · En su lugar, captura de caidas y de subas, con la asimetria que ni el beta ni la volatilidad muestran · El informe ahora dice de cuando son los precios · alias_locales NO quedo en el snapshot: hay que volver a correr fetch_informe.py · Estimador re-medido 1340 + 178n · 552 comprobaciones en JS + 5 suites de Python ·  🔴 LA MATRIZ DEL MOTOR B ESTABA DESALINEADA: los retornos se pareaban por posicion y no por fecha, y XOM-CVX daba 0,037 de correlacion en vez de 0,816 · Afectaba al 13% de los papeles y a todo el Motor B · El control de la prueba tenia el mismo bug · Compuerta de datos: un solo lugar que dice si alcanza para decidir, con la lista de frases prohibidas · Fase D: el P/E contra su propia historia, sin una sola llamada nueva · Los codigos de BYMA ahora se resuelven de verdad (YPFD, IRSA, PAMP, TGSU2, TECO2, CRES y el sufijo .BA) · Ecogas · Estimador re-medido 1300 + 175n · 494 comprobaciones en JS + 5 suites de Python ·  Universo 132 -> 148 papeles: los 13 CEDEAR de Comafi, ITUB, NU, TS y los 13 ADR argentinos · DESP e IRCP estan muertos y quedan anotados · Lista curada de CEDEARs que le gana a la sonda de Yahoo · Tope de riesgo argentino por perfil (10/20/30%) con el mecanismo de grupos que ya existia · El Merval en pesos entra SOLO para medir: ni percentiles ni matriz de riesgo · FISV no estaba muerto, el bug era el puntaje: compuerta de datos insuficientes en el screener · Fase C: se apagaron las llamadas en vivo a Yahoo · NIM como dato en la ficha de bancos · 445 comprobaciones en JS + 5 suites de Python ·  La llamada partida en dos: decision y texto para el cliente · Dos prompts, dos caches · Candidatos comprimidos (-43% de su bloque) · Nombres fuera del payload (-5,5%) · Seccion 3 podada antes de la segunda llamada · medir_payload.py: la medicion ya no se hace a mano · Estimador recalibrado 1250 + 172n · Segundo boton con recuadro propio y "copiar" · Tres versiones del texto: -62% · El modo profundo pasa de 11 a 19 posiciones · 398 comprobaciones en JS + 4 suites de Python ·  Tabla ACTUAL vs OBJETIVO en el informe · Dos bugs que tiraban el Motor B antes de la llamada · Estimador de costo recalibrado · Build verificado · Universo operable: 268 papeles, 28 candidatos nuevos · Benchmark vs SPY y pares correlacionados · Concentracion por industria · Topes de sector e industria en el optimizador · Excel con cantidades · Afinidad por perfil de riesgo · Tesis fuera del informe del cliente · El plan puede abrir posiciones nuevas · Menu de rotacion por sector · Prompt reescrito -26% · 376 comprobaciones en JS + 3 suites de Python · Anterior: 21 de agosto de 2026 · Sonda corrida y analizada · Tesis híbrida y estética clara confirmadas · Pendiente: alcance del histórico y deploy*

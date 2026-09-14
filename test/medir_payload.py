@@ -137,6 +137,14 @@ def payload(n):
                           'beta_vs_benchmark': 1.24,
                           'correlacion_vs_benchmark': 0.86},
             'grupos_limitantes': [{'grupo': 'Technology', 'tope_pct': 35}],
+            # Entraron el 14/09: la captura y la ventana. ~55 tokens.
+            'captura': {'captura_de_caidas': 1.21, 'captura_de_subas': 0.87,
+                        'asimetria': 0.34,
+                        'peores': [{'ticker': 'TCK0', 'caidas': 1.6,
+                                    'subas': 1.1, 'asimetria': 0.5}]},
+            'ventana_dias': 611, 'ventana_pedida_dias': 756,
+            'ventana_recortada_por': [{'ticker': 'TCK3', 'dias': 611, 'peso': 8}],
+            'datos_al': '2026-09-03',
             'pares_que_son_una_apuesta': [
                 {'a': 'TCK0', 'b': 'TCK1', 'correlacion': 0.78, 'peso_conjunto_pct': 21.4}],
         },

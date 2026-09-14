@@ -58,6 +58,55 @@ const URL_HISTORICO = '/data/historico_precios.json'
 // régimen actual.
 export const DIAS_VENTANA = 756
 
+// ─────────────────────────────────────────────────────────────────────────────
+// EL PISO DE LA VENTANA, Y POR QUÉ HACE FALTA (14/09/2026)
+//
+// LA PREGUNTA DE MARCOS: si un papel tiene poca historia, ¿por qué le recorta
+// la ventana a TODOS, en vez de medirlo a él con lo que tiene?
+//
+// Porque una matriz de covarianza tiene que medirse sobre UN período común. Si
+// AAPL-MSFT se mide sobre tres años y AAPL-GEV sobre dos y medio, la matriz
+// mezcla dos regímenes y deja de ser internamente consistente: la paridad de
+// riesgo puede devolver pesos absurdos. No es prolijidad, es lo que hace que el
+// número exista.
+//
+// PERO EL COSTO ES REAL Y SE MIDIÓ. Cartera de siete (AAPL, MSFT, JPM, KO, XOM,
+// JNJ, PG) sobre el snapshot del 03/09:
+//
+//     los 7 solos, 755 días          volatilidad 11,17%
+//     + GEV (611 días) -> 610 días   volatilidad 12,91%
+//     los mismos 7 en 610 días       volatilidad 11,66%   (+0,49 pts)
+//
+// Esos 0,49 puntos son daño colateral puro: lo que cambia la medición de los
+// otros siete solo por haber perdido 145 días. Con un papel de 214 días:
+//
+//     los mismos 7 en 211 días       volatilidad 10,26%   (-0,91 pts)
+//
+// Casi un punto, Y PARA EL OTRO LADO. Ahí está el problema: no es un sesgo
+// chico y consistente, es un corrimiento arbitrario cuyo SIGNO depende de qué
+// le tocó contener a la ventana recortada. Por eso no puede quedar en silencio.
+//
+// LA REGLA, entonces, tiene dos mitades:
+//   1. un PISO: si un papel llevaría la ventana común debajo de VENTANA_MINIMA,
+//      se lo saca y se lo nombra — igual que a los que cotizan en pesos;
+//   2. pero NO se saca un papel grande. Perder una posición del 30% del
+//      cálculo de riesgo es peor que medir sobre menos días: la volatilidad
+//      pasaría a ser la de otra cartera. Ahí se acorta la ventana y SE DICE.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Año y medio. Debajo de esto la volatilidad empieza a ser la de un episodio y
+// no la del papel: una ventana de diez meses puede no contener una sola caída.
+export const VENTANA_MINIMA = 378
+
+// Un papel que pesa más que esto NO se saca del cálculo por tener historia
+// corta. Sacarlo cambiaría de qué cartera estamos hablando, que es un error
+// peor que el que se quiere evitar.
+export const PESO_MAXIMO_DESCARTABLE = 10
+
+// Desde acá el snapshot se considera viejo. Siete días es un fin de semana
+// largo más dos: si pasó más, hubo ruedas que el informe no vio.
+export const DIAS_DATO_VIEJO = 7
+
 // Menos que esto y la covarianza es ruido con forma de número.
 export const MIN_RETORNOS = 60
 
@@ -368,6 +417,107 @@ function aplicarTopes(w, topes, grupos = [], iteraciones = 80) {
 // ⚠️ El retorno es HISTÓRICO, de la ventana del snapshot. No es una proyección
 // y el informe tiene que decirlo así. Se muestra al lado de la volatilidad
 // justamente para que no se lea solo.
+// ─────────────────────────────────────────────────────────────────────────────
+// LO QUE PASA CUANDO EL MERCADO CAE (14/09/2026)
+//
+// LA PREGUNTA. Todo el Motor B mide la correlación sobre tres años parejos. Ese
+// promedio contesta "¿estos papeles se mueven juntos en general?" y NO contesta
+// la pregunta por la que uno diversifica:
+//
+//     ¿esto me sirve el día que el mercado cae?
+//
+// ⚠️ EL CAMINO EQUIVOCADO, Y POR QUÉ NO SE TOMÓ
+// -------------------------------------------
+// Lo primero que uno escribe es "calculemos la correlación solo en los peores
+// días". **Está mal, y da un número que parece un hallazgo.**
+//
+// Se comprobó con una serie sintética de correlación FIJA POR CONSTRUCCIÓN:
+//
+//     correlación real, fija          0,600
+//     medida sobre toda la serie      0,598   ✓
+//     medida en el peor decil         0,245   ✗
+//
+// La correlación no cambió: cambió la medición. Condicionar la muestra a que
+// una variable sea extrema TRUNCA el rango y sesga la correlación hacia abajo.
+// Es un resultado conocido (Boyer-Gibson-Loretan 1999; Forbes-Rigobon 2002
+// mostraron que buena parte del famoso "contagio" entre mercados es este
+// artefacto). Con datos reales pasa igual: AAPL-MSFT da 0,347 en todo el
+// período y 0,224 en los peores días, y eso NO significa que se desacoplen.
+//
+// Así que una "correlación en estrés" calculada de la forma obvia diría, en una
+// cartera de cuatro tecnológicas, que en las caídas se diversifican. Sería
+// exactamente lo contrario de la verdad, dicho con cara de número.
+//
+// LO QUE SÍ SE MIDE
+// -----------------
+// La CAPTURA: cuando el índice cayó, ¿cuánto cayó esto? Y cuando subió, ¿cuánto
+// subió? Es un cociente de promedios, no una correlación, así que el truncado
+// de la muestra no lo distorsiona del mismo modo — y encima se lee sin explicar
+// nada:
+//
+//     captura de caídas 1,20  ->  cuando el índice cae 1%, esto cae 1,2%
+//     captura de subas  0,80  ->  cuando el índice sube 1%, esto sube 0,8%
+//
+// Y la ASIMETRÍA entre las dos es el número que de verdad importa. Un papel que
+// captura 1,2 de las caídas y 0,8 de las subas es el peor de los mundos: te
+// sigue para abajo y no para arriba. Eso no lo muestra ni el beta —que es un
+// promedio de las dos— ni la volatilidad, que no distingue lados.
+// ─────────────────────────────────────────────────────────────────────────────
+function capturaDeMercado(snap, idx, con, w) {
+  const spy = snap.series?.SPY
+  if (!spy) return null
+  const idxB = idx.filter(k => spy[k] != null && spy[k] > 0)
+  if (idxB.length - 1 < MIN_RETORNOS) return null
+
+  const rb = retornosEn(spy, idxB)
+  const RB = con.map(c => retornosEn(snap.series[c.ticker], idxB))
+  const n = con.length
+
+  const bajan = [], suben = []
+  for (let t = 0; t < rb.length; t++) (rb[t] < 0 ? bajan : suben).push(t)
+  if (bajan.length < MIN_RETORNOS || suben.length < MIN_RETORNOS) return null
+
+  const prom = (v, ids) => ids.reduce((a, t) => a + v[t], 0) / ids.length
+  const bIdx = prom(rb, bajan), sIdx = prom(rb, suben)
+
+  // La cartera como combinación lineal, igual que en el benchmark: es lo que
+  // habría hecho ESTA cartera, no el promedio de lo que hizo cada papel.
+  const rp = []
+  for (let t = 0; t < rb.length; t++) {
+    let x = 0
+    for (let i = 0; i < n; i++) x += w[i] * RB[i][t]
+    rp.push(x)
+  }
+  const r2 = x => (x == null || !isFinite(x)) ? null : Math.round(x * 100) / 100
+  const captura = (v) => ({
+    caidas: bIdx < 0 ? r2(prom(v, bajan) / bIdx) : null,
+    subas:  sIdx > 0 ? r2(prom(v, suben) / sIdx) : null,
+  })
+
+  const cart = captura(rp)
+  const asim = (cart.caidas != null && cart.subas != null)
+    ? r2(cart.caidas - cart.subas) : null
+
+  return {
+    dias_de_baja: bajan.length,
+    dias_de_suba: suben.length,
+    caida_media_indice_pct: Math.round(bIdx * 1000) / 10,
+    captura_de_caidas: cart.caidas,
+    captura_de_subas: cart.subas,
+    // Positivo = capta más de la caída que de la suba. Es el que hay que mirar.
+    asimetria: asim,
+    por_posicion: con.map((c, i) => {
+      const x = captura(RB[i])
+      return {
+        ticker: c.ticker,
+        caidas: x.caidas, subas: x.subas,
+        asimetria: (x.caidas != null && x.subas != null)
+          ? r2(x.caidas - x.subas) : null,
+      }
+    }).sort((a, b) => (b.asimetria ?? -9) - (a.asimetria ?? -9)),
+  }
+}
+
 function contraBenchmark(snap, desde, idx, w, con, cov, varCartera) {
   const serie = snap.series?.SPY
   if (!serie) return null
@@ -542,21 +692,42 @@ export async function analizarRiesgo(cart, candidatos = []) {
   let idx = indiceComun(con.map(c => snap.series[c.ticker]), desde,
                         snap.fechas.length)
 
-  // Si la intersección quedó demasiado corta, el culpable es el papel con menos
-  // historia propia. Se lo saca —nombrándolo, como todo lo que se saca— y se
-  // vuelve a intentar. Sin esto, un papel recién listado le arruinaría la
-  // ventana a los otros catorce.
-  while (idx.length - 1 < MIN_RETORNOS && con.length > 2) {
-    let peor = 0
-    for (let i = 1; i < con.length; i++) {
-      if (con[i].r.length < con[peor].r.length) peor = i
-    }
-    const fuera = con.splice(peor, 1)[0]
+  // Si la intersección quedó corta, el culpable es un papel con poca historia
+  // propia. Se lo saca —nombrándolo, como todo lo que se saca— y se reintenta.
+  //
+  // ⚠️ PERO NO A CUALQUIERA. Ver el bloque de `VENTANA_MINIMA`: sacar una
+  // posición grande cambiaría de qué cartera estamos hablando, y eso es peor
+  // que medir sobre menos días. Los grandes se quedan y la ventana se acorta —
+  // y entonces `ventana_recortada_por` lo dice, que es la otra mitad de la
+  // regla.
+  while (idx.length - 1 < VENTANA_MINIMA && con.length > 2) {
+    const sacables = con
+      .map((c, i) => ({ i, c }))
+      .filter(x => (x.c.peso || 0) <= PESO_MAXIMO_DESCARTABLE)
+    if (!sacables.length) break
+    const peor = sacables.reduce((a, b) => (b.c.r.length < a.c.r.length ? b : a))
+    // Si el más corto tiene MÁS historia que la ventana común, no es él quien
+    // la recorta: sacarlo no gana nada. (Va con `>` y no con `>=`: cuando un
+    // papel ES la restricción, su historia propia mide EXACTAMENTE lo mismo que
+    // la ventana común, y con `>=` el guard se disparaba justo en el caso que
+    // venía a resolver.)
+    if (peor.c.r.length > idx.length - 1) break
+    const antes = idx.length
+    const fuera = con.splice(peor.i, 1)[0]
     sin.push({ ticker: fuera.ticker, puntos: fuera.r.length,
-               motivo: 'su historia es más corta que la del resto y recortaba '
-                     + 'la ventana común' })
+               motivo: `solo tiene ${fuera.r.length} días de historia y `
+                     + `recortaba la ventana de toda la cartera` })
     idx = indiceComun(con.map(c => snap.series[c.ticker]), desde,
                       snap.fechas.length)
+    // Si sacarlo no agrandó la ventana, el culpable era otro y seguir sacando
+    // solo vaciaría la cartera. Se devuelve el papel y se corta.
+    if (idx.length <= antes) {
+      con.splice(peor.i, 0, fuera)
+      sin.pop()
+      idx = indiceComun(con.map(c => snap.series[c.ticker]), desde,
+                        snap.fechas.length)
+      break
+    }
   }
   if (con.length < 2 || idx.length - 1 < MIN_RETORNOS) {
     return { disponible: false,
@@ -567,6 +738,25 @@ export async function analizarRiesgo(cart, candidatos = []) {
 
   const R = con.map(c => retornosEn(snap.series[c.ticker], idx))
   const largo = R[0].length
+
+  // ── QUIÉN RECORTÓ LA VENTANA, Y CUÁNTO ───────────────────────────────────
+  // Los que se quedaron pero tienen menos historia que la ventana pedida. Sin
+  // esto, el informe dice "volatilidad 12,9%" sin aclarar que ese número se
+  // midió sobre dos años y medio porque uno de los papeles no existía antes —
+  // y medido, eso mueve el resultado hasta casi un punto, para cualquier lado.
+  const pedida = Math.min(DIAS_VENTANA, snap.fechas.length - 1 - desde)
+  // ⚠️ SE MIDE CON LA HISTORIA PROPIA (`c.r`, del primer barrido), NO con
+  // `R[i].length`. Sobre el eje común TODOS miden lo mismo por construcción —
+  // ese es justamente el punto del eje común— así que filtrar por ahí marcaba
+  // a los cuatro papeles como culpables, incluidos los tres que tenían la
+  // historia completa.
+  const recortaron = largo < pedida - 20
+    ? con.map(c => ({ ticker: c.ticker, dias: c.r.length, peso: c.peso }))
+        .filter(x => x.dias < pedida - 20)
+        .sort((a, b) => a.dias - b.dias)
+        .slice(0, 4)
+    : []
+
   // Y los retornos de cada papel pasan a ser los del eje común: si quedaran los
   // viejos, el resto del módulo mezclaría dos versiones de lo mismo.
   con.forEach((c, i) => { c.r = R[i] })
@@ -820,6 +1010,14 @@ export async function analizarRiesgo(cart, candidatos = []) {
   return {
     disponible: true,
     ventana_dias: largo,
+    // Lo que se PIDIÓ, para poder comparar. Si son distintos, algo la recortó.
+    ventana_pedida_dias: pedida,
+    // Los culpables, con sus días y su peso. Vacío cuando la ventana es la
+    // pedida — que es el caso normal y no tiene por qué ocupar lugar.
+    ventana_recortada_por: recortaron.length ? recortaron : undefined,
+    // Hasta qué día llegan los precios. El informe no decía en ningún lado qué
+    // tan viejo es el dato con el que habla.
+    datos_al: snap.fechas[snap.fechas.length - 1] || null,
     volatilidad_cartera_pct: Math.round(volActual * 10) / 10,
     volatilidad_si_objetivo_pct: Math.round(volObjetivo * 10) / 10,
     // ⚠️ Si faltan papeles, esto NO es la volatilidad de la cartera sino la del
@@ -877,6 +1075,9 @@ export async function analizarRiesgo(cart, candidatos = []) {
       }
     }),
     benchmark: contraBenchmark(snap, desde, idx, w, con, cov, varActual),
+    // Qué hace la cartera cuando el índice cae, y qué hace cuando sube. La
+    // asimetría entre las dos es lo que ni el beta ni la volatilidad muestran.
+    captura: capturaDeMercado(snap, idx, con, w),
     pares_correlacionados: paresCorrelacionados(con, cov, w),
   }
 }

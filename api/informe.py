@@ -1670,6 +1670,25 @@ estos datos. No es una sugerencia: es el límite de lo que se midió. Decir "la
 volatilidad de la cartera es 15,3%" cuando ese número cubre el 60% es más grave
 que no decir nada, porque suena igual de seguro que cuando es cierto.
 
+`riesgo.captura` — qué hace la cartera cuando el mercado cae, y qué cuando
+sube. `captura_de_caidas` 1,20 significa "cuando el índice cae 1%, esto cae
+1,2%". La `asimetria` es la resta: POSITIVA es mala —capta más de la caída que
+de la suba, o sea que sigue al mercado para abajo y no para arriba— y es lo
+único de este bloque que hay que nombrar siempre que sea positiva. El beta NO
+dice esto: es un promedio de los dos lados y los tapa.
+⚠️ NO es una correlación en las caídas. Ese número, calculado de la forma
+obvia, es un artefacto: condicionar la muestra a que el mercado sea extremo
+baja la correlación medida sin que la real cambie. No hables de "correlación en
+el estrés" ni la deduzcas de acá.
+
+`riesgo.ventana_dias` vs `ventana_pedida_dias` — sobre cuántos días se midió
+todo lo anterior. Si son distintos, `ventana_recortada_por` dice quién lo causó:
+un papel recién listado obliga a medir a TODOS sobre su historia, porque la
+matriz necesita un período común. Cuando pase, NO digas "a tres años".
+
+`riesgo.datos_al` — el último día con precio. Si está lejos de hoy, los pesos
+que ves son los de esa fecha.
+
 `argentina` — el riesgo país, que NINGÚN tope de sector captura. Los ADR
 argentinos están repartidos entre seis sectores: cada uno entra cómodo en su
 tope y aun así son UNA apuesta, porque cuando el país se mueve se mueven todos.
@@ -2500,21 +2519,22 @@ def estimar_cartera(n_posiciones, proveedor='anthropic', modo=None):
     #
     # Y volvio a bajar al sacar los `nombre` (`_sin_nombres`), otro 5,5%.
     #
-    # Re-medido el 03/09 con `argentina` y `datos` (la compuerta) adentro. Van
-    # CUATRO re-mediciones en dos dias, y todas por bloques "chicos" — que es
-    # exactamente por lo que existe `test/medir_payload.py`: la medicion se
-    # corre, no se estima a ojo.
+    # Re-medido el 03/09 con `argentina` y `datos` (la compuerta) adentro, y
+    # otra vez el 14/09 al entrar la captura y la ventana (~55 tokens). Van
+    # CINCO re-mediciones, y todas por bloques "chicos" — que es exactamente
+    # por lo que existe `test/medir_payload.py`: la medicion se corre, no se
+    # estima a ojo.
     #
     #   pos           3      5     10     15     20     25
-    #   real       1407   1859   2895   3699   4403   5166
-    #   1300+175n  1825   2175   3050   3925   4800   5675
-    #   holgura    +30%   +17%    +5%    +6%    +9%   +10%
+    #   real       1472   1925   2961   3765   4468   5231
+    #   1340+178n  1874   2230   3120   4010   4900   5790
+    #   holgura    +27%   +16%    +5%    +7%   +10%   +11%
     #
     # Sigue calibrada HACIA ARRIBA: nunca por debajo del payload real, y lo mas
     # pegada posible donde la cartera es grande, que es donde el numero importa.
     # (La cartera de 3 posiciones se sobreestima un 30% y esta bien: es el caso
     # que sale centavos, y el bloque de candidatos casi no depende de n.)
-    entrada = 1300 + 175 * n
+    entrada = 1340 + 178 * n
     # ⚠️ LA SALIDA BAJO ~450 TOKENS el 02/09: la seccion "Para el cliente" salio
     # de este prompt y pasó a la segunda llamada. Es la mitad del ahorro de
     # partirlo en dos; la otra mitad es que esa segunda llamada corre siempre en

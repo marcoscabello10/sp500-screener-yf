@@ -213,6 +213,99 @@ const sSinNada = C.suficienciaDeDatos(cartOK);
 chequear('sin riesgo ni scores no explota y marca los dos huecos',
   sSinNada && sSinNada.faltantes.length >= 2, JSON.stringify(sSinNada));
 
+// ── 6b. LA VENTANA QUE SE ENCOGE EN SILENCIO (14/09/2026) ────────────────
+// La pregunta de Marcos: si un papel tiene poca historia, ¿por que le recorta
+// la ventana a TODOS? Porque una matriz de covarianza se mide sobre UN periodo
+// comun. Y el costo es real: medido sobre el snapshot, meter un papel de 611
+// dias en una cartera de 756 mueve la volatilidad de los OTROS +0,49 puntos, y
+// uno de 214 dias la mueve -0,91. No es un sesgo chico y consistente: es un
+// corrimiento arbitrario cuyo signo depende de que le toco contener a la
+// ventana recortada. Por eso no puede quedar en silencio.
+console.log('\n6b. La ventana de medicion');
+const ventanaCorta = C.suficienciaDeDatos(cartOK, {
+  disponible: true, cobertura_pct: 100, sin_datos: [],
+  ventana_dias: 611, ventana_pedida_dias: 756,
+  ventana_recortada_por: [{ ticker: 'GEV', dias: 611, peso: 8 }],
+}, SCORES_OK);
+ventanaCorta.no_se_puede_afirmar.forEach(f => console.log(`       x ${f}`));
+chequear('se marca que la ventana no es la pedida',
+  ventanaCorta.faltantes.some(f => f.que === 'ventana de medición'),
+  JSON.stringify(ventanaCorta.faltantes.map(f => f.que)));
+chequear('y nombra al que la recorto, con sus dias',
+  ventanaCorta.faltantes.some(f => (f.detalle || '').includes('GEV')
+                                && (f.detalle || '').includes('611')));
+chequear('prohibe decir que los numeros son "a tres años"',
+  ventanaCorta.no_se_puede_afirmar.some(f => f.includes('611')));
+chequear('con 611 de 756 NO es grave: es medio punto, no otra cartera',
+  !ventanaCorta.faltantes.find(f => f.que === 'ventana de medición').grave);
+// La mitad de la ventana si es grave.
+const ventanaMuyCorta = C.suficienciaDeDatos(cartOK, {
+  disponible: true, cobertura_pct: 100, sin_datos: [],
+  ventana_dias: 211, ventana_pedida_dias: 756,
+  ventana_recortada_por: [{ ticker: 'Q', dias: 214, peso: 5 }],
+}, SCORES_OK);
+chequear('pero 211 de 756 SI lo es', ventanaMuyCorta.con_reservas === true);
+// Y la ventana completa no dice nada.
+const ventanaOK = C.suficienciaDeDatos(cartOK, {
+  disponible: true, cobertura_pct: 100, sin_datos: [],
+  ventana_dias: 755, ventana_pedida_dias: 756,
+}, SCORES_OK);
+chequear('una ventana completa no dispara ningun aviso',
+  ventanaOK.nivel === 'completo', JSON.stringify(ventanaOK.faltantes));
+
+// ── 6c. LA FRESCURA DEL DATO ─────────────────────────────────────────────
+// El informe no decia en ningun lado de cuando son los precios. Es el hueco
+// que le habria avisado a Marcos que estaba mirando datos de hace 11 dias.
+console.log('\n6c. De cuando son los precios');
+const hace = d => new Date(Date.now() - d * 86400000).toISOString().slice(0, 10);
+const viejo = C.suficienciaDeDatos(cartOK, {
+  disponible: true, cobertura_pct: 100, sin_datos: [],
+  ventana_dias: 755, ventana_pedida_dias: 756, datos_al: hace(11),
+}, SCORES_OK);
+viejo.no_se_puede_afirmar.forEach(f => console.log(`       x ${f}`));
+chequear('con 11 dias se marca', viejo.faltantes.some(f => f.que === 'precios'));
+chequear('y dice de cuando son y cuantos dias hace',
+  viejo.faltantes.some(f => /hace \d+ d[ií]as/.test(f.detalle || '')
+                         && (f.detalle || '').includes('snapshot es')),
+  JSON.stringify(viejo.faltantes.map(f => f.detalle)));
+// ⚠️ DOS UMBRALES, NO UNO. A los 7 dias se AVISA; recien pasados los 14 se
+// PROHIBE la frase. Que un dato de una semana y media genere un aviso esta
+// bien; que prohiba hablar de los pesos seria pasarse, porque el bot corre
+// semanalmente y entonces la prohibicion estaria puesta casi siempre — y una
+// prohibicion permanente se ignora igual que un cartel permanente.
+chequear('con 11 dias avisa pero NO prohibe nada todavia',
+  !viejo.no_se_puede_afirmar.some(f => f.includes('pesos de hoy')),
+  viejo.no_se_puede_afirmar.join(' | '));
+const quincena = C.suficienciaDeDatos(cartOK, {
+  disponible: true, cobertura_pct: 100, sin_datos: [],
+  ventana_dias: 755, ventana_pedida_dias: 756, datos_al: hace(20),
+}, SCORES_OK);
+chequear('pasadas dos semanas SI prohibe decir que son los pesos de hoy',
+  quincena.no_se_puede_afirmar.some(f => f.includes('pesos de hoy')),
+  quincena.no_se_puede_afirmar.join(' | '));
+const fresco = C.suficienciaDeDatos(cartOK, {
+  disponible: true, cobertura_pct: 100, sin_datos: [],
+  ventana_dias: 755, ventana_pedida_dias: 756, datos_al: hace(2),
+}, SCORES_OK);
+chequear('con 2 dias no dice nada: seria ruido',
+  fresco.nivel === 'completo', JSON.stringify(fresco.faltantes));
+const muyViejo = C.suficienciaDeDatos(cartOK, {
+  disponible: true, cobertura_pct: 100, sin_datos: [],
+  ventana_dias: 755, ventana_pedida_dias: 756, datos_al: hace(40),
+}, SCORES_OK);
+chequear('con 40 dias es grave', muyViejo.con_reservas === true);
+
+// ⚠️ EL UMBRAL ESTA EN DOS ARCHIVOS. No se importa porque el sandbox de estas
+// pruebas borra los `import`, y una constante importada llegaria undefined:
+// la comprobacion de frescura se apagaria en silencio, sin fallar nada. Que
+// esten los dos es aceptable SOLO si algo comprueba que valen lo mismo.
+const srcRiesgo = fs.readFileSync(ruta('riesgo.js'), 'utf8');
+const enRiesgo = (srcRiesgo.match(/DIAS_DATO_VIEJO\s*=\s*(\d+)/) || [])[1];
+console.log(`     umbral: cartera.js ${C.DIAS_DATO_VIEJO} · riesgo.js ${enRiesgo}`);
+chequear('el umbral vale lo mismo en los dos archivos',
+  String(C.DIAS_DATO_VIEJO) === enRiesgo,
+  `cartera.js=${C.DIAS_DATO_VIEJO} riesgo.js=${enRiesgo}`);
+
 // ── 7. Los umbrales se pueden discutir de a uno ───────────────────────────
 console.log('\n7. Los umbrales estan nombrados');
 console.log(`     minimo ${C.MINIMO_POSICIONES} posiciones · `

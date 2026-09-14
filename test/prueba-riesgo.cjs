@@ -612,6 +612,138 @@ async function main() {
     }
   }
 
+  // ── 15. LA CAPTURA DE CAIDAS Y DE SUBAS (14/09/2026) ────────────────────
+  //
+  // ⚠️ POR QUE NO ES "LA CORRELACION EN LAS CAIDAS".
+  // Lo primero que uno escribe es "calculemos la correlacion solo en los peores
+  // dias". Esta MAL y da un numero que parece un hallazgo. Se comprueba abajo
+  // con una serie de correlacion FIJA POR CONSTRUCCION: condicionar la muestra
+  // a que una variable sea extrema trunca el rango y sesga la correlacion hacia
+  // abajo. Una cartera de cuatro tecnologicas "se diversificaria" en las
+  // caidas, que es lo contrario de la verdad.
+  console.log('\n15. Por que NO se mide la correlacion en las caidas');
+  let sx = 1234567;
+  const rnd = () => { sx = (sx * 1103515245 + 12345) & 0x7fffffff; return sx / 0x7fffffff; };
+  const gauss = () => {
+    let u = 0, v = 0;
+    while (u === 0) u = rnd();
+    while (v === 0) v = rnd();
+    return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+  };
+  const RHO = 0.6, N = 3000;
+  const X = [], Y = [];
+  for (let i = 0; i < N; i++) {
+    const x = gauss();
+    X.push(x);
+    Y.push(RHO * x + Math.sqrt(1 - RHO * RHO) * gauss());
+  }
+  const corrDe2 = (a, b) => cov(a, b) / Math.sqrt(cov(a, a) * cov(b, b));
+  const todo = corrDe2(X, Y);
+  const corte = [...X].sort((a, b) => a - b)[Math.round(N * 0.10) - 1];
+  const ids = [];
+  for (let i = 0; i < N; i++) if (X[i] <= corte) ids.push(i);
+  const soloMalos = corrDe2(ids.map(i => X[i]), ids.map(i => Y[i]));
+  console.log(`     correlacion REAL fija ${RHO} · medida en todo `
+            + `${todo.toFixed(3)} · medida en el peor decil ${soloMalos.toFixed(3)}`);
+  chequear('sobre toda la serie, la correlacion medida es la real',
+    Math.abs(todo - RHO) < 0.05, `${todo.toFixed(3)}`);
+  chequear('pero en el peor decil sale MUCHO mas baja, sin que la real cambie',
+    soloMalos < RHO - 0.15,
+    `${soloMalos.toFixed(3)} vs ${RHO} — si esto deja de pasar, revisar si `
+    + `conviene volver a la correlacion condicionada`);
+
+  // Lo que SI se mide: la captura. Es un cociente de promedios, no una
+  // correlacion, y se lee sin explicar nada.
+  console.log('\n16. Captura de caidas y de subas');
+  const capt = r.captura;
+  chequear('la cartera de prueba trae captura', !!capt, JSON.stringify(r.captura));
+  if (capt) {
+    console.log(`     ${capt.dias_de_baja} dias de baja (el indice cayo `
+              + `${Math.abs(capt.caida_media_indice_pct)}% en promedio) · `
+              + `${capt.dias_de_suba} de suba`);
+    console.log(`     captura de CAIDAS ${capt.captura_de_caidas} · de SUBAS `
+              + `${capt.captura_de_subas} · asimetria ${capt.asimetria}`);
+    chequear('los dias de baja y de suba suman la ventana',
+      capt.dias_de_baja + capt.dias_de_suba === r.ventana_dias,
+      `${capt.dias_de_baja}+${capt.dias_de_suba} vs ${r.ventana_dias}`);
+    chequear('hay suficientes dias de cada lado',
+      capt.dias_de_baja > 100 && capt.dias_de_suba > 100);
+    chequear('la asimetria es la resta de las dos capturas',
+      Math.abs(capt.asimetria - (capt.captura_de_caidas - capt.captura_de_subas)) < 0.011,
+      `${capt.asimetria}`);
+    chequear('nombra a cada posicion',
+      capt.por_posicion.length === r.posiciones.length);
+    chequear('y vienen ordenadas de peor a mejor asimetria',
+      capt.por_posicion.every((p, i) => i === 0
+        || (capt.por_posicion[i - 1].asimetria ?? -9) >= (p.asimetria ?? -9)));
+    // La comprobacion que ata la captura a algo que ya existe: una cartera con
+    // beta alto tiene que capturar mas que una con beta bajo. Si no, uno de los
+    // dos numeros esta mal.
+    chequear('la captura es coherente con el beta contra el indice',
+      r.benchmark == null || capt.captura_de_caidas == null
+      || Math.abs(capt.captura_de_caidas - r.benchmark.beta_vs_benchmark) < 0.8,
+      `captura ${capt.captura_de_caidas} vs beta ${r.benchmark?.beta_vs_benchmark}`);
+  }
+
+  // ── 17. EL PISO DE LA VENTANA ───────────────────────────────────────────
+  // Un papel con poca historia obliga a medir a todos sobre la suya. Hasta
+  // cierto punto se acepta y se dice; pasado el piso, se lo saca y se lo nombra.
+  console.log('\n17. El piso de la ventana');
+  chequear('la ventana usada nunca supera la pedida',
+    r.ventana_dias <= r.ventana_pedida_dias,
+    `${r.ventana_dias} vs ${r.ventana_pedida_dias}`);
+  chequear('el snapshot dice hasta que dia llega', !!r.datos_al, `${r.datos_al}`);
+  // Un papel con historia corta Y peso chico se saca.
+  const cortito = Object.keys(SNAP.series).find(t => {
+    const v = SNAP.series[t].slice(-757);
+    const n = v.length - v.filter(x => x == null).length;
+    return n > 100 && n < 300;
+  });
+  if (cortito) {
+    const conCorto = conTope([
+      otro('KO',   'Consumer Staples', 'Beverages', 32),
+      otro('MSFT', 'Technology',       'Software',  32),
+      otro('XOM',  'Energy',           'Oil & Gas', 31),
+      { ticker: cortito, peso: 5, topeClase: 20, sector: 'Technology',
+        industry: 'Otro' },
+    ]);
+    const rc = await Rg.analizarRiesgo(conCorto, []);
+    const fuera = (rc.sin_datos || []).find(x => x.ticker === cortito);
+    console.log(`     ${cortito} (poca historia, 5% de peso) -> `
+              + `${fuera ? 'sacado' : 'se quedo'} · ventana ${rc.ventana_dias}`);
+    chequear(`${cortito} pesa poco y recortaba: se saca y se nombra`, !!fuera,
+      JSON.stringify(rc.sin_datos));
+    chequear('el motivo dice cuantos dias tenia',
+      fuera && /\d+ d[ií]as de historia/.test(fuera.motivo || ''),
+      JSON.stringify(fuera));
+    chequear('y la ventana vuelve a ser la larga',
+      rc.ventana_dias > Rg.VENTANA_MINIMA, `${rc.ventana_dias}`);
+
+    // El MISMO papel, pesando 30%: NO se saca. Sacarlo cambiaria de que
+    // cartera estamos hablando, y eso es peor que medir sobre menos dias.
+    const conCortoGrande = conTope([
+      otro('KO',   'Consumer Staples', 'Beverages', 24),
+      otro('MSFT', 'Technology',       'Software',  23),
+      otro('XOM',  'Energy',           'Oil & Gas', 23),
+      { ticker: cortito, peso: 30, topeClase: 35, sector: 'Technology',
+        industry: 'Otro' },
+    ]);
+    const rg = await Rg.analizarRiesgo(conCortoGrande, []);
+    const fuera2 = (rg.sin_datos || []).find(x => x.ticker === cortito);
+    console.log(`     el mismo al 30% -> ${fuera2 ? 'sacado' : 'se quedo'} · `
+              + `ventana ${rg.ventana_dias} · recortada por `
+              + `${(rg.ventana_recortada_por || []).map(x => x.ticker).join(',') || '-'}`);
+    chequear('pesando 30% NO se saca', !fuera2, JSON.stringify(rg.sin_datos));
+    chequear('pero se dice que el recorto la ventana',
+      (rg.ventana_recortada_por || []).some(x => x.ticker === cortito),
+      JSON.stringify(rg.ventana_recortada_por));
+    chequear('y la ventana quedo mas corta que la pedida',
+      rg.ventana_dias < rg.ventana_pedida_dias - 20,
+      `${rg.ventana_dias} vs ${rg.ventana_pedida_dias}`);
+  } else {
+    console.log('     (no hay ningun papel con 100-300 dias: se saltea)');
+  }
+
   resumen();
 }
 

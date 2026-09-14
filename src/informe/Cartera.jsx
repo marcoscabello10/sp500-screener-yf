@@ -1251,6 +1251,7 @@ function ActualVsObjetivo({ plan }) {
       {plan.entradas?.length > 0 && <EntrarEnAlgoNuevo entradas={plan.entradas}
                                       volPlan={plan.volObjetivo} />}
       {plan.benchmark && <ContraElIndice b={plan.benchmark} />}
+      {plan.captura && <Captura c={plan.captura} />}
       {plan.pares && plan.pares.length > 0 && <UnaSolaApuesta pares={plan.pares} />}
 
       {mueve.length > 0 && (
@@ -1282,6 +1283,62 @@ function ActualVsObjetivo({ plan }) {
 // comparaba con nada. Sin benchmark, "rinde 24% con 16% de volatilidad" no se
 // puede juzgar: la pregunta que el cliente hace igual es si eso le gana a
 // comprar el índice y quedarse quieto.
+// ─────────────────────────────────────────────────────────────────────────────
+// QUÉ HACE LA CARTERA CUANDO EL MERCADO CAE
+//
+// El beta contesta "¿cuánto amplifica?" con UN número, y por eso tapa lo único
+// que importa: si amplifica igual para los dos lados. Una cartera que capta el
+// 120% de las caídas y el 80% de las subas tiene beta ~1 y es el peor de los
+// mundos — te sigue para abajo y no para arriba. Eso no lo muestra ni el beta
+// ni la volatilidad, que no distingue lados.
+//
+// ⚠️ Esto NO es "la correlación en las caídas". Ese número, calculado de la
+// forma obvia, es un artefacto estadístico: condicionar la muestra a que el
+// mercado sea extremo baja la correlación medida sin que la real cambie
+// (comprobado con una serie de correlación fija: 0,60 real -> 0,25 medida).
+// La captura es un cociente de promedios y no sufre eso.
+// ─────────────────────────────────────────────────────────────────────────────
+function Captura({ c }) {
+  if (c.captura_de_caidas == null || c.captura_de_subas == null) return null
+  // Positiva es mala: capta más de la caída que de la suba.
+  const mal = c.asimetria != null && c.asimetria > 0.05
+  return (
+    <div className="evitar-corte" style={{ marginTop: 14 }}>
+      <div style={{ display: 'flex', gap: 26, flexWrap: 'wrap',
+                    alignItems: 'baseline' }}>
+        <div>
+          <div style={{ fontSize: 22, fontWeight: 700,
+                        color: c.captura_de_caidas > 1 ? C.rojo : C.verde }}>
+            {num(c.captura_de_caidas, 2)}
+          </div>
+          <div style={{ fontSize: 12, color: C.tenue }}>de las caídas</div>
+        </div>
+        <div>
+          <div style={{ fontSize: 22, fontWeight: 700, color: C.titulo }}>
+            {num(c.captura_de_subas, 2)}
+          </div>
+          <div style={{ fontSize: 12, color: C.tenue }}>de las subas</div>
+        </div>
+        <div style={{ fontSize: 13.5, color: mal ? C.ambar : C.tenue,
+                      maxWidth: 460, lineHeight: 1.5 }}>
+          Cuando el índice cayó 1%, esta cartera cayó{' '}
+          <b>{num(c.captura_de_caidas, 2)}%</b>; cuando subió 1%, subió{' '}
+          <b>{num(c.captura_de_subas, 2)}%</b>.
+          {mal && ' Capta más de la caída que de la suba, que es el peor de '
+                + 'los dos lados.'}
+        </div>
+      </div>
+      {(c.peores || []).length > 0 && (
+        <p style={{ fontSize: 12.5, color: C.tenue, marginTop: 8 }}>
+          Las que más asimetría aportan:{' '}
+          {c.peores.map(p => `${p.ticker} (${num(p.caidas, 2)} / `
+                           + `${num(p.subas, 2)})`).join(' · ')}.
+        </p>
+      )}
+    </div>
+  )
+}
+
 function ContraElIndice({ b }) {
   const gana = b.retorno_sobre_volatilidad != null
     && b.retorno_sobre_volatilidad_benchmark != null

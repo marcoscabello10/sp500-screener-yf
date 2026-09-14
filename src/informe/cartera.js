@@ -1062,6 +1062,21 @@ export function armarDatosTesis(cart, estres, candidatos = [], scores = {},
       // Por que se recorta un papel que, mirado solo, estaba dentro de su tope.
       // Sin esto el objetivo baja cuatro bancos y no hay forma de explicarlo.
       grupos_limitantes: riesgo.grupos_limitantes,
+      // Qué hace la cartera cuando el índice cae, y qué cuando sube. Son ~40
+      // tokens y contestan la pregunta por la que uno diversifica, que el beta
+      // —un promedio de los dos lados— no contesta.
+      captura: riesgo.captura ? {
+        captura_de_caidas: riesgo.captura.captura_de_caidas,
+        captura_de_subas: riesgo.captura.captura_de_subas,
+        asimetria: riesgo.captura.asimetria,
+        // Solo las tres peores: el resto es una tabla que el modelo no necesita.
+        peores: (riesgo.captura.por_posicion || []).slice(0, 3),
+      } : null,
+      // Sobre cuántos días se midió todo esto, y de cuándo son los precios.
+      ventana_dias: riesgo.ventana_dias,
+      ventana_pedida_dias: riesgo.ventana_pedida_dias,
+      ventana_recortada_por: riesgo.ventana_recortada_por,
+      datos_al: riesgo.datos_al,
       // La "concentracion tematica": pares que se mueven juntos y por lo tanto
       // son UNA apuesta con dos nombres. No lo muestra ninguna tabla de pesos
       // por sector, porque pueden estar en sectores distintos.
@@ -1376,6 +1391,17 @@ export function planDePesos(cart, riesgo) {
     // el componente fuera a buscarlos a `riesgo` por su lado, habría dos
     // caminos hacia el mismo dato y uno se olvidaría de actualizar.
     benchmark: riesgo.benchmark || null,
+    // Qué hace la cartera cuando el mercado cae, y qué cuando sube. Viaja acá
+    // —igual que el benchmark— para que la pantalla lo lea del mismo lugar que
+    // todo lo demás del plan y no vaya a buscarlo a `riesgo` por su cuenta.
+    captura: riesgo.captura ? {
+      captura_de_caidas: riesgo.captura.captura_de_caidas,
+      captura_de_subas: riesgo.captura.captura_de_subas,
+      asimetria: riesgo.captura.asimetria,
+      peores: (riesgo.captura.por_posicion || [])
+        .filter(p => p.asimetria != null && p.asimetria > 0)
+        .slice(0, 3),
+    } : null,
     pares: riesgo.pares_correlacionados || [],
     // El menú por sector, y si el refuerzo interno sigue siendo una opción.
     menu: menuDeRotacion(cart, riesgo),
@@ -1618,6 +1644,15 @@ export const COBERTURA_PLENA_PCT = 95
 export const SIN_PUNTAJE_CALLA_PCT = 33
 // Y desde acá el hueco es grave: media cartera sin puntaje no es un detalle.
 export const SIN_PUNTAJE_GRAVE_PCT = 50
+// Desde acá el snapshot de precios se considera viejo: siete días son un fin de
+// semana largo más dos, así que si pasó más hubo ruedas que el informe no vio.
+//
+// ⚠️ ESTE NÚMERO TAMBIÉN ESTÁ EN `riesgo.js`, y no se importa a propósito: las
+// pruebas cargan estos módulos en un sandbox que BORRA los `import`, así que
+// una constante importada llegaría `undefined` y la comprobación de frescura
+// se apagaría en silencio — sin fallar ninguna prueba. Están los dos, y
+// `prueba-datos.cjs` comprueba que valgan lo mismo leyendo los dos archivos.
+export const DIAS_DATO_VIEJO = 7
 
 /**
  * @param cart    lo que devuelve `analizarCartera()`
@@ -1717,6 +1752,54 @@ export function suficienciaDeDatos(cart, riesgo = null, scores = {}) {
       })
       noSePuedeAfirmar.push(
         `que la volatilidad de la cartera sea X%: ese número cubre el ${r1(cr)}%`)
+    }
+  }
+
+  // ── 4b. ¿Sobre cuántos días se midió, y sobre datos de cuándo? ──────────
+  // Dos huecos que hasta ahora no tenía nadie, y los dos son de la misma
+  // familia: el número existe, se ve bien, y describe otra cosa.
+  if (riesgo && riesgo.disponible !== false) {
+    // LA VENTANA QUE SE ENCOGE. Un papel recién listado obliga a medir a TODOS
+    // sobre su historia — la matriz necesita un período común. Medido sobre el
+    // snapshot: meter un papel de 611 días en una cartera de 756 mueve la
+    // volatilidad de los otros +0,49 puntos; uno de 214 días la mueve −0,91.
+    // No es un sesgo chico y consistente: es un corrimiento arbitrario cuyo
+    // signo depende de qué le tocó contener a la ventana recortada.
+    const pedida = riesgo.ventana_pedida_dias
+    const usada = riesgo.ventana_dias
+    if (pedida && usada && usada < pedida - 20) {
+      const quien = (riesgo.ventana_recortada_por || [])
+        .map(x => `${x.ticker} (${x.dias} días)`).join(', ')
+      faltantes.push({
+        que: 'ventana de medición',
+        detalle: `se midió sobre ${usada} días y no sobre ${pedida}`
+               + (quien ? `, por ${quien}` : ''),
+        consecuencia: 'la volatilidad y las correlaciones son las de ese '
+                    + 'período más corto, no las de tres años',
+        grave: usada < pedida / 2,
+      })
+      noSePuedeAfirmar.push(
+        `que estos números sean "a tres años": se midieron sobre ${usada} días`)
+    }
+
+    // LA FRESCURA. El informe nunca dijo de cuándo son los precios.
+    if (riesgo.datos_al) {
+      const dias = Math.round(
+        (Date.now() - Date.parse(riesgo.datos_al)) / 86400000)
+      if (dias > DIAS_DATO_VIEJO) {
+        faltantes.push({
+          que: 'precios',
+          detalle: `el último día del snapshot es ${riesgo.datos_al}, hace `
+                 + `${dias} días`,
+          consecuencia: 'los pesos y la volatilidad son los de esa fecha, no '
+                      + 'los de hoy',
+          grave: dias > DIAS_DATO_VIEJO * 4,
+        })
+        if (dias > DIAS_DATO_VIEJO * 2) {
+          noSePuedeAfirmar.push(
+            `que estos sean los pesos de hoy: los precios son de hace ${dias} días`)
+        }
+      }
     }
   }
 

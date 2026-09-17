@@ -480,84 +480,157 @@ function toDailyRet(prices) {
       out.push({ date: prices[i].date, r: (prices[i].close - prices[i-1].close) / prices[i-1].close });
   return out;
 }
-// Elige N activos priorizando score fundamental PERO penalizando la correlación
-// con lo que ya se fue eligiendo — evita terminar con "Top N" concentrado en
-// 1-2 sectores altamente correlacionados entre sí. Algoritmo goloso:
-//   0) Se descartan por completo los activos de `excludedSectors`.
-//   1) Se garantiza 1 activo (el de mejor score) de cada sector en
-//      `forcedSectors`, aunque el algoritmo por sí solo no lo hubiera elegido.
-//   2) El resto de los cupos se llena de forma golosa: score * (1 - correlación
-//      promedio con lo ya elegido). Un activo con score alto pero muy
-//      correlacionado con lo elegido pierde metric frente a uno más descorrelacionado.
-function selectDiversifiedIndices(stocks, corrMatrix, n, forcedSectors=[], excludedSectors=[]) {
-  const excludedSet = new Set(excludedSectors);
-  const eligible = stocks.map((_,i)=>i).filter(i => !excludedSet.has(stocks[i].sector));
-  if (eligible.length <= n) return eligible;
+// ─────────────────────────────────────────────────────────────────────────────
+// EL POOL Y EL RESULTADO SON DOS COSAS DISTINTAS  (17/09/2026)
+//
+// Antes había tres modos y cada uno decidía las dos cosas a la vez:
+//
+//     modo     sobre qué se correlaciona    cuántos papeles salen
+//     full     todo (~55)                   todos (~55)
+//     top1     1 por sector                 11
+//     topN     todo (~55)                   N
+//
+// Eso mezclaba dos preguntas que no tienen por qué contestarse juntas. "Quiero
+// mirar 55 papeles" y "quiero una cartera de 6" son compatibles, y con el
+// modelo viejo no se podían pedir a la vez.
+//
+// POR QUÉ ADEMÁS ERA UN BUG Y NO UNA INCOMODIDAD
+// El optimizador de esta pantalla no resuelve Markowitz: tira 4.000 carteras al
+// azar y se queda con la mejor (ver `runMonteCarlo`). Con 6 activos encuentra
+// el óptimo exacto; con 20 se queda a 0,123 de Sharpe y —peor— devuelve una
+// cartera DISTINTA en cada clic: medido el 17/09 sobre el snapshot real, entre
+// dos corridas cambiaba de manos el 38% de la cartera. Es decir: el modo
+// "Completo", que era el que devolvía 55 papeles, era justo el que menos se
+// podía creer.
+//
+// Acotar el resultado a 4-12 papeles no es una preferencia de interfaz: es lo
+// que devuelve al sorteo al rango donde acierta. (Y aparte, ahora los dos
+// puntos marcados del gráfico se calculan exacto — ver `maximoSharpe`.)
+//
+// EL MODELO NUEVO: dos pools, y el tamaño del resultado se elige aparte.
+//
+//     pool                          resultado
+//     1 por sector   (11 papeles)   N, que elegís  (4 a 12)
+//     5 por sector   (~55 papeles)  N, que elegís  (4 a 12)
+//
+// Los filtros de sector siguen funcionando igual en los dos: un sector
+// excluido no entra al pool, y uno garantizado tiene lugar asegurado en el
+// resultado.
+// ─────────────────────────────────────────────────────────────────────────────
 
-  const remaining = new Set(eligible);
-  const selected = [];
+// Cuántos papeles por sector entran al POOL en cada modo. Las claves siguen
+// siendo 'top1'/'full' para no romper nada que ya las nombre.
+const POOL_POR_SECTOR = { top1: 1, full: 5 };
 
-  // Paso 1: garantizar los sectores pedidos explícitamente
-  for (const sec of forcedSectors) {
-    if (selected.length >= n) break;
-    const candidates = [...remaining].filter(i => stocks[i].sector === sec);
-    if (candidates.length === 0) continue; // no hay ningún elegible en ese sector
-    const best = candidates.reduce((b,i)=> (stocks[i].score||0) > (stocks[b].score||0) ? i : b);
-    selected.push(best);
-    remaining.delete(best);
-  }
-  if (selected.length >= n) return selected.slice(0, n);
+// El RESULTADO: cuántos papeles quedan en la cartera final.
+// El techo de 12 no es estético. Arriba de ahí el sorteo de `runMonteCarlo`
+// empieza a dar respuestas distintas entre corridas (spread de Sharpe 0,034 en
+// 12 activos, 0,056 en 20). El piso de 4 es el mínimo con el que una cartera
+// diversificada todavía significa algo.
+const RESULTADO_MIN = 4, RESULTADO_MAX = 12, RESULTADO_DEFECTO = 6;
 
-  // Paso 2: si todavía no hay ningún elegido, arrancar con el de mejor score
-  if (selected.length === 0) {
-    let first = [...remaining].reduce((best,i)=> (stocks[i].score||0) > (stocks[best].score||0) ? i : best);
-    selected.push(first);
-    remaining.delete(first);
-  }
-
-  // Paso 3: completar el resto de forma diversificada
-  while (selected.length < n && remaining.size > 0) {
-    let bestIdx=null, bestMetric=-Infinity;
-    for (const i of remaining) {
-      const avgCorr = selected.reduce((s,j)=>s+Math.abs(corrMatrix[i][j]),0) / selected.length;
-      const metric = (stocks[i].score||0) * (1 - avgCorr);
-      if (metric > bestMetric) { bestMetric=metric; bestIdx=i; }
-    }
-    selected.push(bestIdx);
-    remaining.delete(bestIdx);
-  }
-  return selected;
-}
-// El de mejor score de cada sector representado en `stocks` (respeta excludedSectors).
-function pickBestPerSectorIndices(stocks, excludedSectors=[]) {
-  const excludedSet = new Set(excludedSectors);
-  const bestBySector = {};
+/**
+ * El pool: los mejores `porSector` papeles de cada sector, por score.
+ *
+ * El desempate por símbolo NO es decorativo. Los papeles que no llegan al
+ * mínimo de métricas tienen `score` en null, y `(score||0)` los empata a todos
+ * en cero: sin desempate explícito, cuál entra al pool dependería del orden en
+ * que vinieron del snapshot.
+ */
+function poolPorSector(stocks, porSector, excludedSectors=[]) {
+  const excluidos = new Set(excludedSectors);
+  const bySec = {};
   stocks.forEach((s,i)=>{
-    if (excludedSet.has(s.sector)) return;
-    if (!(s.sector in bestBySector) || (s.score||0) > (stocks[bestBySector[s.sector]].score||0)) {
-      bestBySector[s.sector] = i;
-    }
+    if (excluidos.has(s.sector)) return;
+    (bySec[s.sector] = bySec[s.sector] || []).push(i);
   });
-  return Object.values(bestBySector);
-}
-// Aplica el modo de universo (full/top1/topN) SOBRE datos ya calculados
-// (validStocks + su matriz de correlación completa) — así "Top N" puede usar
-// la correlación real entre TODOS los candidatos, no solo el score de F1.
-// forcedSectors/excludedSectors solo tienen efecto real en modo 'topN'
-// (en 'full' y 'top1' solo aplica la exclusión, que sí tiene sentido ahí).
-function applySelectionMode(mode, topN, validStocks, corr, forcedSectors=[], excludedSectors=[]) {
-  let idxs;
-  const excludedSet = new Set(excludedSectors);
-  if (mode === 'top1') {
-    idxs = pickBestPerSectorIndices(validStocks, excludedSectors);
-  } else if (mode === 'topN') {
-    idxs = selectDiversifiedIndices(validStocks, corr, Math.max(3, topN||6), forcedSectors, excludedSectors);
-  } else {
-    idxs = validStocks.map((_,i)=>i).filter(i => !excludedSet.has(validStocks[i].sector));
+  const out = [];
+  for (const sec of Object.keys(bySec).sort()) {
+    const ordenado = bySec[sec].slice().sort((a,b)=>{
+      const d = (stocks[b].score||0) - (stocks[a].score||0);
+      if (d) return d;
+      return String(stocks[a].symbol) < String(stocks[b].symbol) ? -1 : 1;
+    });
+    out.push(...ordenado.slice(0, porSector));
   }
+  return out;
+}
+
+/**
+ * Elige `n` papeles de un pool ya armado.
+ *
+ *   'puntaje'        los n de mejor score, y listo. Cuando el pool ya es
+ *                    1-por-sector, la diversificación está garantizada por
+ *                    construcción y no hace falta penalizar nada: el resultado
+ *                    es exactamente el ranking, que es lo que se espera al
+ *                    mirar la tabla.
+ *   'descorrelacion' goloso sobre score × (1 − correlación media con lo ya
+ *                    elegido). Es el que hace falta cuando el pool tiene varios
+ *                    papeles del mismo sector: sin esto, "los 4 mejores" de un
+ *                    pool de 55 pueden ser 4 tecnológicas que se mueven juntas.
+ *
+ * Los sectores garantizados se sirven primero, en los dos criterios.
+ */
+function elegirDelPool(criterio, stocks, corr, poolIdxs, n, forcedSectors=[]) {
+  const disponibles = new Set(poolIdxs);
+  if (disponibles.size <= n) return [...disponibles];
+  const puntaje = i => (stocks[i].score || 0);
+  const sim = i => String(stocks[i].symbol || '');
+  const elegidos = [];
+
+  // 1) Un papel de cada sector garantizado, el de mejor score de ese sector.
+  for (const sec of forcedSectors) {
+    if (elegidos.length >= n) break;
+    const cand = [...disponibles].filter(i => stocks[i].sector === sec);
+    if (!cand.length) continue;
+    const mejor = cand.reduce((b,i)=>{
+      if (puntaje(i) !== puntaje(b)) return puntaje(i) > puntaje(b) ? i : b;
+      return sim(i) < sim(b) ? i : b;
+    });
+    elegidos.push(mejor);
+    disponibles.delete(mejor);
+  }
+
+  // 2) El resto, según el criterio.
+  while (elegidos.length < n && disponibles.size > 0) {
+    let mejor = null, mejorMetrica = -Infinity;
+    for (const i of disponibles) {
+      let m = puntaje(i);
+      if (criterio === 'descorrelacion' && elegidos.length > 0) {
+        const corrMedia = elegidos.reduce((s,j)=>s+Math.abs(corr[i][j]),0) / elegidos.length;
+        m = m * (1 - corrMedia);
+      }
+      if (m > mejorMetrica || (m === mejorMetrica && mejor != null && sim(i) < sim(mejor))) {
+        mejorMetrica = m; mejor = i;
+      }
+    }
+    if (mejor == null) break;
+    elegidos.push(mejor);
+    disponibles.delete(mejor);
+  }
+  return elegidos;
+}
+
+/**
+ * Arma el pool y elige el resultado, sobre datos ya calculados (validStocks +
+ * la matriz de correlación COMPLETA). Elegir acá y no antes es lo que permite
+ * que 'descorrelacion' mire la correlación real entre todos los candidatos del
+ * pool, no solo el score de F1.
+ *
+ * Devuelve además `pool` y `n` para que la pantalla pueda decir sobre cuántos
+ * papeles se correlacionó, que no es lo mismo que cuántos salieron.
+ */
+function applySelectionMode(mode, nResultado, criterio, validStocks, corr, forcedSectors=[], excludedSectors=[]) {
+  const porSector = POOL_POR_SECTOR[mode] || POOL_POR_SECTOR.full;
+  const pool = poolPorSector(validStocks, porSector, excludedSectors);
+  const n = Math.max(RESULTADO_MIN, Math.min(RESULTADO_MAX, nResultado || RESULTADO_DEFECTO));
+  // Se ordenan ascendente para que el resultado no dependa del orden en que el
+  // goloso los fue eligiendo: la cartera es un conjunto, no una secuencia.
+  const idxs = elegirDelPool(criterio, validStocks, corr, pool, n, forcedSectors)
+    .slice().sort((a,b)=>a-b);
   const stocks = idxs.map(i=>validStocks[i]);
   const subCorr = idxs.map(i=>idxs.map(j=>corr[i][j]));
-  return { stocks, corr: subCorr, idxs };
+  return { stocks, corr: subCorr, idxs, pool, n };
 }
 function buildSpyMap(spyPrices) {
   const m = {}; toDailyRet(spyPrices).forEach(r => { m[r.date] = r.r; }); return m;
@@ -615,25 +688,176 @@ function portStats(w, annRets, cov, rf) {
   const retP = ret*100;
   return { ret: retP, vol, sharpe: vol>0 ? (retP/100-rf)/(vol/100) : 0 };
 }
-function constrainedWeights(n, minW=0.01, maxW=0.20) {
-  // Generate random weights respecting min/max bounds
-  let w = Array.from({length:n}, ()=> -Math.log(Math.random()+1e-10));
-  let s = w.reduce((a,b)=>a+b,0);
-  w = w.map(x=>x/s);
-  // Iterative projection onto constraints
-  for (let iter=0; iter<20; iter++) {
-    w = w.map(x=>Math.min(Math.max(x, minW), maxW));
-    s = w.reduce((a,b)=>a+b,0);
-    w = w.map(x=>x/s);
+// ─────────────────────────────────────────────────────────────────────────────
+// LOS PESOS: LA RESTRICCIÓN QUE LA PANTALLA PROMETÍA Y NO CUMPLÍA (17/09/2026)
+//
+// `constrainedWeights` recortaba a [minW, maxW] y DESPUÉS renormalizaba. El
+// último paso del bucle era el `/s`, así que la renormalización deshacía el
+// recorte y los pesos salían fuera de rango. Medido sobre el snapshot real:
+//
+//      4 activos -> el 100% de las 4.000 carteras se pasa del 20%; llega a 25,0%
+//      6 activos -> el  96% se pasa; la que la pantalla marca como "Máximo
+//                   Sharpe" tiene 20,2% con el pie diciendo "máx 20%"
+//     12 activos -> el  10% se pasa
+//     20 activos -> ninguna (con 20 papeles el promedio ya está lejos del tope)
+//
+// Con 4 papeles no es redondeo: 4 × 20% = 80%. "Pesos de 1% a 20% con 4
+// papeles" es una región VACÍA — no hay ninguna cartera que cumpla. El código
+// no avisaba, repartía 25% a cada uno, y el pie seguía diciendo 20%.
+//
+// Estaba dormido porque nadie había pedido carteras de 4 papeles. El piso de 4
+// del rediseño lo destapó.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * ¿Existe alguna cartera con estos topes? Suma de n pesos = 1, cada uno entre
+ * minW y maxW: hace falta que n·maxW >= 1 (si no, no se llega a 100) y que
+ * n·minW <= 1 (si no, se pasa). Fuera de eso no hay nada que optimizar.
+ */
+function pesosPosibles(n, minW, maxW) {
+  if (!(n > 0)) return { ok:false, motivo:'no hay activos' };
+  if (n * maxW < 1 - 1e-12) {
+    return { ok:false, motivo:`con ${n} activos y un máximo de ${(maxW*100).toFixed(1)}% `
+           + `no se llega al 100%: haría falta un máximo de al menos `
+           + `${Math.ceil(100/n)}%`, maxNecesario: Math.ceil(100/n) };
   }
-  return w;
+  if (n * minW > 1 + 1e-12) {
+    return { ok:false, motivo:`con ${n} activos y un mínimo de ${(minW*100).toFixed(1)}% `
+           + `se pasa del 100%: el mínimo no puede superar ${(100/n).toFixed(1)}%` };
+  }
+  return { ok:true };
 }
+
+/**
+ * Proyección euclidiana EXACTA sobre { Σw = 1, minW <= w <= maxW }.
+ *
+ * Se busca el multiplicador L tal que Σ clip(v_i − L) = 1. La suma es monótona
+ * decreciente en L, así que la bisección converge siempre y sin sorpresas. El
+ * resultado cumple las dos restricciones a la vez — que es exactamente lo que
+ * el recortar-y-renormalizar no lograba.
+ */
+function proyectarPesos(v, minW, maxW) {
+  const n = v.length;
+  if (!pesosPosibles(n, minW, maxW).ok) return null;
+  let lo = Math.min(...v) - maxW - 1, hi = Math.max(...v) - minW + 1;
+  const suma = L => v.reduce((a,x)=>a+Math.min(Math.max(x-L,minW),maxW), 0);
+  for (let k=0; k<100; k++) {
+    const m = (lo+hi)/2;
+    if (suma(m) > 1) lo = m; else hi = m;
+  }
+  const L = (lo+hi)/2;
+  return v.map(x=>Math.min(Math.max(x-L,minW),maxW));
+}
+
+function constrainedWeights(n, minW=0.01, maxW=0.20) {
+  // Dirichlet por exponenciales, y después la proyección exacta. Antes de
+  // 17/09 acá había un recortar-renormalizar que no respetaba el tope.
+  const v = Array.from({length:n}, ()=> -Math.log(Math.random()+1e-10));
+  const s = v.reduce((a,b)=>a+b,0);
+  return proyectarPesos(v.map(x=>x/s), minW, maxW);
+}
+
+/**
+ * La nube de la frontera eficiente.
+ *
+ * ⚠️ ESTO NO ES UN OPTIMIZADOR. Son carteras al azar, y sirven para DIBUJAR la
+ * nube del gráfico. El óptimo se calcula aparte, con `maximoSharpe` y
+ * `minimaVarianza`, y se marca encima de esta nube. Hasta el 17/09 los dos
+ * puntos marcados eran "el mejor sorteo", que con 20 activos se quedaba a
+ * 0,123 de Sharpe del óptimo y cambiaba en cada clic.
+ */
 function runMonteCarlo(annRets, cov, rf, nSims=4000, minW=0.01, maxW=0.20) {
   const n = annRets.length;
-  return Array.from({length:nSims}, ()=> {
+  if (!pesosPosibles(n, minW, maxW).ok) return [];
+  const out = [];
+  for (let k=0; k<nSims; k++) {
     const w = constrainedWeights(n, minW, maxW);
-    return { ...portStats(w, annRets, cov, rf), weights: w };
-  });
+    if (w) out.push({ ...portStats(w, annRets, cov, rf), weights: w });
+  }
+  return out;
+}
+
+// ── EL ÓPTIMO, CALCULADO ─────────────────────────────────────────────────────
+// Ascenso (o descenso) proyectado con paso adaptativo. Determinista de punta a
+// punta: mismos datos, mismo resultado, siempre. Medido el 17/09: 3-7 ms contra
+// 24-102 ms del sorteo, y contra un control de 300.000 sorteos gana o empata.
+
+const OPT_ITERACIONES = 4000;
+
+function _gradSharpe(w, mu, cov, rf) {
+  const Sw = cov.map(fila => fila.reduce((a,x,j)=>a+x*w[j], 0));
+  const varD = w.reduce((a,x,i)=>a+x*Sw[i], 0);
+  const vol = Math.sqrt(Math.max(varD, 1e-18) * 252);
+  const exc = w.reduce((a,x,i)=>a+x*mu[i], 0) - rf;
+  // d/dw [ (w·mu − rf) / vol ]
+  const g = w.map((_,i)=> mu[i]/vol - exc*(252*Sw[i])/(vol*vol*vol));
+  return { S: exc/vol, g };
+}
+
+/**
+ * Cartera de máximo Sharpe con topes de peso.
+ *
+ * Varios arranques DETERMINISTAS (equiponderado, por retorno, por baja
+ * varianza, por Sharpe individual) y se queda con el mejor. Nada de azar: el
+ * punto de toda esta función es que el mismo input dé el mismo output.
+ */
+function maximoSharpe(annRets, cov, rf, minW=0.01, maxW=0.20) {
+  const n = annRets.length;
+  if (!pesosPosibles(n, minW, maxW).ok) return null;
+  const rankeado = puntua => {
+    const orden = annRets.map((_,i)=>i).sort((a,b)=>{
+      const d = puntua(b) - puntua(a);
+      return d || (a - b);
+    });
+    const v = new Array(n).fill(0);
+    orden.forEach((i,k)=>{ v[i] = (n-k)/n; });
+    return proyectarPesos(v, minW, maxW);
+  };
+  const arranques = [
+    proyectarPesos(new Array(n).fill(1/n), minW, maxW),
+    rankeado(i => annRets[i]),
+    rankeado(i => -cov[i][i]),
+    rankeado(i => (annRets[i]-rf) / Math.sqrt(Math.max(cov[i][i]*252, 1e-18))),
+  ].filter(Boolean);
+
+  let mejorW = null, mejorS = -Infinity;
+  for (const w0 of arranques) {
+    let w = w0.slice(), paso = 0.5;
+    let S = _gradSharpe(w, annRets, cov, rf).S;
+    for (let it=0; it<OPT_ITERACIONES; it++) {
+      const { g } = _gradSharpe(w, annRets, cov, rf);
+      const cand = proyectarPesos(w.map((x,i)=>x + paso*g[i]), minW, maxW);
+      if (!cand) break;
+      const S2 = _gradSharpe(cand, annRets, cov, rf).S;
+      // El 1e-14 evita quedarse girando sobre ruido de punto flotante.
+      if (S2 > S + 1e-14) { w = cand; S = S2; paso *= 1.15; }
+      else { paso *= 0.5; if (paso < 1e-12) break; }
+    }
+    if (S > mejorS) { mejorS = S; mejorW = w; }
+  }
+  return mejorW;
+}
+
+/**
+ * Cartera de mínima varianza con topes de peso. El problema es convexo, así
+ * que un solo arranque alcanza: el mínimo local ES el global.
+ */
+function minimaVarianza(cov, minW=0.01, maxW=0.20) {
+  const n = cov.length;
+  if (!pesosPosibles(n, minW, maxW).ok) return null;
+  const varDe = x => x.reduce((a,xi,i)=> a + xi*cov[i].reduce((b,c,j)=>b+c*x[j],0), 0);
+  let w = proyectarPesos(new Array(n).fill(1/n), minW, maxW);
+  if (!w) return null;
+  let v = varDe(w), paso = 0.5;
+  for (let it=0; it<OPT_ITERACIONES; it++) {
+    const g = cov.map(fila => 2*fila.reduce((a,x,j)=>a+x*w[j], 0));
+    const cand = proyectarPesos(w.map((x,i)=>x - paso*g[i]), minW, maxW);
+    if (!cand) break;
+    const v2 = varDe(cand);
+    if (v2 < v - 1e-18) { w = cand; v = v2; paso *= 1.15; }
+    else { paso *= 0.5; if (paso < 1e-14) break; }
+  }
+  return w;
 }
 function riskParityW(cov) {
   const n = cov.length;
@@ -744,36 +968,73 @@ function CacheBadge({info, onRefresh}) {
     </div>
   );
 }
-function UniverseToggle({value, onChange, fullCount, topN, onTopNChange}) {
+// Una línea que dice sobre cuántos papeles se correlacionó y cuántos salieron.
+// No es adorno: "6 activos" a secas no distingue entre haber mirado 11 papeles
+// o 55, y esa es justo la diferencia entre los dos modos.
+function LineaSeleccion({sel}) {
+  if (!sel) return null;
+  const modo = sel.modo === 'top1' ? '1 por sector' : '5 por sector';
+  const crit = sel.criterio === 'puntaje' ? 'por puntaje' : 'por descorrelación';
+  return (
+    <div style={{fontSize:10,color:"#475569",fontFamily:"monospace",marginTop:3}}>
+      Pool: {modo} → <span style={{color:"#94a3b8"}}>{sel.pool} papeles correlacionados</span>
+      {" "}→ resultado de <span style={{color:"#94a3b8"}}>{sel.resultado}</span>, elegidos {crit}
+    </div>
+  );
+}
+// El control de la fase de correlación. Tres decisiones, que antes estaban
+// mezcladas en una sola: sobre qué se correlaciona, cuántos papeles salen, y
+// con qué criterio se eligen. Ver el bloque de `applySelectionMode`.
+function UniverseToggle({value, onChange, n, onNChange, criterio, onCriterioChange}) {
   const opts = [
-    {v:"full", label:`🌐 Completo (~${fullCount||55})`, tip:"Todos los candidatos de F1 con histórico válido — más diversificación intra-sector, ideal para Markowitz"},
-    {v:"top1", label:"🎯 1 por sector (11)", tip:"Solo el de mejor score de cada sector — máxima diversificación sectorial"},
-    {v:"topN", label:"🔢 Top N", tip:"Los N de mejor score en todo el pool, sin importar sector — elegí exactamente cuántos activos"},
+    {v:"top1", label:"🎯 1 por sector", sub:"11 papeles",
+     tip:"El pool es el de mejor score de cada sector. La diversificación sectorial queda garantizada por construcción."},
+    {v:"full", label:"🌐 Completo",     sub:"5 por sector · ~55",
+     tip:"El pool son los 5 mejores de cada sector y se correlacionan todos entre sí. Puede elegir dos papeles del mismo sector si eso baja la correlación de la cartera."},
   ];
+  const crits = [
+    {v:"puntaje",        label:"puntaje",        tip:"Los N de mejor score del pool, sin mirar correlación. Con el pool de 1 por sector es lo que se ve en la tabla: el ranking."},
+    {v:"descorrelacion", label:"descorrelación", tip:"Goloso sobre score × (1 − correlación con lo ya elegido). Es el que hace falta con el pool Completo: sin esto, los 4 mejores de 55 pueden ser 4 tecnológicas."},
+  ];
+  const btn = (activo)=>({
+    background: activo ? "#1e293b" : "transparent",
+    border: activo ? "1px solid #334155" : "1px solid transparent",
+    borderRadius:6, padding:"5px 10px", cursor:"pointer",
+    color: activo ? "#f1f5f9" : "#64748b",
+    fontSize:10, fontFamily:"monospace", fontWeight:activo?700:400,
+  });
+  const nSeguro = Math.max(RESULTADO_MIN, Math.min(RESULTADO_MAX, n||RESULTADO_DEFECTO));
   return (
     <div style={{display:"flex",alignItems:"center",gap:4,background:"#0f172a",border:"1px solid #1e293b",borderRadius:8,padding:3,flexWrap:"wrap"}}>
       {opts.map(o=>(
-        <button key={o.v} title={o.tip} onClick={()=>onChange(o.v)}
-          style={{
-            background: value===o.v ? "#1e293b" : "transparent",
-            border: value===o.v ? "1px solid #334155" : "1px solid transparent",
-            borderRadius:6, padding:"5px 10px", cursor:"pointer",
-            color: value===o.v ? "#f1f5f9" : "#64748b",
-            fontSize:10, fontFamily:"monospace", fontWeight:value===o.v?700:400,
-          }}>
-          {o.label}
+        <button key={o.v} title={o.tip} onClick={()=>onChange(o.v)} style={btn(value===o.v)}>
+          {o.label} <span style={{color:"#475569",fontWeight:400}}>{o.sub}</span>
         </button>
       ))}
-      {value==="topN" && (
-        <div style={{display:"flex",alignItems:"center",gap:4,marginLeft:2,paddingLeft:8,borderLeft:"1px solid #1e293b"}}>
-          <button onClick={()=>onTopNChange(Math.max(3,(topN||6)-1))}
-            style={{width:20,height:20,background:"#1e293b",border:"1px solid #334155",borderRadius:4,color:"#94a3b8",cursor:"pointer",fontSize:11,lineHeight:1}}>−</button>
-          <span style={{fontSize:11,color:"#f1f5f9",fontFamily:"monospace",fontWeight:700,minWidth:16,textAlign:"center"}}>{topN||6}</span>
-          <button onClick={()=>onTopNChange(Math.min(fullCount||55,(topN||6)+1))}
-            style={{width:20,height:20,background:"#1e293b",border:"1px solid #334155",borderRadius:4,color:"#94a3b8",cursor:"pointer",fontSize:11,lineHeight:1}}>+</button>
-          <span style={{fontSize:9,color:"#475569",fontFamily:"monospace"}}>activos (mín 3)</span>
-        </div>
-      )}
+
+      {/* CUÁNTOS SALEN — ahora en los dos modos, no solo en uno */}
+      <div style={{display:"flex",alignItems:"center",gap:4,marginLeft:2,paddingLeft:8,borderLeft:"1px solid #1e293b"}}
+           title={`Cuántos papeles querés en la cartera final (${RESULTADO_MIN} a ${RESULTADO_MAX}). `
+                + `Arriba de ${RESULTADO_MAX} el sorteo de la frontera empieza a dar respuestas distintas entre corridas.`}>
+        <span style={{fontSize:9,color:"#475569",fontFamily:"monospace"}}>resultado</span>
+        <button onClick={()=>onNChange(Math.max(RESULTADO_MIN, nSeguro-1))}
+          style={{width:20,height:20,background:"#1e293b",border:"1px solid #334155",borderRadius:4,color:"#94a3b8",cursor:"pointer",fontSize:11,lineHeight:1}}>−</button>
+        <span style={{fontSize:11,color:"#f1f5f9",fontFamily:"monospace",fontWeight:700,minWidth:16,textAlign:"center"}}>{nSeguro}</span>
+        <button onClick={()=>onNChange(Math.min(RESULTADO_MAX, nSeguro+1))}
+          style={{width:20,height:20,background:"#1e293b",border:"1px solid #334155",borderRadius:4,color:"#94a3b8",cursor:"pointer",fontSize:11,lineHeight:1}}>+</button>
+        <span style={{fontSize:9,color:"#475569",fontFamily:"monospace"}}>papeles</span>
+      </div>
+
+      {/* CON QUÉ CRITERIO */}
+      <div style={{display:"flex",alignItems:"center",gap:3,marginLeft:2,paddingLeft:8,borderLeft:"1px solid #1e293b"}}>
+        <span style={{fontSize:9,color:"#475569",fontFamily:"monospace"}}>elegir por</span>
+        {crits.map(c=>(
+          <button key={c.v} title={c.tip} onClick={()=>onCriterioChange(c.v)}
+            style={{...btn(criterio===c.v), padding:"4px 8px", fontSize:9}}>
+            {c.label}
+          </button>
+        ))}
+      </div>
     </div>
   );
 }
@@ -1261,9 +1522,16 @@ function doReoptimize(stocks, annRets, cov, excluded, rf, minWf, maxWf) {
   const subRets = idxs.map(i=>annRets[i]);
   const subCov  = idxs.map(i=>idxs.map(j=>cov[i][j]));
   const subStks = idxs.map(i=>stocks[i]);
+  // Al excluir papeles a mano el N baja, y con él puede volverse imposible el
+  // tope de peso elegido (4 papeles con máximo 20% no suman 100). Antes esto
+  // devolvía pesos fuera de rango en silencio.
+  if (!pesosPosibles(idxs.length, minWf, maxWf).ok) return null;
   const mc      = runMonteCarlo(subRets, subCov, rf, 3000, minWf, maxWf);
-  const minVar  = mc.reduce((b,p)=>p.vol<b.vol?p:b, mc[0]);
-  const maxShp  = mc.reduce((b,p)=>p.sharpe>b.sharpe?p:b, mc[0]);
+  const wMv     = minimaVarianza(subCov, minWf, maxWf);
+  const wMs     = maximoSharpe(subRets, subCov, rf, minWf, maxWf);
+  if (!wMv || !wMs) return null;
+  const minVar  = { ...portStats(wMv, subRets, subCov, rf), weights: wMv };
+  const maxShp  = { ...portStats(wMs, subRets, subCov, rf), weights: wMs };
   const rpW     = riskParityW(subCov);
   const rpSt    = portStats(rpW, subRets, subCov, rf);
   const ewW     = new Array(subStks.length).fill(1/subStks.length);
@@ -1507,8 +1775,16 @@ export default function App() {
   const [reoptData,    setReoptData]    = useState(null);
   const [spy,          setSpy]          = useState(null);
   const [snapshotMeta, setSnapshotMeta] = useState(null);
-  const [assetUniverse,setAssetUniverse]= useState('topN'); // 'full' | 'top1' | 'topN'
-  const [topNCount,     setTopNCount]     = useState(6);
+  // EL POOL: sobre cuántos papeles se correlaciona.
+  //   'top1' -> el mejor de cada sector (11)
+  //   'full' -> los 5 mejores de cada sector (~55), "Completo"
+  // El viejo modo 'topN' desapareció: era "pool de todo, resultado de N", y
+  // ahora el tamaño del resultado se elige aparte en los dos modos.
+  const [assetUniverse,setAssetUniverse]= useState('top1');
+  // EL RESULTADO: cuántos papeles quedan en la cartera (4 a 12).
+  const [nResultado,    setNResultado]    = useState(RESULTADO_DEFECTO);
+  // CÓMO se eligen esos N del pool: 'puntaje' | 'descorrelacion'.
+  const [criterioSeleccion, setCriterioSeleccion] = useState('descorrelacion');
   const [forcedSectors, setForcedSectors] = useState(new Set());
   const [excludedSectors, setExcludedSectors] = useState(new Set());
   const [spyRisk,      setSpyRisk]      = useState(null);
@@ -2177,18 +2453,22 @@ export default function App() {
       const trimmed=retArrays.map(r=>r.slice(r.length-minLen));
       const {corr}=buildCovAndCorr(trimmed);
 
-      // Recién ACÁ se aplica el modo elegido (full/top1/topN) — "Top N" ya
-      // puede ver la correlación real entre todos los candidatos válidos y
-      // evitar amontonarse en activos muy correlacionados entre sí.
-      const {stocks:finalStocks, corr:finalCorr} = applySelectionMode(assetUniverse, topNCount, validStocks, corr, [...forcedSectors], [...excludedSectors]);
+      // Recién ACÁ se arma el pool y se eligen los N del resultado. La
+      // correlación ya está calculada sobre TODOS los candidatos válidos, así
+      // que el criterio 'descorrelacion' mira la correlación real del pool
+      // entero, no una aproximación.
+      const {stocks:finalStocks, corr:finalCorr, pool} = applySelectionMode(
+        assetUniverse, nResultado, criterioSeleccion, validStocks, corr,
+        [...forcedSectors], [...excludedSectors]);
 
-      setCorrData({stocks:finalStocks, corrMatrix:finalCorr, period:corrY, sectorsMissing, histErrSample});
+      setCorrData({stocks:finalStocks, corrMatrix:finalCorr, period:corrY, sectorsMissing, histErrSample,
+        seleccion:{modo:assetUniverse, pool:pool.length, resultado:finalStocks.length, criterio:criterioSeleccion}});
       setTab("corr");
       setLp({step:"Fase 3 completada.",pct:100,phase:3});
       await delay(400);
       setPhase("done3");
     } catch(err) { setError(err.message); setPhase("error"); }
-  },[fundData,cpY,lpY,assetUniverse,topNCount,forcedSectors,excludedSectors]);
+  },[fundData,cpY,lpY,assetUniverse,nResultado,criterioSeleccion,forcedSectors,excludedSectors]);
 
   // ── Phase 4: Optimization ────────────────────────────────────────────────────
   const runOpt = useCallback(async()=>{
@@ -2294,19 +2574,35 @@ export default function App() {
       const {cov,corr}=buildCovAndCorr(trimmed);
       const annRets=trimmed.map(r=>(Math.pow(r.reduce((a,v)=>a*(1+v),1),252/r.length)-1));
 
-      // Selección diversificada ANTES de Monte Carlo — el optimizador solo ve
-      // el universo final (full/top1/topN), ya libre de correlación innecesaria
-      // si el modo es "Top N".
-      const {stocks:validStocksSel, idxs} = applySelectionMode(assetUniverse, topNCount, validStocks, corr, [...forcedSectors], [...excludedSectors]);
+      // El pool se arma y el resultado se elige ANTES de optimizar: el
+      // optimizador solo ve los N papeles finales. La correlación que usa la
+      // selección, en cambio, es la del POOL completo.
+      const {stocks:validStocksSel, idxs, pool} = applySelectionMode(
+        assetUniverse, nResultado, criterioSeleccion, validStocks, corr,
+        [...forcedSectors], [...excludedSectors]);
       const covSel = idxs.map(i=>idxs.map(j=>cov[i][j]));
       const annRetsSel = idxs.map(i=>annRets[i]);
 
-      setLp({step:`Monte Carlo: 4,000 portafolios (peso mín ${minW}% · máx ${maxW}%)...`,pct:64,phase:4});
+      // El tope de peso tiene que ser posible para esta cantidad de papeles.
+      // Con 4 activos y un máximo de 20% no hay ninguna cartera que sume 100:
+      // antes del 17/09 esto pasaba callado y repartía 25% a cada uno.
+      const viable = pesosPosibles(validStocksSel.length, minWf, maxWf);
+      if (!viable.ok) throw new Error(
+        `No hay ninguna cartera posible: ${viable.motivo}. `
+        + `Subí "Max W" a ${viable.maxNecesario || Math.ceil(100/validStocksSel.length)}% `
+        + `o pedí más activos en la fase de correlación.`);
+
+      setLp({step:`Nube de 4.000 carteras (peso mín ${minW}% · máx ${maxW}%)...`,pct:64,phase:4});
       const mcPorts=runMonteCarlo(annRetsSel,covSel,rf,4000,minWf,maxWf);
 
-      setLp({step:"Identificando portafolios óptimos...",pct:86,phase:4});
-      const minVar=mcPorts.reduce((b,p)=>p.vol<b.vol?p:b, mcPorts[0]);
-      const maxShp=mcPorts.reduce((b,p)=>p.sharpe>b.sharpe?p:b, mcPorts[0]);
+      setLp({step:"Calculando el óptimo exacto...",pct:86,phase:4});
+      // ⚠️ NO salen del sorteo. Se calculan. La nube de arriba es para dibujar
+      // la frontera; estos dos son el óptimo de verdad y son deterministas.
+      const wMv = minimaVarianza(covSel, minWf, maxWf);
+      const wMs = maximoSharpe(annRetsSel, covSel, rf, minWf, maxWf);
+      if (!wMv || !wMs) throw new Error("El optimizador no pudo resolver con estas restricciones.");
+      const minVar = {...portStats(wMv,annRetsSel,covSel,rf), weights:wMv};
+      const maxShp = {...portStats(wMs,annRetsSel,covSel,rf), weights:wMs};
       const rpW=riskParityW(covSel);
       const rpStats=portStats(rpW,annRetsSel,covSel,rf);
       const ewW=new Array(validStocksSel.length).fill(1/validStocksSel.length);
@@ -2325,13 +2621,14 @@ export default function App() {
         ew:    {...ewStats,weights:ewW,label:"Equal Weight"},
         spy:   {ret:spyAnn,vol:spyVol,sharpe:spyVol>0?(spyAnn/100-rf)/(spyVol/100):0,label:"SPY"},
         constraints:{minW,maxW},
+        seleccion:{modo:assetUniverse, pool:pool.length, resultado:validStocksSel.length, criterio:criterioSeleccion},
       });
       setTab("opt");
       setLp({step:"Fase 4 completada.",pct:100,phase:4});
       await delay(400);
       setPhase("done4");
     } catch(err) { setError(err.message); setPhase("error"); }
-  },[fundData,rfRate,optY,minW,maxW,cpY,lpY,assetUniverse,topNCount,forcedSectors,excludedSectors]);
+  },[fundData,rfRate,optY,minW,maxW,cpY,lpY,assetUniverse,nResultado,criterioSeleccion,forcedSectors,excludedSectors]);
 
   const toggleExclude = useCallback((sym) => {
     if (!optData) return;
@@ -2543,7 +2840,7 @@ export default function App() {
             <NInput label="CP" value={cpY} onChange={v=>setCpY(Math.min(v,lpY-1))} min={1} max={4} unit="Y"/>
             <NInput label="LP" value={lpY} onChange={v=>setLpY(Math.max(v,cpY+1))} min={2} max={10} unit="Y"/>
             <button onClick={runP2} style={{background:"#1e293b",border:"1px solid #334155",borderRadius:8,padding:"7px 12px",color:"#a78bfa",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:"monospace"}}>↺ Riesgo</button>
-            <UniverseToggle value={assetUniverse} onChange={setAssetUniverse} fullCount={Object.values(fundData).flat().length} topN={topNCount} onTopNChange={setTopNCount}/>
+            <UniverseToggle value={assetUniverse} onChange={setAssetUniverse} n={nResultado} onNChange={setNResultado} criterio={criterioSeleccion} onCriterioChange={setCriterioSeleccion}/>
             <button onClick={runCorr} style={{background:"linear-gradient(135deg,#0d9488,#0ea5e9)",border:"none",borderRadius:8,padding:"8px 14px",color:"white",fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"monospace",boxShadow:"0 0 16px rgba(13,148,136,0.3)"}}>
               Analizar Correlación →
             </button>
@@ -2560,7 +2857,7 @@ export default function App() {
             <NInput label="Min W" value={minW} onChange={v=>setMinW(Math.min(v,maxW-1))} min={0.5} max={10} step={0.5} unit="%"/>
             <NInput label="Max W" value={maxW} onChange={v=>setMaxW(Math.max(v,minW+1))} min={5} max={50} unit="%"/>
             <button onClick={runCorr} style={{background:"#1e293b",border:"1px solid #334155",borderRadius:8,padding:"7px 12px",color:"#34d399",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:"monospace"}}>↺ Corr</button>
-            <UniverseToggle value={assetUniverse} onChange={setAssetUniverse} fullCount={Object.values(fundData).flat().length} topN={topNCount} onTopNChange={setTopNCount}/>
+            <UniverseToggle value={assetUniverse} onChange={setAssetUniverse} n={nResultado} onNChange={setNResultado} criterio={criterioSeleccion} onCriterioChange={setCriterioSeleccion}/>
             <button onClick={runOpt} style={{background:"linear-gradient(135deg,#059669,#0ea5e9)",border:"none",borderRadius:8,padding:"8px 14px",color:"white",fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"monospace",boxShadow:"0 0 16px rgba(5,150,105,0.3)"}}>
               Optimizar Cartera →
             </button>
@@ -2591,6 +2888,7 @@ export default function App() {
               <div style={{fontSize:10,color:"#475569",fontFamily:"monospace"}}>
                 {corrData.stocks.length} activos · Período: {corrData.period} años · Rojo = alta correlación · Azul = correlación negativa (diversifica)
               </div>
+              <LineaSeleccion sel={corrData.seleccion}/>
               {corrData.sectorsMissing&&corrData.sectorsMissing.length>0&&(
                 <div style={{fontSize:10,color:"#f97316",fontFamily:"monospace",marginTop:4,background:"#1e1208",border:"1px solid #7c3a0a",borderRadius:6,padding:"4px 8px",display:"inline-block"}}>
                   ⚠️ Sin histórico suficiente: {corrData.sectorsMissing.join(", ")}
@@ -2612,6 +2910,11 @@ export default function App() {
               <div style={{fontSize:16,fontWeight:700,color:"#f1f5f9"}}>🎯 Optimización de Cartera</div>
               <div style={{fontSize:10,color:"#475569",fontFamily:"monospace"}}>
                 {optData.stocks.length} activos · Período: {optY}Y · RF: {rfRate}% · Pesos: mín {minW}% · máx {maxW}%
+              </div>
+              <LineaSeleccion sel={optData.seleccion}/>
+              <div style={{fontSize:10,color:"#475569",fontFamily:"monospace",marginTop:3}}>
+                La nube son 4.000 carteras al azar. <span style={{color:"#94a3b8"}}>Máximo Sharpe</span> y{" "}
+                <span style={{color:"#94a3b8"}}>Mínima Varianza</span> no salen de ahí: se calculan exacto.
               </div>
             </div>
           </div>

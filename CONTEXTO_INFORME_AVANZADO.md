@@ -5472,10 +5472,371 @@ editado.
 
 ---
 
+## 🎲 EL MONTE CARLO NO ES UN OPTIMIZADOR — Y EL TOPE DE 20% NO SE CUMPLE (17/09/2026)
+
+Marcos pidió rediseñar la fase de correlación del **screener** (F1, `src/App.jsx`):
+separar el *pool* sobre el que se correlaciona del *tamaño del resultado*.
+Antes de tocar nada se fue a medir qué hace hoy esa pantalla, y aparecieron
+dos cosas que no se estaban buscando.
+
+### Lo que hace hoy `runMonteCarlo`
+
+```js
+function runMonteCarlo(annRets, cov, rf, nSims=4000, minW=0.01, maxW=0.20) {
+  return Array.from({length:nSims}, ()=> {
+    const w = constrainedWeights(n, minW, maxW)      // ← pesos AL AZAR
+    return { ...portStats(w, annRets, cov, rf), weights: w }
+  })
+}
+```
+
+No resuelve Markowitz: **tira 4.000 carteras al azar y se queda con la mejor.**
+Los puntos que la pantalla marca como "Máximo Sharpe" y "Mínima Varianza" son
+*el mejor sorteo*, no el óptimo. Con pocos activos la diferencia no importa;
+con muchos, sí.
+
+### Medición 1 — el mismo input da carteras distintas en cada clic
+
+Cinco corridas independientes sobre el snapshot real (652 papeles, 1.674 días,
+rf 4,25%, pesos 1%–20%), pool determinista de top-K por sector:
+
+```
+activos   Sharpe min   Sharpe max   spread   % de la cartera que cambia
+   6        1,027        1,028      0,002            3,2%
+  10        1,425        1,452      0,027           12,1%
+  11        1,403        1,448      0,045           22,3%
+  20        1,329        1,385      0,056           38,1%
+  40        1,101        1,154      0,054           37,9%
+  55        0,999        1,031      0,032           31,5%
+```
+
+Con 20 activos, entre un clic y el siguiente **cambia de manos el 38% de la
+cartera**. El papel más pesado tampoco es el mismo: a veces NVDA, a veces LLY.
+
+### Medición 2 — cuánto Sharpe deja arriba de la mesa
+
+Contra un optimizador determinista (ascenso proyectado sobre el Sharpe, con
+proyección euclidiana exacta sobre `{Σw=1, minW≤w≤maxW}` resuelta por bisección
+del multiplicador, y arranques deterministas: equiponderado, por retorno, por
+baja varianza, por Sharpe individual):
+
+```
+activos   mejor de 4.000 sorteos LEGALES   optimizador   diferencia
+   6              1,024                      1,024        +0,000
+  10              1,417                      1,465        +0,048
+  11              1,406                      1,462        +0,056
+  20              1,357                      1,480        +0,123
+  40              1,106                      1,427        +0,321
+  55              1,155                      1,342        +0,186
+```
+
+**Control de que el optimizador no miente**: contra 300.000 sorteos (75× más
+que la pantalla), gana o empata siempre.
+
+```
+ 6 activos -> 300.000 sorteos llegan a 1,024 · el optimizador da 1,024
+11 activos -> 300.000 sorteos llegan a 1,451 · el optimizador da 1,462
+20 activos -> 300.000 sorteos llegan a 1,432 · el optimizador da 1,480
+```
+
+Y el determinista da **exactamente el mismo número** tres corridas seguidas
+(spread 0,0e+0), en **3–7 ms** contra 24–102 ms del sorteo. O sea que además
+de estable es más rápido: el costo de arreglarlo es negativo.
+
+### 🔴 Medición 3 — LO QUE NADIE ESTABA BUSCANDO: el tope de 20% es mentira
+
+`constrainedWeights` recorta a `maxW` y **después** renormaliza. La
+renormalización deshace el recorte. El último paso del bucle es el `/s`, así
+que los pesos que salen **no cumplen la restricción que la pantalla anuncia**.
+
+```
+ 4 activos -> 100% de las 4.000 se pasan del 20% · el peor llega a 25,0%
+ 6 activos ->  96% se pasan · el peor 20,5% · la que elige como "Máximo Sharpe" tiene 20,2%
+ 8 activos ->  63% se pasan
+10 activos ->  28% se pasan
+12 activos ->  10% se pasan
+20 activos ->   0% se pasan
+```
+
+Con 4 activos no es un error de redondeo: **4 × 20% = 80%**, o sea que "pesos
+de 1% a 20% con 4 papeles" es una región **vacía**. Es matemáticamente
+imposible. El código no avisa, reparte 25% a cada uno, y el pie de la pantalla
+sigue diciendo *"Pesos: mín 1% · máx 20%"*.
+
+Esto estaba dormido porque nadie había pedido carteras de 4 papeles. El mínimo
+de 4 que eligió Marcos para el rediseño lo destapa de frente.
+
+> `minW`/`maxW` son editables en la UI (`NInput`, defaults 1% y 20%), así que
+> la solución no es cambiar el default: es **exigir `maxW ≥ 1/n`** y decirlo
+> en pantalla cuando no se cumple.
+
+### La conclusión, que no es la que se esperaba
+
+El rediseño que pidió Marcos **no es una preferencia de UX: es el arreglo**.
+Al acotar el resultado a 4–12 papeles, el sorteo vuelve a ser suficiente:
+
+```
+activos   5 corridas del sorteo    spread   optimizador   pierde
+   4         0,738 a 0,738         0,000       0,738       0,000
+   6         1,027 a 1,028         0,001       1,024       0,000
+   8         1,145 a 1,150         0,006       1,152       0,001
+  10         1,424 a 1,457         0,033       1,465       0,008
+  12         1,392 a 1,426         0,034       1,462       0,036
+```
+
+Con 6 (el default elegido) el sorteo encuentra el óptimo exacto.
+
+### 💡 La propuesta que achica el cambio a `src/App.jsx`
+
+**No sacar el Monte Carlo.** Los 4.000 sorteos son **la nube del gráfico de
+frontera eficiente** — eso queda igual. Lo único que cambia es de dónde salen
+los dos puntos marcados: hoy son *el mejor sorteo*; pasarían a calcularse
+exacto y dibujarse **encima** de la misma nube. Es así como se dibuja una
+frontera bien hecha, y toca dos líneas en vez del motor entero.
+
+Eso respeta la regla de Marcos sobre `App.jsx`: *"solo tocalo cuándo es
+totalmente necesario"*.
+
+---
+
+## 🧭 LAS CUATRO DECISIONES DEL 17/09
+
+| Pregunta | Respuesta de Marcos |
+|---|---|
+| Ejecutable: ¿push automático o con freno? | **Dos ejecutables separados** |
+| Optimizador: ¿reemplazar el sorteo? | pidió la simulación primero → **ver arriba, pendiente de su OK** |
+| Pool de 1-por-sector, top 4: ¿por qué criterio? | **Un interruptor**: "por puntaje" / "por descorrelación" |
+| Modo Completo: ¿tamaño por defecto? | **6, con rango de 4 a 12** |
+
+### El modelo pool × resultado que hay que implementar
+
+```
+              HOY                                LO QUE VA
+  full    pool = todo      resultado = todo    pool = top 5 x sector  resultado = N
+  top1    pool = 1/sector  resultado = 11      pool = 1 x sector      resultado = N
+  topN    pool = todo      resultado = N       (absorbido por los dos de arriba)
+```
+
+Los filtros de sector (`forcedSectors` / `excludedSectors`) se mantienen tal
+cual en los dos modos — era condición explícita de Marcos.
+
+Ejemplo suyo, palabra por palabra: *"top 1 de cada sector, googl, jpm, mu, cop,
+si le doy top 4 quiero que corra markowitz sobre estas 4. Ahora si le doy
+completo y elijo 4 acciones, quiero que me dé como resultado 4, pero que
+correlacione todas, ejemplo msft si fuese segunda de googl, con jpm, con nvda
+si fuese segunda o tercera de mu"*.
+
+---
+
+## ⚙️ LOS DOS EJECUTABLES (17/09/2026)
+
+Marcos pidió un doble clic que corra los snapshots locales y haga el push.
+Eligió **dos archivos separados** en vez de uno con freno: él decide cuándo
+corre cada uno.
+
+### `1-actualizar-datos.bat` — baja datos y prueba. **No toca git.**
+
+El orden no es arbitrario y está escrito en la cabecera del archivo:
+
+```
+1. fetch_fundamentals.py  -> sp500_fundamentals.json + informe_consenso.json
+2. fetch_informe.py       -> informe_detalle.json      (LEE el 1)
+3. fetch_historico.py     -> historico_precios.json    (LEE el 1)
+```
+
+**Corta en el primer error.** Si el paso 1 falla, los otros dos trabajarían
+sobre un `sp500_fundamentals.json` viejo y escribirían datos nuevos armados
+sobre uno viejo, sin avisar. Después corre las **18 suites** (13 `.cjs` + 5
+`.py`) y, si alguna falla, imprime su log y se niega a terminar bien.
+
+Argumentos:
+
+- *(ninguno)* — baja los datos y corre las pruebas
+- `pruebas` — solo las pruebas, sin gastar una llamada a Yahoo
+- `cedears` — además revalida el universo con `validar_cedears.py` (~5 min).
+  **Solo hace falta al agregar o sacar papeles** de `cedears_informe.py`.
+  ⚠️ Hoy está pendiente: `cedears_ok.txt` es del 28/08 y no tiene los 29
+  papeles nuevos.
+
+### `2-subir-cambios.bat` — `git add` + `commit` + `push`. **No baja nada.**
+
+Es el único paso irreversible del flujo, así que muestra todo lo que va a
+subir, pide confirmación, y deja elegir el mensaje del commit.
+
+Tres guardas que vale la pena anotar:
+
+- **`.git\index.lock`**: si existe, se niega a correr y explica cómo destrabarlo.
+- **Secretos**: `findstr` sobre el `git status` buscando `.env`, `secret`,
+  `apikey`. Una clave que llega a GitHub hay que **rotarla**, no borrarla:
+  queda en el historial para siempre.
+- **Push fallido**: NO hace `git pull --rebase` solo. Un rebase puede dar
+  conflictos y eso se resuelve mirando, no a ciegas. El commit local ya quedó
+  hecho, así que no se pierde nada.
+
+### Decisiones técnicas del `.bat` que no son obvias
+
+- **ASCII puro, sin acentos.** `cmd.exe` y los acentos dependen de la página de
+  códigos; el texto de los `echo` va en ASCII para que se lea igual en
+  cualquier máquina. Los bots de Python sí imprimen acentos: para eso está el
+  `chcp 65001` + `PYTHONIOENCODING=utf-8` de la cabecera.
+- **CRLF.** Un `.bat` con finales de línea Unix puede romper `goto` y las
+  etiquetas. Los dos archivos se escribieron con CRLF a propósito.
+- **Cada suite corre UNA vez.** Las que fallan se anotan en un archivo y recién
+  al final se imprime su log. Volver a correrlas para saber cuál falló
+  duplicaría el tiempo y podría dar distinto.
+- **Nada de `find /c`** para contar cambios en `2-subir-cambios.bat`: con
+  `chcp 65001` activo, `find` cuenta mal las líneas con acentos, y un archivo
+  con eñe alcanzaría para que el `.bat` crea que no hay nada y se vaya sin
+  subir. Se cuenta por **tamaño** del archivo.
+- **Subrutinas `call :suite` / `call :volcar`** en vez de `for` anidados dentro
+  de un `if (...)`: en cmd eso es de lo que falla el día menos pensado.
+
+### 🔒 Por qué esto tiene que ser un `.bat` y no algo que corra Claude
+
+Sigue en pie la regla: **Claude no corre `git` por el puente de archivos.**
+Deja un `.git\index.lock` que después no se puede borrar desde el puente y el
+repo queda trabado. El `.bat` es exactamente la respuesta a eso: lo corre
+Marcos, en su máquina, con doble clic.
+
+⚠️ Además, el **shell del puente sigue roto** desde la actualización de Windows
+del 8/09 (`no Plan9 drive shares mounted`). Solo funcionan `device_list_dir`,
+`device_stage_files` y `device_commit_files`. Las pruebas de esta tanda
+corrieron en el contenedor, con una copia del repo y el snapshot real.
+
+---
+
+## ✅ HECHO — EL REDISEÑO Y EL OPTIMIZADOR (17/09/2026)
+
+Implementado en `src/App.jsx` después del OK de Marcos. La suite nueva
+`test/prueba-optimizador.cjs` (49 comprobaciones) extrae las funciones **reales**
+de `App.jsx` con `vm`, como las otras — no copias.
+
+### Lo que se fue
+
+```js
+selectDiversifiedIndices()    // borrada
+pickBestPerSectorIndices()    // borrada
+const [assetUniverse] = useState('topN')   // el modo 'topN' ya no existe
+const [topNCount]     = useState(6)
+```
+
+### Lo que hay ahora
+
+```js
+const POOL_POR_SECTOR = { top1: 1, full: 5 }
+const RESULTADO_MIN = 4, RESULTADO_MAX = 12, RESULTADO_DEFECTO = 6
+
+poolPorSector(stocks, porSector, excludedSectors)   // los mejores K de cada sector
+elegirDelPool(criterio, stocks, corr, poolIdxs, n, forcedSectors)
+applySelectionMode(mode, nResultado, criterio, validStocks, corr, forced, excluded)
+  // devuelve { stocks, corr, idxs, pool, n }
+```
+
+Estado nuevo en el componente: `assetUniverse` ('top1' | 'full'), `nResultado`
+(4–12, default 6) y `criterioSeleccion` ('puntaje' | 'descorrelacion', default
+descorrelación).
+
+**El desempate por símbolo no es decorativo.** Los papeles que no llegan a
+`MIN_METRICAS_SCORE` tienen `score` en `null` y `(score||0)` los empata a todos
+en cero: sin desempate explícito, cuál entra al pool dependería del orden en que
+vinieron del snapshot. Hay una prueba que lo clava pasando el mismo conjunto en
+dos órdenes distintos.
+
+### El optimizador
+
+```js
+pesosPosibles(n, minW, maxW)          // ¿existe alguna cartera con estos topes?
+proyectarPesos(v, minW, maxW)         // proyección euclidiana EXACTA, por bisección
+constrainedWeights(n, minW, maxW)     // ARREGLADA: ahora usa la proyección
+runMonteCarlo(...)                    // la NUBE del gráfico. NO es el optimizador.
+maximoSharpe(annRets, cov, rf, minW, maxW)   // ascenso proyectado, 4 arranques
+minimaVarianza(cov, minW, maxW)              // convexo, un arranque alcanza
+```
+
+`runMonteCarlo` sigue tirando 4.000 carteras — son la nube de la frontera. Lo
+que cambió es que **los dos puntos marcados ya no salen del sorteo**: se
+calculan. La pantalla ahora lo dice en letra chica, para que nadie vuelva a
+creer que el mejor sorteo es el óptimo.
+
+### Los tres lugares donde se enchufó
+
+| Dónde | Qué cambió |
+|---|---|
+| `runCorr` (F3) | arma el pool y elige N; guarda `seleccion` en `corrData` |
+| `runOpt` (F4) | ídem + óptimo exacto + **tira error si el tope es imposible** |
+| `doReoptimize` | al excluir papeles a mano el N baja y el tope puede volverse imposible: ahora devuelve `null` en vez de pesos fuera de rango |
+
+### Lo que prueba la suite nueva
+
+- el pool: 1 y 5 por sector, exclusión, y el desempate independiente del orden
+- el criterio: con un sector que barre el ranking, `puntaje` devuelve 4 del
+  mismo sector y `descorrelacion` reparte — y la correlación media de la
+  cartera baja al cambiar de criterio
+- el tamaño: 1→4, 6→6, 99→12, 0→6
+- 🔴 **la submatriz de correlación alineada celda por celda** con la del
+  universo. Es la misma clase de error que costó el bug más caro del Motor B:
+  una matriz que se ve bien y está pareada mal
+- 🔴 **la regresión del tope**: 2.000 carteras sorteadas por cada N de
+  {5,6,8,12,20}, ninguna fuera de 1%–20%. Si alguien vuelve a poner el
+  recortar-renormalizar, esto se prende fuego
+- sobre datos reales (6, 11 y 20 activos): tres corridas dan pesos **idénticos
+  bit a bit**; el óptimo gana o empata contra **30.000 sorteos**; la mínima
+  varianza es menos volátil que el equiponderado
+- 4 papeles reales con tope 20%: se niega. Con 25%: resuelve y respeta el tope
+
+### ⚠️ Dos trampas operativas que aparecieron
+
+1. **La `package.json` del contenedor NO es la de Marcos.** La del contenedor
+   tiene 50 bytes y solo declara `xlsx` — es un stub que se creó para poder
+   instalar la dependencia de `prueba-excel`. La real tiene 356 bytes con vite
+   y react. **Nunca commitear `package.json` ni `package-lock.json`** desde el
+   contenedor.
+2. `esbuild` se instaló con `--no-save` solo para chequear la sintaxis del JSX
+   (`esbuild src/App.jsx --loader:.jsx=jsx --bundle --packages=external
+   --outfile=/dev/null`). Vale la pena recordarlo: es la forma rápida de saber
+   si `App.jsx` parsea sin levantar vite.
+
+---
+
 ## 📦 PENDIENTE DE PUSH — lista acumulada
 
 Todo esto está escrito en la carpeta y **todavía no subido**. Verificar con
 `git status` antes de asumir.
+
+### Tanda de ahora (17/09) — dieciseisava parte: los ejecutables
+
+```
+1-actualizar-datos.bat       NUEVO — los 3 bots en orden + las 18 suites.
+                             Corta en el primer error. No toca git.
+                             Argumentos: (ninguno) / pruebas / cedears
+2-subir-cambios.bat          NUEVO — add + commit + push, con confirmacion,
+                             guarda de .git\index.lock y guarda de secretos.
+                             No baja datos.
+CONTEXTO_INFORME_AVANZADO.md
+```
+
+⚠️ Los dos `.bat` son ASCII puro y CRLF. Si algun editor los reabre y los
+guarda como UTF-8 con BOM o con finales de linea Unix, `goto` deja de andar.
+
+```
+src/App.jsx                  🔴 EL REDISENO + EL OPTIMIZADOR
+                             - pool (1 o 5 por sector) separado del resultado
+                               (4 a 12, default 6) + interruptor de criterio
+                             - fuera selectDiversifiedIndices, fuera
+                               pickBestPerSectorIndices, fuera el modo 'topN'
+                             - 🔴 constrainedWeights respetaba el tope solo de
+                               palabra: recortaba y despues renormalizaba
+                             - maximoSharpe / minimaVarianza deterministas,
+                               marcados ENCIMA de la nube de 4.000 sorteos
+                             - pesosPosibles(): 4 papeles con tope 20% es una
+                               region vacia, y ahora lo dice
+                             - UniverseToggle con las tres decisiones
+                             - LineaSeleccion: "pool de 55 -> resultado de 6"
+test/prueba-optimizador.cjs  NUEVO — 49 comprobaciones
+```
+
+⚠️ **NO commitear `package.json` ni `package-lock.json`**: la del contenedor es
+un stub de 50 bytes, no la de Marcos.
 
 ### Tanda de ahora (14/09) — quinceava parte: los tres huecos
 
@@ -6186,6 +6547,18 @@ dos se tocó.
 ## 🚀 Guía de push paso a paso
 
 Marcos pidió que cada vez que tenga que hacer algo, se le guíe paso a paso.
+
+### ⚡ La vía corta desde el 17/09: los dos ejecutables
+
+```
+doble clic en  1-actualizar-datos.bat     baja los 3 snapshots + corre las 18 suites
+doble clic en  2-subir-cambios.bat        add + commit + push, con confirmación
+```
+
+El primero corta en el primer error y **se niega a terminar bien si alguna
+prueba falla**, así que llegar al segundo ya es media garantía. El resto de
+esta sección sigue valiendo para cuando haya que hacerlo a mano — y para
+entender qué hacen los `.bat` por dentro.
 
 ### Antes de cualquier push — verificar que lo anterior está subido
 Es la regla operativa #1 del proyecto: ya se perdió trabajo dos veces por

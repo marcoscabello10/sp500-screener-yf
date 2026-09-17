@@ -4,7 +4,6 @@ import * as XLSX from "xlsx";
 import * as math from "mathjs";
 
 const API_KEY    = ""; // sin API key — yfinance es gratuito
-const BASE       = "/api/data"; // proxy Python yfinance
 const CACHE_KEY  = "sp500_screener_fund_v2";
 const CACHE_DAYS = 15;
 
@@ -63,36 +62,17 @@ const CEDEAR_TICKERS = new Set([
 const delay  = (ms) => new Promise(r => setTimeout(r, ms));
 const chunk  = (arr, n) => { const o=[]; for(let i=0;i<arr.length;i+=n) o.push(arr.slice(i,i+n)); return o; };
 
-// ── Twelve Data: límite de 8 créditos por MINUTO ────────────────────────────
-// CADA símbolo del lote cuenta como un crédito. Con lotes de 8 (7 activos +
-// SPY) quedábamos justo en el límite: cualquier crédito gastado antes dentro
-// del mismo minuto tiraba un 429, y el mensaje de error culpaba a Yahoo, que
-// no tenía nada que ver.
-const TD_LOTE      = 6;      // deja margen para SPY y para un reintento
-const TD_ESPERA_MS = 62000;  // el contador de TD es por minuto calendario
-
-// Trae un lote de histórico. Si la fuente devuelve 429, espera el minuto y
-// reintenta UNA vez, avisando por pantalla en vez de fallar en silencio.
-async function histFetch(BASE, batch, from, onAviso) {
-  const url = `${BASE}?action=history&symbol=${batch.join(',')}&from=${from}`;
-  for (let intento = 0; intento < 2; intento++) {
-    const r = await fetch(url);
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    const d = await r.json();
-    let err = d && d._error;
-    if (!err && d && typeof d === 'object' && !Array.isArray(d)) {
-      for (const v of Object.values(d)) {
-        if (v && !Array.isArray(v) && v._error) { err = v._error; break; }
-      }
-    }
-    const esLimite = typeof err === 'string' && err.indexOf('429') >= 0;
-    if (!esLimite || intento === 1) return d;
-    for (let seg = Math.round(TD_ESPERA_MS / 1000); seg > 0; seg--) {
-      if (onAviso) onAviso(`Límite de la fuente de datos alcanzado — reintento en ${seg}s`);
-      await delay(1000);
-    }
-  }
-}
+// ── NO HAY DESCARGA EN VIVO DE HISTORICO (17/09/2026) ──────────────────────
+// Acá vivían TD_LOTE, TD_ESPERA_MS y histFetch(): el lote de descarga contra
+// `/api/data`, con su espera de 62 s por el límite de créditos por minuto.
+//
+// Se fueron los tres junto con `api/data.py`. El histórico sale de
+// `public/data/historico_precios.json`, que baja el bot local y viaja
+// commiteado. Esa fuente no tiene límite por minuto, no depende de que Yahoo
+// deje pasar a una IP de datacenter, y da el mismo dato en cada corrida.
+//
+// Si el snapshot no está, F2/F3/F4 lo dicen y paran. Antes bajaban 652
+// símbolos de a 6, con 65 segundos de espera entre lotes: casi dos horas.
 const fmtP   = v => v==null ? "—" : `$${Number(v).toFixed(2)}`;
 const fmtCap = v => { if(!v||v<=0) return"—"; if(v>=1e12) return`$${(v/1e12).toFixed(2)}T`; if(v>=1e9) return`$${(v/1e9).toFixed(1)}B`; return`$${(v/1e6).toFixed(0)}M`; };
 const fmtPct = (v,d=1) => v==null||!isFinite(v) ? "—" : `${Number(v).toFixed(d)}%`;
@@ -1768,6 +1748,9 @@ export default function App() {
   const [phase,        setPhase]        = useState("idle");
   const [lp,           setLp]           = useState({step:"",pct:0,phase:1});
   const [fundData,     setFundData]     = useState({});
+  // Los papeles de la lista del cliente que no estan en ningun snapshot.
+  // Antes se descartaban en silencio (ver la nota en runClientP1).
+  const [sinCobertura, setSinCobertura] = useState([]);
   const [riskData,     setRiskData]     = useState({});
   const [corrData,     setCorrData]     = useState(null);
   const [optData,      setOptData]      = useState(null);
@@ -1918,6 +1901,7 @@ export default function App() {
       }
 
       setFundData(results);
+      setSinCobertura([]);   // el modo S&P no tiene papeles sin cobertura
       setActiveSec(Object.keys(results)[0]);
       cacheSave(results, spyObj, cedearFilter);
       const newInfo = cacheLoad(cedearFilter);
@@ -2031,56 +2015,39 @@ export default function App() {
         };
       });
 
-      // Tickers fuera del S&P 500 (ej. small/mid caps con CEDEAR pero sin
-      // pertenecer al índice): fetch en vivo, como antes — puede fallar si
-      // Yahoo está bloqueando Vercel en ese momento.
-      if (liveNeeded.length) {
-        setLp({step:`Cotizaciones en vivo (${liveNeeded.length} fuera del S&P 500)...`,pct:6,phase:1});
-        let qDone = 0;
-        for (const batch of chunk(liveNeeded, 5)) {
-          try {
-            const r = await fetch(`${BASE}?action=quote&symbols=${batch.join(",")}`);
-            const d = await r.json();
-            if (Array.isArray(d)) d.forEach(q=>{ quotes[q.symbol]=q; });
-          } catch {}
-          qDone += batch.length;
-          setLp({step:`Cotizaciones en vivo: ${qDone}/${liveNeeded.length}...`,pct:6+(qDone/liveNeeded.length)*14,phase:1});
-          await delay(150);
-        }
-        setLp({step:"Perfiles fuera del S&P 500...",pct:22,phase:1});
-        for (const batch of chunk(liveNeeded, 20)) {
-          try {
-            const r = await fetch(`${BASE}?action=profile&symbols=${batch.join(",")}`);
-            const d = await r.json();
-            if (Array.isArray(d)) d.forEach(p=>{ profiles[p.symbol]=p; });
-          } catch {}
-          await delay(200);
-        }
-        setLp({step:"Ratios fuera del S&P 500...",pct:28,phase:1});
-        for (const symsBatch of chunk(liveNeeded, 35)) {
-          try {
-            const r = await fetch(`${BASE}?action=ratios&symbol=${symsBatch.join(",")}`);
-            if (r.ok) {
-              const d = await r.json();
-              if (Array.isArray(d)) d.forEach(x=>{ if (x&&x.symbol) ratios[x.symbol]=x; });
-            }
-          } catch(e) { /* batch falló — continuar con el siguiente */ }
-          await delay(500);
-        }
+      // ── LOS QUE NO ESTAN EN NINGUN SNAPSHOT (17/09/2026) ──────────────────
+      // Acá había tres tandas de fetch en vivo a `/api/data` — cotización,
+      // perfil y ratios — para los papeles de afuera del índice. Se fueron con
+      // esa función (ver la nota arriba de `snapshotHistorico`).
+      //
+      // Y de paso se arregla algo que estaba mal desde antes: esas tres tandas
+      // estaban envueltas en `catch {}` vacíos. Si Yahoo bloqueaba a Vercel
+      // —que es la regla, no la excepción— el papel seguía viaje SIN
+      // cotización, el `if (!quotes[sym]) continue` de más abajo lo tiraba, y
+      // la cartera del cliente se analizaba con un papel menos sin que nadie
+      // dijera una palabra. Un papel que desaparece callado de la cartera de
+      // alguien es peor que un error.
+      //
+      // Ahora se nombran. La cobertura es de 664 papeles (las 504 del S&P más
+      // los 160 del informe que no están en el índice), así que esto es un caso
+      // de borde real pero infrecuente.
+      const sinDatos = liveNeeded.slice();
+      setSinCobertura(sinDatos);
+      if (sinDatos.length) {
+        console.warn(`[fase 1 cliente] ${sinDatos.length} papeles fuera del snapshot: ${sinDatos.join(', ')}`);
       }
 
-      // SPY: el bot local siempre lo incluye — usarlo de ahí directo
+      // SPY: el bot local siempre lo incluye.
       setLp({step:"Benchmark SPY...",pct:34,phase:1});
       let spyD = null;
       if (snapshotMap["SPY"]) {
         const s = snapshotMap["SPY"];
         spyD = { symbol:"SPY", price:s.price, changesPercentage:s.changePercent, name:s.name };
       } else {
-        try {
-          const spyRes = await fetch(`${BASE}?action=quote&symbols=SPY`);
-          const d = await spyRes.json();
-          spyD = Array.isArray(d)?d[0]:d;
-        } catch {}
+        // Si SPY no está, el snapshot está roto: es el primer símbolo que baja
+        // el bot y es el benchmark de F2/F3/F4. Antes acá se intentaba en vivo.
+        throw new Error('El snapshot local no tiene SPY, que es el benchmark de '
+          + 'todas las fases. Corré 1-actualizar-datos.bat.');
       }
       setSpy(spyD);
       await delay(100);
@@ -2252,49 +2219,23 @@ export default function App() {
         setLp({step:`⚡ Histórico desde caché (${HIST_CACHE_DAYS} días)...`,pct:84,phase:2});
         done = total;
       } else {
-        // Un fetch por lote — el tamaño lo fija TD_LOTE por el límite de créditos
-        const allWithSpy = ['SPY', ...allSyms];
-        setLp({step:`Descargando histórico (${allWithSpy.length} activos)...`,pct:3,phase:2});
-        for (const batch of chunk(allWithSpy, TD_LOTE)) {
-          try {
-            const d = await histFetch(BASE, batch, from,
-              (msg) => setLp({step: msg, pct: 3, phase: 2}));
-            if (d && d._error) {
-              batch.forEach(s => { histErrors[s] = d._error; });
-            } else if (d && typeof d === 'object' && !Array.isArray(d)) {
-              // Multi-símbolo → dict { SYM: [...] }
-              for (const [sym, prices] of Object.entries(d)) {
-                if (prices && !Array.isArray(prices) && prices._error) {
-                  histErrors[sym] = prices._error;
-                  continue;
-                }
-                const arr = Array.isArray(prices) ? prices : [];
-                if (sym === 'SPY') spyPrices = arr.slice().reverse();
-                else hist[sym] = arr.slice().reverse();
-              }
-            } else if (batch.length === 1) {
-              // Fallback símbolo único
-              const arr = (Array.isArray(d) ? d : (d.historical||[]));
-              if (batch[0] === 'SPY') spyPrices = arr.slice().reverse();
-              else hist[batch[0]] = arr.slice().reverse();
-            }
-            // Antes acá decía `${r.status}` y `r` no existe en este scope: la
-            // línea tiraba ReferenceError en TODOS los lotes. Los datos ya
-            // estaban asignados arriba, así que las fases funcionaban, pero el
-            // catch de abajo marcaba cada símbolo con "Error de red: r is not
-            // defined" y ESE era el mensaje que se mostraba cuando algo fallaba
-            // de verdad, tapando la causa real (429, sin datos, etc.).
-            console.log(`[hist] lote ${batch.join(',')} →`, d);
-          } catch (e) {
-            batch.forEach(s => { histErrors[s] = `Error de red: ${e.message}`; });
-            console.warn(`[hist] lote ${batch.join(',')} → excepción:`, e);
-          }
-          done += batch.length;
-          setLp({step:`Histórico: ${done}/${total} activos...`,pct:4+(done/total)*80,phase:2});
-          await delay(65000);
-        }
-        if (!spyPrices) spyPrices = [];
-        histCacheSave(hist, spyPrices, from, allSyms.length);
+        // ── NO HAY TERCERA FUENTE, Y ES A PROPOSITO (17/09/2026) ──────────
+        // Hasta hoy acá había un fetch por lotes a `/api/data` (Python +
+        // yfinance en Vercel). Se sacó junto con esa función: sus
+        // dependencias pesaban 227 MB, y ese tamaño era lo que disparaba el
+        // paso de "Optimizing Python bundle" de Vercel que venía rompiendo
+        // el deploy con un ENOENT sobre su propio bytecode.
+        //
+        // No se pierde nada real: esta rama solo corría si FALLABAN las dos
+        // anteriores, y la primera es `historico_precios.json`, que viaja
+        // commiteado en el repo. Si no está, el problema es que el snapshot
+        // no se subió — y eso hay que decirlo, no taparlo con una descarga
+        // en vivo que además Yahoo bloquea desde las IP de Vercel.
+        throw new Error(
+          'No hay histórico de precios para la Fase 2 (riesgo). '
+          + 'El snapshot local (public/data/historico_precios.json) no se pudo '
+          + 'leer y el caché del navegador está vacío. '
+          + 'Corré 1-actualizar-datos.bat y después 2-subir-cambios.bat.');
       }
 
       setLp({step:`Calculando CP (${cpY}Y) / LP (${lpY}Y)...`,pct:86,phase:2});
@@ -2379,47 +2320,23 @@ export default function App() {
         setLp({step:"⚡ Histórico desde caché — calculando correlaciones...",pct:76,phase:3});
         done = total;
       } else {
-        const allWithSpy = ['SPY', ...allSyms];
-        setLp({step:`Descargando histórico correlación (${allWithSpy.length} activos)...`,pct:3,phase:3});
-        for (const batch of chunk(allWithSpy, TD_LOTE)) {
-          try {
-            const d = await histFetch(BASE, batch, from,
-              (msg) => setLp({step: msg, pct: 3, phase: 3}));
-            if (d && d._error) {
-              // Error global del batch (ej. rate-limit de TD) — aplica a todos los símbolos del lote
-              batch.forEach(s => { histErrors[s] = d._error; });
-            } else if (d && typeof d === 'object' && !Array.isArray(d)) {
-              for (const [sym, prices] of Object.entries(d)) {
-                if (prices && !Array.isArray(prices) && prices._error) {
-                  histErrors[sym] = prices._error;
-                  continue;
-                }
-                const arr = Array.isArray(prices) ? prices : [];
-                if (sym === 'SPY') spyPrices = arr.slice().reverse();
-                else hist[sym] = arr.slice().reverse();
-              }
-            } else if (batch.length === 1) {
-              const arr = (Array.isArray(d) ? d : (d.historical||[]));
-              if (batch[0] === 'SPY') spyPrices = arr.slice().reverse();
-              else hist[batch[0]] = arr.slice().reverse();
-            }
-            // Antes acá decía `${r.status}` y `r` no existe en este scope: la
-            // línea tiraba ReferenceError en TODOS los lotes. Los datos ya
-            // estaban asignados arriba, así que las fases funcionaban, pero el
-            // catch de abajo marcaba cada símbolo con "Error de red: r is not
-            // defined" y ESE era el mensaje que se mostraba cuando algo fallaba
-            // de verdad, tapando la causa real (429, sin datos, etc.).
-            console.log(`[hist] lote ${batch.join(',')} →`, d);
-          } catch (e) {
-            batch.forEach(s => { histErrors[s] = `Error de red: ${e.message}`; });
-            console.warn(`[hist] lote ${batch.join(',')} → excepción:`, e);
-          }
-          done += batch.length;
-          setLp({step:`Histórico: ${done}/${total} activos...`,pct:5+(done/total)*70,phase:3});
-          await delay(65000);
-        }
-        if (!spyPrices) spyPrices = [];
-        histCacheSave(hist, spyPrices, from, allSyms.length);
+        // ── NO HAY TERCERA FUENTE, Y ES A PROPOSITO (17/09/2026) ──────────
+        // Hasta hoy acá había un fetch por lotes a `/api/data` (Python +
+        // yfinance en Vercel). Se sacó junto con esa función: sus
+        // dependencias pesaban 227 MB, y ese tamaño era lo que disparaba el
+        // paso de "Optimizing Python bundle" de Vercel que venía rompiendo
+        // el deploy con un ENOENT sobre su propio bytecode.
+        //
+        // No se pierde nada real: esta rama solo corría si FALLABAN las dos
+        // anteriores, y la primera es `historico_precios.json`, que viaja
+        // commiteado en el repo. Si no está, el problema es que el snapshot
+        // no se subió — y eso hay que decirlo, no taparlo con una descarga
+        // en vivo que además Yahoo bloquea desde las IP de Vercel.
+        throw new Error(
+          'No hay histórico de precios para la Fase 3 (correlación). '
+          + 'El snapshot local (public/data/historico_precios.json) no se pudo '
+          + 'leer y el caché del navegador está vacío. '
+          + 'Corré 1-actualizar-datos.bat y después 2-subir-cambios.bat.');
       }
 
       setLp({step:"Calculando matriz de correlación...",pct:78,phase:3});
@@ -2508,47 +2425,23 @@ export default function App() {
         setLp({step:"⚡ Histórico desde caché — construyendo covarianza...",pct:55,phase:4});
         done = total;
       } else {
-        const allWithSpy = ['SPY', ...allSyms];
-        setLp({step:`Descargando histórico optimización (${allWithSpy.length} activos)...`,pct:2,phase:4});
-        for (const batch of chunk(allWithSpy, TD_LOTE)) {
-          try {
-            const d = await histFetch(BASE, batch, from,
-              (msg) => setLp({step: msg, pct: 2, phase: 4}));
-            if (d && d._error) {
-              // Error global del batch (ej. rate-limit de TD) — aplica a todos los símbolos del lote
-              batch.forEach(s => { histErrors[s] = d._error; });
-            } else if (d && typeof d === 'object' && !Array.isArray(d)) {
-              for (const [sym, prices] of Object.entries(d)) {
-                if (prices && !Array.isArray(prices) && prices._error) {
-                  histErrors[sym] = prices._error;
-                  continue;
-                }
-                const arr = Array.isArray(prices) ? prices : [];
-                if (sym === 'SPY') spyPrices = arr.slice().reverse();
-                else hist[sym] = arr.slice().reverse();
-              }
-            } else if (batch.length === 1) {
-              const arr = (Array.isArray(d) ? d : (d.historical||[]));
-              if (batch[0] === 'SPY') spyPrices = arr.slice().reverse();
-              else hist[batch[0]] = arr.slice().reverse();
-            }
-            // Antes acá decía `${r.status}` y `r` no existe en este scope: la
-            // línea tiraba ReferenceError en TODOS los lotes. Los datos ya
-            // estaban asignados arriba, así que las fases funcionaban, pero el
-            // catch de abajo marcaba cada símbolo con "Error de red: r is not
-            // defined" y ESE era el mensaje que se mostraba cuando algo fallaba
-            // de verdad, tapando la causa real (429, sin datos, etc.).
-            console.log(`[hist] lote ${batch.join(',')} →`, d);
-          } catch (e) {
-            batch.forEach(s => { histErrors[s] = `Error de red: ${e.message}`; });
-            console.warn(`[hist] lote ${batch.join(',')} → excepción:`, e);
-          }
-          done += batch.length;
-          setLp({step:`Histórico: ${done}/${total} activos...`,pct:4+(done/total)*50,phase:4});
-          await delay(65000);
-        }
-        if (!spyPrices) spyPrices = [];
-        histCacheSave(hist, spyPrices, from, allSyms.length);
+        // ── NO HAY TERCERA FUENTE, Y ES A PROPOSITO (17/09/2026) ──────────
+        // Hasta hoy acá había un fetch por lotes a `/api/data` (Python +
+        // yfinance en Vercel). Se sacó junto con esa función: sus
+        // dependencias pesaban 227 MB, y ese tamaño era lo que disparaba el
+        // paso de "Optimizing Python bundle" de Vercel que venía rompiendo
+        // el deploy con un ENOENT sobre su propio bytecode.
+        //
+        // No se pierde nada real: esta rama solo corría si FALLABAN las dos
+        // anteriores, y la primera es `historico_precios.json`, que viaja
+        // commiteado en el repo. Si no está, el problema es que el snapshot
+        // no se subió — y eso hay que decirlo, no taparlo con una descarga
+        // en vivo que además Yahoo bloquea desde las IP de Vercel.
+        throw new Error(
+          'No hay histórico de precios para la Fase 4 (optimización). '
+          + 'El snapshot local (public/data/historico_precios.json) no se pudo '
+          + 'leer y el caché del navegador está vacío. '
+          + 'Corré 1-actualizar-datos.bat y después 2-subir-cambios.bat.');
       }
 
       setLp({step:"Construyendo matriz de covarianza...",pct:57,phase:4});
@@ -3256,6 +3149,28 @@ export default function App() {
       )}
       {!isCorr&&!isOpt&&!isBL&&(
         <>
+          {/* ── LOS QUE QUEDARON AFUERA ─────────────────────────────────────
+              Antes desaparecian sin decir nada: sin cotizacion, el
+              `if (!quotes[sym]) continue` los tiraba y la cartera se analizaba
+              con un papel menos. Ahora se nombran, con el camino para
+              incorporarlos. */}
+          {sinCobertura.length>0&&(
+            <div style={{margin:"10px 16px 0",background:"#1e1208",border:"1px solid #7c3a0a",borderRadius:8,padding:"8px 12px"}}>
+              <div style={{fontSize:11,color:"#fb923c",fontFamily:"monospace",fontWeight:700}}>
+                ⚠️ {sinCobertura.length} {sinCobertura.length===1?"papel quedó":"papeles quedaron"} afuera del análisis
+              </div>
+              <div style={{fontSize:10,color:"#fdba74",fontFamily:"monospace",marginTop:3,wordBreak:"break-word"}}>
+                {sinCobertura.join(" · ")}
+              </div>
+              <div style={{fontSize:10,color:"#b45309",fontFamily:"monospace",marginTop:5,lineHeight:1.5}}>
+                No están en el snapshot local, y el screener no baja datos en vivo.
+                Para incorporarlos: agregalos a <b>local_bot/tickers_informe.txt</b>,
+                corré <b>1-actualizar-datos.bat informe</b> y después <b>2-subir-cambios.bat</b>.
+                El resto de la cartera se analizó normal.
+              </div>
+            </div>
+          )}
+
           {/* Sector tabs */}
           <div style={{overflowX:"auto",borderBottom:"1px solid #1e293b",background:"#040d1a"}}>
             <div style={{display:"flex",padding:"0 12px",gap:1,minWidth:"max-content"}}>

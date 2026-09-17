@@ -5955,10 +5955,336 @@ arreglo es una línea en `leer_universo()` de `fetch_historico.py`.
 
 ---
 
+## 🚨 EL PUSH ANDA — LO QUE FALLA ES EL DEPLOY DE VERCEL (17/09/2026)
+
+Marcos preguntó si el `2-subir-cambios.bat` no estaría haciendo el push. **Lo
+está haciendo.** Leyendo los refs de git (solo lectura, sin tocar el repo):
+
+```
+local  main : 3c2c98cfe91413f4406cf1f00486ea935bb433f1
+origin main : 3c2c98cfe91413f4406cf1f00486ea935bb433f1   <- iguales
+```
+
+Y el reflog de `origin/main` muestra **dos pushes hoy**:
+
+```
+2026-09-17 18:34 UTC   10d3ea1 -> 8e30911   update by push
+2026-09-17 20:24 UTC   8e30911 -> 3c2c98c   update by push   (4,5 s despues del commit)
+```
+
+### 🔴 Lo que sí falla: los dos deploys quedaron en ERROR
+
+```
+dpl_BkUfbFVnempcXEjZAYswmAnFERS2  8e30911  ERROR
+dpl_7x1p6HEeDwTLXi3U2NHugTnjp2W3  3c2c98c  ERROR
+```
+
+**El último deploy exitoso es `10d3ea1`, del 14/09.** O sea: producción está
+sirviendo el estado del 14 de septiembre. Ni el rediseño de la fase de
+correlación, ni el optimizador, ni los datos nuevos están en la web.
+
+### El error no es del código de Marcos
+
+```
+errorCode:    ENOENT
+errorStep:    buildStep
+errorMessage: ENOENT: no such file or directory, lstat
+  '/vercel/path0/.vercel/python/.venv/lib/python3.12/site-packages/
+   vercel_runtime/_vendor/werkzeug/wrappers/__pycache__/__init__.cpython-312.pyc'
+```
+
+Está adentro de `vercel_runtime`, que es el paquete **de Vercel**, no del
+proyecto. Y el log cuenta la secuencia:
+
+```
+20:24:34  Installing required dependencies from requirements.txt...
+20:24:35  Compiling Python bytecode...
+20:24:43  Optimizing Python bundle...
+20:24:44  Installing required dependencies from uv.lock...     <- instala DOS veces
+20:24:45  Bundle size (227.64 MB) exceeds the standard size; optimizing dependencies.
+20:24:45  Compiling Python bytecode...
+20:24:53  Optimizing Python bundle...
+20:24:53  Build Completed in /vercel/output [28s]
+20:24:53  Deploying outputs...                                  <- y acá muere
+```
+
+El build de Vite compiló bien (`✓ built in 5.88s`). Lo que revienta es el
+empaquetador de Python: compila el bytecode, después "optimiza" el bundle
+—paso que **solo corre porque pesa 227,64 MB**— y al empaquetar busca un `.pyc`
+que la optimización acaba de borrar.
+
+**Es una condición de carrera, no un error determinista**: los dos deploys
+fallaron con el mismo `ENOENT` pero en **archivos distintos**
+(`vercel_runtime/__pycache__/__init__` uno, `_vendor/werkzeug/wrappers/` el
+otro). Por eso un simple *Redeploy* puede pasar.
+
+### Por qué el bundle pesa 227 MB, y qué se puede hacer
+
+```
+requirements.txt:  yfinance==0.2.54, pandas>=2.0.0, numpy>=1.26.0, requests>=2.31.0
+```
+
+- `api/informe.py` (154 KB, el del informe) importa **solo la biblioteca
+  estándar**. No necesita ni una de esas cuatro.
+- `api/data.py` (31 KB, el del screener) importa `requests` y `yfinance`, y
+  yfinance arrastra pandas + numpy + lxml + beautifulsoup4 + html5lib + peewee.
+  Ahí están los 227 MB.
+
+Y `api/data.py` es **la tercera fuente de datos, no la primera**. En F2, F3 y
+F4 el código es:
+
+```js
+const snap = await snapshotHistorico(from, allSyms, ...)   // 1. el snapshot local
+const cached = snap ? null : histCacheLoad(from)           // 2. el cache de 7 dias
+if (snap) { ... } else if (cached) { ... } else {
+  histFetch(BASE, batch, from, ...)                        // 3. recien aca /api/data
+}
+```
+
+El snapshot viaja commiteado en el repo, así que la rama 3 prácticamente nunca
+corre. En F1 se usa solo para los tickers de **afuera** del S&P 500, adentro de
+un `try/catch` cuyo propio comentario dice *"puede fallar si Yahoo está
+bloqueando Vercel en ese momento"*.
+
+O sea: **227 MB de dependencias que existen para un camino de respaldo que casi
+nunca se toma, y que son justo lo que dispara el optimizador que rompe el
+deploy.**
+
+⚠️ Pero es un respaldo real, y sacarlo es una decisión del screener, no del
+informe. **No se tocó nada: está pendiente de decisión.**
+
+### El orden de intentos que se recomendó
+
+1. **Redeploy del mismo commit** desde el panel de Vercel. Cero riesgo, un
+   minuto, y como la falla es una carrera puede pasar de una.
+2. Si vuelve a fallar: `.python-version` con `3.11`, para caer en un builder
+   distinto del que tiene el bug.
+3. Si sigue: adelgazar el bundle de Python (la decisión de arriba).
+
+---
+
+## ✂️ FUERA LOS 227 MB: EL SCREENER NO LLAMA A NADIE EN VIVO (17/09/2026)
+
+Decisión de Marcos, con la consigna textual: *"la idea es no generar bugs y que
+tome todo del snapshot local nada en vivo"*.
+
+### Lo que se midió antes de tocar
+
+```
+sp500_fundamentals.json  : 504 simbolos
+informe_detalle.json     : 320 con sector
+los que aporta el informe y NO estan en el screener: 160
+COBERTURA TOTAL sin llamar a nadie: 664 papeles
+```
+
+Y su lista propia entera —AAPL, MSFT, CAT, LRCX, AMD, RGTI, HIMS— cubierta.
+
+Además, `/api/data` era la **tercera** fuente, no la primera:
+
+```js
+const snap = await snapshotHistorico(...)        // 1. el snapshot local
+const cached = snap ? null : histCacheLoad(from) // 2. el cache de 7 dias
+if (snap) {...} else if (cached) {...} else {
+  histFetch(BASE, ...)                           // 3. recien aca
+}
+```
+
+### 🔴 Y de paso apareció un bug que llevaba meses
+
+Las tres tandas en vivo del modo cliente estaban envueltas en **`catch {}`
+vacíos**. Si Yahoo bloqueaba a Vercel —que es la regla, no la excepción— el
+papel seguía viaje sin cotización, el `if (!quotes[sym]) continue` de más abajo
+lo tiraba, y **la cartera del cliente se analizaba con un papel menos sin que
+nadie dijera una palabra**.
+
+Un papel que desaparece callado de la cartera de alguien es peor que un error.
+
+### Los cuatro archivos
+
+| Archivo | Qué cambió |
+|---|---|
+| `requirements.txt` | vaciado. Queda solo el comentario que explica qué había y por qué se fue |
+| `api/data.py` | pasa a ser un **cartel de 410 Gone**, stdlib pura. No 404: el recurso existía y se retiró a propósito; un 404 se lee como "la ruta está mal escrita" y manda a buscar un bug que no existe |
+| `src/App.jsx` | fuera `BASE`, `histFetch`, `TD_LOTE`, `TD_ESPERA_MS`, las tres ramas de descarga y las tres tandas del modo cliente. **Más el aviso** que nombra los papeles que quedaron afuera y dice cómo incorporarlos. 204.915 → 201.864 bytes |
+| `test/test_sin_llamadas_vivo.py` | NUEVO — la vigesimoprimera suite |
+
+`api/informe.py` no se tocó: ya importaba solo la biblioteca estándar.
+
+### Lo que hacen ahora F2/F3/F4 si no hay snapshot
+
+Antes bajaban 652 símbolos de a 6, con 65 segundos de espera entre lotes: casi
+dos horas, contra una fuente que encima bloquea a Vercel. Ahora:
+
+```
+throw new Error('No hay histórico de precios para la Fase 3 (correlación). '
+  + 'El snapshot local (public/data/historico_precios.json) no se pudo leer y '
+  + 'el caché del navegador está vacío. '
+  + 'Corré 1-actualizar-datos.bat y después 2-subir-cambios.bat.')
+```
+
+Y si falta SPY, corta: es el benchmark de las tres fases y el primer símbolo
+que baja el bot. Que no esté significa que el snapshot está roto.
+
+### La prueba, y por qué no alcanzaba con el comentario
+
+`test_sin_llamadas_vivo.py` clava cuatro cosas:
+
+1. **Las funciones de `api/` importan solo stdlib.** Se lee el **AST**, no se
+   importa el módulo: importarlo lo ejecutaría, y además pasaría si la
+   dependencia prohibida no estuviera instalada — o sea, pasaría por la razón
+   equivocada.
+2. `requirements.txt` sin una sola línea que no sea comentario.
+3. `src/App.jsx` sin ninguno de los 7 rastros del proxy (`/api/data`,
+   `histFetch(`, `const BASE =`, y los cuatro `action=`). Se buscan **sobre el
+   código con los comentarios borrados**, porque los comentarios hablan de
+   `/api/data` justamente para explicar por qué ya no se usa.
+4. **El aviso de los que quedan afuera existe.** Sacar las llamadas sin esto
+   sería cambiar un problema por otro: el papel desaparecería igual.
+
+Y el guard simétrico, que es el que más me importa: **`local_bot/requirements.txt`
+sigue teniendo yfinance**. Si alguien "limpia" también ese, los bots dejan de
+poder bajar datos y el proyecto se queda sin fuente. Corren en la PC de Marcos,
+donde el tamaño no importa.
+
+**Se verificó que la prueba falla en los tres caminos de regresión**: con `BASE`
+reintroducida (2 fallas), con `pandas` en requirements (1), con `import requests`
+en `api/data.py` (1). Una prueba que pasa siempre no prueba nada.
+
+### Lo que esto cuesta, dicho completo
+
+Si alguien pega un ticker fuera de los 664, **ya no se intenta en vivo**. Antes
+se intentaba y —por el bloqueo de Yahoo a las IP de datacenter— fallaba casi
+siempre, en silencio. Ahora aparece arriba de la tabla:
+
+> ⚠️ 2 papeles quedaron afuera del análisis — XXXX · YYYY
+> No están en el snapshot local, y el screener no baja datos en vivo. Para
+> incorporarlos: agregalos a **local_bot/tickers_informe.txt**, corré
+> **1-actualizar-datos.bat informe** y después **2-subir-cambios.bat**.
+> El resto de la cartera se analizó normal.
+
+---
+
+## ✅ EL .BAT AHORA DEMUESTRA QUE SUBIO TODO (17/09/2026)
+
+Marcos preguntó: *"¿cómo sé si esto sube o no todos los archivos modificados?"*.
+La respuesta honesta era: **no lo sabías**. El `.bat` mostraba la lista antes de
+confirmar y después confiaba. Si algo se hubiera quedado afuera, nadie se
+enteraba — que es exactamente el tipo de falla silenciosa que este proyecto
+viene cazando desde el 14/09.
+
+### Tres cambios en `2-subir-cambios.bat`
+
+**1. `git status --porcelain -uall`** en vez de `--porcelain` a secas.
+
+Sin `-uall`, una CARPETA nueva se muestra colapsada en una sola línea. Medido
+con un repo de prueba:
+
+```
+--- sin -uall ---          --- con -uall ---
+?? .gitignore              ?? .gitignore
+?? a.txt                   ?? a.txt
+?? sub/                    ?? sub/b.txt
+```
+
+Se subían igual —`git add -A` los toma— pero la lista que Marcos mira antes de
+confirmar no decía la verdad completa.
+
+**2. Después del `git add -A`, el resumen lo da GIT, no el `.bat`.**
+
+```
+ESTO ES LO QUE QUEDO EN EL COMMIT, contado por git:
+---------------------------------------------------------------------
+ .gitignore | 1 +
+ a.txt      | 1 +
+ sub/b.txt  | 1 +
+ 3 files changed, 3 insertions(+)
+---------------------------------------------------------------------
+```
+
+Sale de `git diff --cached --stat`, o sea **del índice ya armado**. No es una
+cuenta hecha a mano en el `.bat`, que es justo lo que podría mentir.
+
+**3. La verificación, que es la parte que faltaba.** Después del push se prueban
+las dos cosas que tienen que ser ciertas:
+
+```bat
+rem  (a) No quedo nada sin commitear.
+git status --porcelain -uall >"%TEMP%\sp500-verif.txt" 2>&1
+for %%F in ("%TEMP%\sp500-verif.txt") do if %%~zF GTR 0 set QUEDA=1
+
+rem  (b) El commit local y el del remoto son el mismo.
+for /f "tokens=*" %%A in ('git rev-parse HEAD') do set SHA_LOCAL=%%A
+for /f "tokens=*" %%A in ('git rev-parse origin/!RAMA!') do set SHA_REMOTO=%%A
+```
+
+`origin/main` es la referencia que git actualiza **cuando el push entra de
+verdad**. Si el push fallara sin devolver error, los dos SHA no coincidirían.
+Es el mismo chequeo que se hizo a mano para probarle que el `.bat` sí estaba
+pusheando.
+
+Termina con `SUBIDO Y VERIFICADO` en vez de `SUBIDO`, o con la lista de lo que
+quedó afuera.
+
+### Un detalle de cmd que costaba un mensaje
+
+```bat
+echo   [!] QUEDARON ARCHIVOS SIN SUBIR:
+```
+
+Con `setlocal enabledelayedexpansion`, un `!` suelto en un `echo` se lo come el
+parser: el cartel salía como `[] QUEDARON...`. Cambiado a `[AVISO]` — el
+proyecto ya tenía el mismo problema en la guarda de secretos desde el 17/09 a la
+mañana, y nadie lo había visto porque nunca se disparó.
+
+### Lo que `git add -A` toma, dicho completo
+
+Todo: modificados, nuevos y borrados, en toda la carpeta, **salvo lo que
+excluya `.gitignore`**:
+
+```
+node_modules/  dist/  .env*  __pycache__/
+local_bot/.cedear_cache.json
+local_bot/cedears_validacion.json  local_bot/cedears_ok.txt
+local_bot/probe_analistas_out.json  local_bot/probe_edgar_out.json
+```
+
+⚠️ `cedears_ok.txt` está ignorado a propósito —se regenera con
+`validar_cedears.py`— pero **`fetch_historico.py` lo lee**. O sea: en un clon
+nuevo del repo, ese archivo no está y el histórico baja un universo más chico.
+No es un problema hoy (el repo vive en una sola máquina), pero queda anotado.
+
+---
+
 ## 📦 PENDIENTE DE PUSH — lista acumulada
 
 Todo esto está escrito en la carpeta y **todavía no subido**. Verificar con
 `git status` antes de asumir.
+
+### Tanda de ahora (17/09, tercera) — fuera la descarga en vivo
+
+```
+2-subir-cambios.bat          -uall, el resumen contado por git, y la
+                             VERIFICACION despues del push (nada sin subir +
+                             local == remoto). Antes mostraba la lista y
+                             confiaba
+                             + los [!] a [AVISO]: con delayed expansion el
+                               parser se comia el signo
+requirements.txt             vaciado: 227,64 MB -> 0. Solo queda el comentario
+                             que explica que habia y por que se fue
+api/data.py                  pasa a ser un cartel de 410 Gone, stdlib pura
+src/App.jsx                  fuera BASE, histFetch, TD_LOTE, TD_ESPERA_MS, las
+                             3 ramas de descarga y las 3 tandas del modo
+                             cliente. 204.915 -> 201.864 bytes
+                             + 🔴 el aviso de papeles sin cobertura: los catch
+                               vacios los descartaban en silencio
+test/test_sin_llamadas_vivo.py  NUEVO — la vigesimoprimera suite
+CONTEXTO_INFORME_AVANZADO.md
+```
+
+Veintiuna suites. Se verifico que la prueba nueva falla en los TRES caminos de
+regresion (BASE reintroducida, pandas en requirements, import externo en api/).
+
+⚠️ `api/informe.py` no se toco: ya importaba solo la biblioteca estandar.
 
 ### Tanda de ahora (17/09, segunda) — la auditoria post-corrida
 

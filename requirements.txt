@@ -1,13 +1,38 @@
-# Dependencias que instala VERCEL para api/data.py.
+# DEPENDENCIAS DE PYTHON QUE INSTALA VERCEL — VACIO A PROPOSITO (17/09/2026)
 #
-# ⚠️ NO SUBIR EL PIN DE yfinance. api/data.py usa yf.Ticker(sym, session=...)
-# y toca internos privados (yfinance.data.YfData, ._crumb, ._session). El pin
-# a 0.2.54 es lo que hoy funciona en produccion — verificado 21/08/2026.
+# Las dos funciones de `api/` importan SOLO la biblioteca estandar:
 #
-# Los bots locales corren con yfinance 1.4.1 y tienen su propio archivo:
-# local_bot/requirements.txt. NO unificar los dos: son entornos distintos con
-# necesidades distintas.
-yfinance==0.2.54
-pandas>=2.0.0
-numpy>=1.26.0
-requests>=2.31.0
+#   api/informe.py   http.server, urllib, json, os, re, time, datetime, gzip
+#   api/data.py      http.server, json          (es un cartel de 410, ver el archivo)
+#
+# QUE HABIA ACA, Y POR QUE SE FUE
+# --------------------------------
+#   yfinance==0.2.54
+#   pandas>=2.0.0
+#   numpy>=1.26.0
+#   requests>=2.31.0
+#
+# Eran para `api/data.py`, que bajaba cotizaciones de Yahoo en vivo. Entre
+# yfinance y lo que arrastra (pandas, numpy, lxml, beautifulsoup4, html5lib,
+# peewee) el bundle de Python de Vercel pesaba 227,64 MB.
+#
+# Arriba de cierto tamaño, Vercel mete un paso de "Optimizing Python bundle"
+# que borra archivos que su propio empaquetador busca despues:
+#
+#     ENOENT: no such file or directory, lstat
+#     '.../site-packages/vercel_runtime/_vendor/werkzeug/wrappers/
+#      __pycache__/__init__.cpython-312.pyc'
+#
+# Los dos deploys del 17/09 murieron asi, con el mismo error en archivos
+# DISTINTOS — una condicion de carrera adentro del builder. Sin dependencias el
+# bundle es de kilobytes y ese paso nunca corre.
+#
+# ⚠️ ANTES DE AGREGAR UNA LINEA ACA
+# Preguntarse si el dato no puede salir del snapshot local. Yahoo bloquea las IP
+# de datacenter: una llamada en vivo desde Vercel falla seguido, y por eso todo
+# el proyecto esta armado alrededor de los bots de local_bot/. Si igual hace
+# falta, mirar el tamaño que agrega: el limite practico es lo que entre sin que
+# se dispare el optimizador.
+#
+# Los bots LOCALES tienen su propio archivo y no se unifican con este:
+# local_bot/requirements.txt (yfinance 1.4.1). Son entornos distintos.

@@ -55,7 +55,11 @@ rem  Se cuenta por TAMANO del archivo, no con `find /c`: con chcp 65001 activo
 rem  `find` cuenta mal las lineas con acentos, y un nombre de archivo con enie
 rem  alcanzaria para que este .bat crea que no hay nada y se vaya sin subir.
 set NCAMBIOS=0
-git status --porcelain >"%TEMP%\sp500-status.txt" 2>&1
+rem  -uall lista CADA archivo sin trackear. Sin eso, una CARPETA nueva se
+rem  muestra colapsada como una sola linea ("test/") y no se ve que adentro hay
+rem  cuatro archivos. Se suben igual con `git add -A`, pero la lista que mira
+rem  Marcos antes de confirmar tiene que decir la verdad completa.
+git status --porcelain -uall >"%TEMP%\sp500-status.txt" 2>&1
 for %%F in ("%TEMP%\sp500-status.txt") do if %%~zF GTR 0 set NCAMBIOS=1
 
 if "!NCAMBIOS!"=="0" (
@@ -83,7 +87,7 @@ findstr /i /c:".env" /c:"secret" /c:"apikey" /c:"api_key" /c:"credenciales" "%TE
 if not errorlevel 1 set PELIGRO=1
 if "!PELIGRO!"=="1" (
   echo   ---------------------------------------------------------------------
-  echo   [!] ATENCION: alguno de esos archivos tiene pinta de tener claves.
+  echo   [AVISO] ATENCION: alguno de esos archivos tiene pinta de tener claves.
   echo       Miralo bien antes de seguir. Una clave que llega a GitHub hay que
   echo       rotarla en la consola del proveedor; borrar el archivo despues no
   echo       alcanza, queda en el historial.
@@ -114,6 +118,17 @@ if errorlevel 1 (
   echo   [X] git add fallo.
   goto :fin_error
 )
+rem  `git add -A` desde la raiz toma TODO: modificados, nuevos y borrados, en
+rem  toda la carpeta, salvo lo que excluya .gitignore (node_modules, dist, .env
+rem  y los caches de los bots). Pero que lo tome no se ve, asi que aca lo dice
+rem  GIT mismo: este resumen sale del indice ya armado, no de una cuenta hecha
+rem  a mano en este .bat.
+echo.
+echo   ESTO ES LO QUE QUEDO EN EL COMMIT, contado por git:
+echo   ---------------------------------------------------------------------
+git diff --cached --stat
+echo   ---------------------------------------------------------------------
+echo.
 echo   Commiteando...
 git commit -m "!MSG!"
 if errorlevel 1 (
@@ -143,9 +158,50 @@ if errorlevel 1 (
   goto :fin_error
 )
 
+
+rem --- 6. LA VERIFICACION ---------------------------------------------------
+rem  Esta es la parte que faltaba. Antes el .bat mostraba la lista y confiaba:
+rem  si algo se hubiera quedado afuera, nadie se enteraba. Ahora se prueban las
+rem  dos cosas que tienen que ser ciertas DESPUES del push.
+echo.
+echo ---------------------------------------------------------------------------
+echo   VERIFICACION
+echo ---------------------------------------------------------------------------
+
+rem  (a) No quedo nada sin commitear.
+set QUEDA=0
+git status --porcelain -uall >"%TEMP%\sp500-verif.txt" 2>&1
+for %%F in ("%TEMP%\sp500-verif.txt") do if %%~zF GTR 0 set QUEDA=1
+
+rem  (b) El commit local y el del remoto son el mismo. `origin/main` es la
+rem  referencia que git actualiza cuando el push entra de verdad: si el push
+rem  hubiera fallado sin devolver error, estos dos no coincidirian.
+for /f "tokens=*" %%A in ('git rev-parse HEAD') do set SHA_LOCAL=%%A
+for /f "tokens=*" %%A in ('git rev-parse origin/!RAMA!') do set SHA_REMOTO=%%A
+
+if "!QUEDA!"=="1" (
+  echo   [AVISO] QUEDARON ARCHIVOS SIN SUBIR:
+  echo.
+  type "%TEMP%\sp500-verif.txt"
+  echo.
+  echo       Si son archivos que NO queres subir, agregalos a .gitignore.
+  echo       Si te sorprende que esten ahi, volve a correr este .bat.
+) else (
+  echo   [ok] No quedo ningun archivo sin subir.
+)
+
+if not "!SHA_LOCAL!"=="!SHA_REMOTO!" (
+  echo   [X] El commit local y el del remoto NO coinciden:
+  echo          local  !SHA_LOCAL!
+  echo          remoto !SHA_REMOTO!
+  echo       Algo raro paso. Corre  git status  y  git log --oneline -3  a mano.
+  goto :fin_error
+)
+echo   [ok] Local y remoto en el mismo commit: !SHA_LOCAL:~0,7!
+
 echo.
 echo ===========================================================================
-echo   SUBIDO.
+echo   SUBIDO Y VERIFICADO.
 echo.
 echo   Vercel redeploya solo en 1 o 2 minutos. Podes mirarlo en:
 echo   https://vercel.com/dashboard

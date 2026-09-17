@@ -2,7 +2,7 @@
 rem ===========================================================================
 rem  1-ACTUALIZAR-DATOS.BAT   -   doble clic
 rem ---------------------------------------------------------------------------
-rem  Baja los tres snapshots locales de Yahoo y despues corre las 18 pruebas.
+rem  Baja los tres snapshots locales de Yahoo y despues corre las 20 pruebas.
 rem  NO toca git. Para subir, se usa 2-subir-cambios.bat.
 rem
 rem  POR QUE EXISTE ESTE ARCHIVO
@@ -23,10 +23,23 @@ rem  cmd.exe y los acentos se llevan mal segun la pagina de codigos. El texto
 rem  va en ASCII para que se lea igual en cualquier maquina. Los bots de Python
 rem  si imprimen acentos; para eso esta el chcp 65001 de abajo.
 rem
+rem  EL UNIVERSO DEL INFORME NO ES EL DEL SCREENER
+rem  fetch_informe.py SIN argumentos cae a local_bot/tickers_informe.txt, que
+rem  tiene 7 papeles. El universo real del informe son ~326 y se pide con
+rem  --cedears --cedears-extra --medibles. La primera version de este .bat no
+rem  los pasaba: refrescaba 7 de 326 y los otros 319 quedaban congelados con
+rem  la fecha de la ultima corrida que si los habia pedido.
+rem
+rem  --dias 7 saltea lo bajado hace menos de una semana. A 3,1 s por papel,
+rem  un refresco completo son ~17 minutos, y los fundamentales del informe no
+rem  cambian de un dia para el otro. Con `informe` se fuerza el completo.
+rem
 rem  ARGUMENTOS
 rem    (ninguno)   baja los datos y corre las pruebas
 rem    pruebas     solo corre las pruebas, no baja nada    (no gasta ni tiempo
 rem                ni llamadas a Yahoo: sirve para chequear despues de editar)
+rem    informe     fuerza el refresco COMPLETO del informe (~17 min), sin el
+rem                salteo de --dias. Para cuando entran papeles nuevos.
 rem    cedears     ADEMAS revalida el universo de CEDEARs (~5 min extra).
 rem                Solo hace falta cuando se agregan o sacan papeles de
 rem                local_bot/cedears_informe.py. No es parte del dia a dia.
@@ -37,7 +50,35 @@ set PYTHONIOENCODING=utf-8
 cd /d "%~dp0"
 title Actualizar datos - screener e informe
 
-set MODO=%~1
+rem  Los argumentos se COMBINAN. La primera version leia solo %1, asi que pedir
+rem  `cedears informe` hacia una sola de las dos y la otra se perdia en
+rem  silencio: el mismo tipo de falla que el .bat que refrescaba 7 papeles de
+rem  326 sin decir nada. Un argumento que no se reconoce ahora corta.
+set SOLO_PRUEBAS=
+set HACER_CEDEARS=
+set INFORME_COMPLETO=
+:leer_args
+if "%~1"=="" goto :args_listos
+set CONOCIDO=
+if /i "%~1"=="pruebas" set SOLO_PRUEBAS=1
+if /i "%~1"=="pruebas" set CONOCIDO=1
+if /i "%~1"=="cedears" set HACER_CEDEARS=1
+if /i "%~1"=="cedears" set CONOCIDO=1
+if /i "%~1"=="informe" set INFORME_COMPLETO=1
+if /i "%~1"=="informe" set CONOCIDO=1
+if not defined CONOCIDO (
+  echo.
+  echo   [X] No entiendo el argumento "%~1".
+  echo       Los que existen son:  pruebas  ^|  cedears  ^|  informe
+  echo       Se pueden combinar:   1-actualizar-datos.bat cedears informe
+  echo.
+  pause
+  exit /b 1
+)
+shift
+goto :leer_args
+:args_listos
+
 set LOGS=%TEMP%\sp500-bat
 if not exist "%LOGS%" mkdir "%LOGS%" >nul 2>&1
 
@@ -79,11 +120,19 @@ for /f "tokens=*" %%V in ('node --version 2^>^&1') do set NODEVER=%%V
 echo   %PYVER%  -  node %NODEVER%
 echo.
 
-if /i "%MODO%"=="pruebas" (
+if defined SOLO_PRUEBAS (
   echo   Modo PRUEBAS: no se baja nada de Yahoo.
   echo.
   goto :pruebas
 )
+echo   Plan de esta corrida:
+echo     - fundamentales del S^&P 500
+if defined HACER_CEDEARS echo     - revalidar el universo de CEDEARs   ^(~5 min^)
+if defined INFORME_COMPLETO echo     - informe COMPLETO, todo el universo   ^(~17 min^)
+if not defined INFORME_COMPLETO echo     - informe, solo lo de mas de 7 dias
+echo     - historico de precios
+echo     - las pruebas
+echo.
 
 rem --- 1. Fundamentales -----------------------------------------------------
 echo ---------------------------------------------------------------------------
@@ -100,7 +149,7 @@ if errorlevel 1 (
 echo.
 
 rem --- 1b. Revalidar CEDEARs (opcional) ------------------------------------
-if /i "%MODO%"=="cedears" (
+if defined HACER_CEDEARS (
   echo ---------------------------------------------------------------------------
   echo   [extra] Revalidar el universo de CEDEARs   ~5 minutos
   echo ---------------------------------------------------------------------------
@@ -115,10 +164,20 @@ if /i "%MODO%"=="cedears" (
 )
 
 rem --- 2. Detalle del informe ----------------------------------------------
+rem  Las tres banderas son el universo del informe: los CEDEAR del S&P, los de
+rem  afuera del indice, y las del Merval que solo se miden. Sin ellas el bot
+rem  cae a tickers_informe.txt y refresca 7 papeles de 326.
+set UNIVERSO_INFORME=--cedears --cedears-extra --medibles
+set SALTEO_INFORME=--dias 7
+if defined INFORME_COMPLETO set SALTEO_INFORME=
 echo ---------------------------------------------------------------------------
-echo   [2/3] Detalle del informe                 ~2 a 4 minutos
+if defined SALTEO_INFORME (
+  echo   [2/3] Detalle del informe                 solo lo de mas de 7 dias
+) else (
+  echo   [2/3] Detalle del informe                 COMPLETO, ~17 minutos
+)
 echo ---------------------------------------------------------------------------
-%PY% "local_bot\fetch_informe.py"
+%PY% "local_bot\fetch_informe.py" %UNIVERSO_INFORME% %SALTEO_INFORME%
 if errorlevel 1 (
   echo.
   echo   [X] fetch_informe.py fallo.

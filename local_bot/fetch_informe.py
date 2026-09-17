@@ -442,6 +442,45 @@ def edad_dias(activo):
         return None
 
 
+def es_fantasma(sym, activo):
+    """Yahoo no encontro este simbolo: devolvio el simbolo como nombre, sin
+    precio y sin sector.
+
+    ⚠️ LAS TRES CONDICIONES SON NECESARIAS, no es paranoia. SPY no tiene sector
+    (es un ETF) y es legitimo: tiene nombre propio y precio. Un papel con
+    precio pero sin sector tambien existe. Solo las tres juntas dicen "esto no
+    es un ticker".
+    """
+    if not isinstance(activo, dict):
+        return False
+    return (not activo.get('price')
+            and not activo.get('sector')
+            and (activo.get('name') or '') == sym)
+
+
+def sacar_fantasmas(activos):
+    """Saca del acumulado los simbolos que Yahoo nunca resolvio.
+
+    POR QUE HACE FALTA
+    ------------------
+    Este bot ACUMULA: lo que entro una vez se queda para siempre aunque nadie
+    lo vuelva a pedir. El 14/09/2026 se corrio
+
+        python fetch_informe.py # --- cartera propia (F5) --- ...
+
+    y la shell le paso las PALABRAS DEL COMENTARIO como tickers. Quedaron
+    guardados `#`, `AHORA`, `ENTRA` y `ECOGAS` con precio 0 y sin sector,
+    viajando adentro de los 2,5 MB que se sirven a produccion. Estuvieron tres
+    dias sin que nadie los viera, porque no rompen nada: solo estan ahi.
+
+    Un acumulador sin poda acumula tambien los errores. Esta es la poda.
+    """
+    fantasmas = sorted(t for t, a in activos.items() if es_fantasma(t, a))
+    for t in fantasmas:
+        del activos[t]
+    return fantasmas
+
+
 def leer_lista_tickers(base_dir):
     """Lee local_bot/tickers_informe.txt — uno por linea, # para comentarios."""
     p = base_dir / 'tickers_informe.txt'
@@ -749,6 +788,11 @@ def main():
         marca = '' if r.get('enSp500') else '  (fuera del S&P 500)'
         print(f' ok{marca}  [{len(r.get("errores", []))} avisos]')
         time.sleep(0.3)
+
+    fantasmas = sacar_fantasmas(activos)
+    if fantasmas:
+        print(f'\n[limpieza] saco {len(fantasmas)} entradas donde Yahoo no '
+              f'encontro nada: {", ".join(fantasmas)}')
 
     payload = {
         'generated_at': datetime.now(timezone.utc).isoformat(),

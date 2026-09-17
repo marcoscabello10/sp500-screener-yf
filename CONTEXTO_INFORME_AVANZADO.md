@@ -5798,10 +5798,188 @@ creer que el mejor sorteo es el óptimo.
 
 ---
 
+## 🕵️ AUDITORÍA DESPUÉS DE LA PRIMERA CORRIDA REAL DEL .BAT (17/09/2026)
+
+Marcos corrió los dos ejecutables y pusheó. Se fue a mirar qué había quedado
+**en vez de darlo por bueno**, y aparecieron dos cosas.
+
+### 🔴 1. El `.bat` refrescaba 7 papeles de 326 — y era mi error
+
+Los cuatro JSON se regeneraron. Pero:
+
+```
+activos por fecha de bajada:
+   2026-09-14   319
+   2026-09-17     7
+```
+
+Siete. Exactamente los siete de `local_bot/tickers_informe.txt`.
+
+`fetch_informe.py` sin argumentos **cae a `tickers_informe.txt`**. El universo
+real del informe se pide con banderas, y su propia ayuda lo dice:
+
+```
+python fetch_informe.py --cedears     <- lo habitual
+```
+
+El `.bat` que escribí ayer corría `fetch_informe.py` pelado. Los 319 papeles
+restantes quedaban congelados en la fecha de la última corrida que sí los había
+pedido, y el `.bat` terminaba en verde diciendo que todo estaba actualizado.
+
+**Arreglado**: ahora corre
+
+```
+fetch_informe.py --cedears --cedears-extra --medibles --dias 7
+```
+
+Las tres banderas son el universo del informe: los CEDEAR del S&P, los ~137 de
+afuera del índice, y las 11 del Merval que solo se miden. El `--dias 7` saltea
+lo bajado hace menos de una semana — **medido: 3,1 s por papel, o sea ~17
+minutos para los 326**, y los fundamentales del informe no cambian de un día
+para el otro. Con el argumento `informe` se fuerza el completo.
+
+### 🔴 2. Cuatro tickers fantasma viajando a producción desde hacía tres días
+
+```
+#        fetched_at: 2026-09-14T14:28:50  name: "#"        price: 0  sector: null
+AHORA    fetched_at: 2026-09-14T14:28:58  name: "AHORA"    price: 0  sector: null
+ENTRA    fetched_at: 2026-09-14T14:29:10  name: "ENTRA"    price: 0  sector: null
+ECOGAS   fetched_at: 2026-09-14T14:29:18  name: "ECOGAS"   price: 0  sector: null
+SI       fetched_at: 2026-09-14T14:29:02  name: "Shoulder Innovations, Inc."
+```
+
+El 14/09 se corrió, desde el contenedor, algo con la forma
+
+```
+python fetch_informe.py # --- cartera propia (F5) --- ...
+```
+
+y la shell pasó **las palabras del comentario como tickers**. `#`, `AHORA`,
+`ENTRA`, `ECOGAS`. Y `SI`, que resultó ser una empresa real que nadie pidió.
+
+Lo que los dejó vivos no fue el error de tipeo: fue que **este bot acumula**.
+Eso es deliberado y es útil —nadie quiere rebajar 326 papeles cada vez— pero
+nadie había puesto la contracara: *un acumulador sin poda acumula también los
+errores*. Estuvieron tres días adentro de los 2,5 MB que se sirven, sin romper
+nada. Solo estaban ahí.
+
+**Arreglado en dos lugares**:
+
+```python
+def es_fantasma(sym, activo):
+    return (not activo.get('price')
+            and not activo.get('sector')
+            and (activo.get('name') or '') == sym)
+```
+
+⚠️ **Las tres condiciones son necesarias.** SPY no tiene sector (es un ETF) y
+es el benchmark de F2/F3/F4: sin él esas tres fases no tienen contra qué
+comparar. Un papel con precio pero sin sector también existe. Solo las tres
+juntas dicen "Yahoo nunca resolvió esto".
+
+Y el snapshot se limpió a mano: **326 → 321 activos**.
+
+### `test/test_snapshot_informe.py` — NUEVO, la vigésima suite
+
+Mira lo que hay ADENTRO del archivo, no solo que el JSON parsee:
+
+- la poda saca los 4 fantasmas y **deja SPY** y los tres casos límite
+  (sin sector pero con nombre propio; con nombre = símbolo pero con precio)
+- el snapshot servido no tiene ningún fantasma, y ninguno de los cinco del 14/09
+- `alias_locales` está, tiene los 6 pares, y **cada alias apunta a un papel que
+  existe en el snapshot**
+- los 24 papeles que costó meter (Argentina, LATAM, CEDEAR nuevos) siguen
+- frescura: avisa si hay papeles de más de 7 días, sin fallar — que el snapshot
+  esté viejo es una decisión de Marcos, no un error del código
+
+**Se verificó que la prueba falla con el archivo sucio**: 6 fallas sobre el
+`informe_detalle.json` de antes de limpiarlo. Una prueba que pasa siempre no
+prueba nada.
+
+### 🔁 Y una tercera, encontrada al ir a usarlo
+
+Marcos pidió correr el refresco completo **y** el revalidado de CEDEARs juntos.
+No se podía: el `.bat` leía `%1` y nada más, así que
+`1-actualizar-datos.bat cedears informe` hacía una de las dos y **la otra se
+perdía en silencio**. El mismo tipo de falla que la de arriba: algo que no pasa
+y no lo dice.
+
+Ahora los argumentos se combinan, y **un argumento que no se reconoce corta**
+en vez de seguir como si nada:
+
+```
+(ninguno)   datos + pruebas, informe solo lo de más de 7 días
+pruebas     solo las pruebas, sin tocar Yahoo
+informe     refresco COMPLETO del informe (~17 min)
+cedears     además revalida el universo de CEDEARs (~5 min)
+            se combinan:  1-actualizar-datos.bat cedears informe
+```
+
+Y arranca imprimiendo el plan de la corrida, para que se vea qué va a hacer
+antes de que empiece a tardar.
+
+De paso se sacaron tres cosas frágiles del `.bat`: un `&` adentro de
+paréntesis, un `if/else` de una línea, y un guion largo que rompía el ASCII.
+
+**El orden ya estaba bien y se verificó**: `validar_cedears.py` escribe
+`cedears_ok.txt`, que `fetch_informe.py --cedears-extra` y `fetch_historico.py`
+**leen**. Por eso el revalidado corre entre los fundamentales y el informe, no
+al final.
+
+### Lo que se miró y está BIEN (para no volver a revisarlo)
+
+| Qué | Estado |
+|---|---|
+| `alias_locales` en `informe_detalle.json` | ✅ entró, 6 pares — era el hueco del 03/09 |
+| Los 24 papeles nuevos (Argentina, LATAM, CEDEAR) | ✅ los 24 adentro |
+| `historico_precios.json` | ✅ 652 símbolos, 1.686 fechas, hasta el 17/09 |
+| Las 11 del Merval sin serie de precios | ✅ **es por diseño**: cotizan en pesos, y tres años de precios en pesos son tres años de devaluación disfrazada de volatilidad |
+| Símbolos con menos de 378 días | 4: SKHY (49), HONA (66), FDXF (79), Q (224). El piso de `riesgo.js` los va a descartar, que es lo correcto |
+| `errores` anotados en el snapshot | Solo 1 activo de 321 |
+
+### ✋ RGTI sin serie de precios — DECIDIDO: se deja así (17/09)
+
+**RGTI no tiene serie de precios.** Está en `tickers_informe.txt` (cartera
+propia de Marcos, fuera del S&P 500), así que tiene fundamentales — pero
+`fetch_historico.py` baja SPY + las 503 del snapshot + `cedears_ok.txt`, y RGTI
+no está en ninguno de los tres. Si RGTI entra a una cartera, la compuerta de
+datos dice que no se puede medir su riesgo.
+
+**Marcos eligió dejarlo así**: el sistema no miente, avisa. La alternativa era
+sumar `tickers_informe.txt` al universo del histórico (~20 s más de corrida).
+
+⚠️ **Lo que esto implica, para no olvidarlo**: cualquier papel de afuera del
+índice que Marcos agregue a su lista propia va a tener fundamentales pero no
+riesgo medible. Es una decisión, no un olvido — pero si algún día molesta, el
+arreglo es una línea en `leer_universo()` de `fetch_historico.py`.
+
+---
+
 ## 📦 PENDIENTE DE PUSH — lista acumulada
 
 Todo esto está escrito en la carpeta y **todavía no subido**. Verificar con
 `git status` antes de asumir.
+
+### Tanda de ahora (17/09, segunda) — la auditoria post-corrida
+
+```
+1-actualizar-datos.bat       🔴 corria fetch_informe.py PELADO: refrescaba 7
+                             papeles de 326. Ahora pasa --cedears
+                             --cedears-extra --medibles --dias 7
+                             + argumento `informe` para forzar el completo
+local_bot/fetch_informe.py   es_fantasma() / sacar_fantasmas(): la poda del
+                             acumulado. Las tres condiciones juntas, para no
+                             llevarse SPY por delante
+public/data/informe_detalle.json  limpiado a mano: 326 -> 321 activos
+test/test_snapshot_informe.py     NUEVO — la vigesima suite
+CONTEXTO_INFORME_AVANZADO.md
+```
+
+Y en la misma tanda, el `.bat` otra vez: los argumentos ahora se COMBINAN
+(`cedears informe` hacia una sola de las dos y la otra se perdia sin avisar) y
+uno que no se reconoce corta en vez de seguir.
+
+Veinte suites. Se verifico que la prueba nueva FALLA con el archivo sucio.
 
 ### Tanda de ahora (17/09) — dieciseisava parte: los ejecutables
 

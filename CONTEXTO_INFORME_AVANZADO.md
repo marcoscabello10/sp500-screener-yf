@@ -6255,10 +6255,181 @@ No es un problema hoy (el repo vive en una sola máquina), pero queda anotado.
 
 ---
 
+## 📈 MOMENTUM — UN EJE APARTE DEL PUNTAJE (23/09/2026)
+
+Marcos pidió pensar cómo mejorar el producto para que dé ideas de rotación. Se
+midió el estado real antes de proponer nada, y de ahí salió esto.
+
+### Lo que se midió primero (walk-forward sobre el snapshot real)
+
+767 rebalanceos, 60 carteras con semilla fija, estimación sobre 756 días y
+medición sobre los 126 siguientes:
+
+```
+mejora de riesgo PROMETIDA   media +2,85 pts
+mejora de riesgo REALIZADA   media +2,77 pts   ← 97% de lo prometido
+se cumplió en 655/767 = 85%
+
+retorno por unidad de riesgo  original 1,663  →  paridad 1,821
+                              mejora en 428/767 = 56% de los casos
+```
+
+**El motor de riesgo cumple.** Lo que no había era ningún término de retorno, así
+que el sistema no podía saber si el riesgo que saca vale lo que cuesta.
+
+> ⚠️ Una primera tanda con 4 carteras hechas a mano dio −22 pp de retorno.
+> Estaban **todas lideradas por Technology** en el mejor período de tech de la
+> historia. Era un artefacto del muestreo. La segunda tanda varía el sector
+> líder y da −2,49 pp.
+
+### La dimensión que faltaba
+
+```
+MOMENTUM 12-1, quintiles → retorno de los 126 días siguientes
+Q1 6,65%   Q2 6,43%   Q3 6,54%   Q4 7,25%   Q5 12,13%
+
+Q5 contra el promedio de Q1-Q3:  +5,59 pp    ← la señal
+Q1 contra el promedio de Q2-Q3:  +0,16 pp    ← nada
+
+correlación entre log(P/E) y momentum 12-1: 0,121  (n=459)
+```
+
+Ese 0,12 es la razón de ser del cambio: **es información que el puntaje no
+contiene**. El puntaje es valuación y calidad; el momentum es del precio.
+
+### La pregunta de Marcos, y por qué cambió el diseño
+
+*"No sé qué tanto afectaría, quizás a otro con mejor fundamental."* Se midió con
+el `puntuarGrupo` REAL del screener:
+
+```
+tolerancia   sectores donde cambia   puntaje resignado
+± 2 pts       1 de 11                1,8 pts
+± 5 pts       5 de 11                4,2 pts
+±12 pts       8 de 11                6,0 pts
+```
+
+Y mirando los cinco casos de ±5 apareció el problema del desempate ingenuo:
+
+```
+Comm Services  CHTR (70,8, Q1, −43%)  → GOOGL (65,8, Q4, +37%)
+Energy         EXE  (81,2, Q2,  +0%)  → APA   (77,5, Q5, +79%)
+Financials     SYF  (83,1, Q3, +10%)  → ALL   (78,5, Q4, +35%)
+Materials      CF   (85,5, Q5, +44%)  → NEM   (82,0, Q5, +48%)   ← los dos Q5
+Technology     FSLR (80,2, Q3,  +7%)  → MU    (76,0, Q5, +493%)
+```
+
+**El caso de Materials delata todo**: CF y NEM están los dos en Q5. Cambiarlos
+resigna 3,5 puntos y no gana nada. Es rotación por rotación.
+
+### La regla que quedó: exige un SALTO a Q5, no un momentum más alto
+
+```js
+export function ganaPorMomentum(lider, alt) {
+  if (alt.momentum_quintil !== 5) return false     // solo Q5
+  if (lider.momentum_quintil === 5) return false   // si el líder ya está, no aporta
+  const dif = (lider.puntaje ?? 0) - (alt.puntaje ?? 0)
+  return dif >= 0 && dif <= TOLERANCIA_PUNTAJE_MOM   // 5 puntos
+}
+```
+
+De los cinco casos, dispara en **dos**: Energy y Technology. CHTR→GOOGL no
+(Q4 no es Q5), SYF→ALL tampoco, CF→NEM muere.
+
+Y corre **después** de elegir por puntaje, no adentro del bucle: el momentum no
+compite con el puntaje, solo puede mover al ganador. Mezclarlo en la comparación
+lo convertiría en un criterio más, que es lo que se decidió no hacer.
+
+### 🔴 Dos cosas que la medición NO banca, y por eso NO se hicieron
+
+**1. "Evitar Q1".** Q1 rindió 6,65% contra 6,43% de Q2 y 6,54% de Q3: +0,16 pp,
+o sea nada. Toda la señal está en que Q5 es bueno, no en que Q1 sea malo. Una
+regla de "sacá lo que viene cayendo" estaría **inventando una señal**.
+
+**2. "Cuanto más extremo, mejor".**
+
+```
+posición dentro de Q5              retorno a 6 meses
+primeros 20% (menos extremos)       7,52%
+últimos 20% (MÁS extremos)         19,96%     ← +12,44 pp
+```
+
+Es tentador y no se usa. Son 62 ventanas superpuestas de un solo régimen, y el
+modo de falla conocido del momentum es el reverso brusco (2009, marzo 2020).
+Construir sobre el tramo extremo de un factor con una muestra que no contiene un
+crash de momentum es la forma clásica de volarse. **El número se muestra; la
+regla no lo usa**, y el prompt lo dice explícitamente.
+
+### Los archivos
+
+```
+src/informe/riesgo.js      momentum12_1() y momentumDelUniverso()
+                           MOM_DIAS 252 · MOM_SALTO 21 · MOM_MINIMO_DIAS 200
+                           + momentum_pct / momentum_quintil en posiciones Y candidatos
+src/informe/cartera.js     ganaPorMomentum() + el desempate al final de
+                           menuDeRotacion() + desplazo_por_momentum en el payload
+                           + momentum en riesgoDe() de armarDatosTesis
+api/informe.py             el bloque del prompt (3.447 → 3.821 tokens, cacheado)
+                           + `mom_q5` en el formato corto de candidatos, SOLO si es Q5
+test/prueba-momentum.cjs   NUEVA — 32 comprobaciones, la vigesimosegunda suite
+```
+
+### Tres detalles de diseño que no son obvios
+
+**El quintil se mide contra TODO el universo del snapshot, no contra lo que se
+pide.** "Q5 entre tus seis posiciones" no significa nada: la mejor de seis puede
+estar en el medio del mercado. Hay una prueba que pide 5 papeles y verifica que
+su quintil no cambia.
+
+**Los que cotizan en pesos quedan afuera**, por el mismo motivo por el que no
+entran a la covarianza: "subió 300%" en pesos es la moneda, no la empresa.
+
+**La guarda de `MOM_MINIMO_DIAS`.** Que existan los dos precios extremos no
+alcanza: puede haber un pozo de nulos en el medio y los dos venir del mismo mes.
+Hay una prueba con esa serie exacta.
+
+### La prueba, verificada contra regresiones
+
+Se comprobó que **falla** si alguien:
+
+- convierte el desempate en "gana el de mayor momentum crudo" → **4 fallas**
+- agrega una regla de "evitar Q1" → **3 fallas**
+
+Y que **pasa** si se cambia la tolerancia de 5 a 12, que es correcto: es un
+parámetro, no una invariante.
+
+Más el guard contra el modo de falla de esta casa: una prueba de punta a punta
+que corre `armarDatosTesis` y verifica que `momentum_quintil` y
+`desplazo_por_momentum` **llegan al JSON final**. Este proyecto ya perdió claves
+dos veces en una whitelist, en silencio.
+
+---
+
 ## 📦 PENDIENTE DE PUSH — lista acumulada
 
 Todo esto está escrito en la carpeta y **todavía no subido**. Verificar con
 `git status` antes de asumir.
+
+### Tanda de ahora (23/09) — el momentum
+
+```
+src/informe/riesgo.js        momentum12_1 / momentumDelUniverso + los campos en
+                             posiciones y candidatos
+src/informe/cartera.js       ganaPorMomentum + el desempate angosto en
+                             menuDeRotacion + desplazo_por_momentum
+api/informe.py               el bloque del prompt + mom_q5 en el formato corto
+PROMPT_CARTERA.txt           regenerado (3.821 tokens)
+test/prueba-momentum.cjs     NUEVA — 32 comprobaciones
+CONTEXTO_INFORME_AVANZADO.md
+```
+
+Veintidos suites, 0 fallas. Verificado que la prueba nueva falla si alguien mete
+el desempate ingenuo (4 fallas) o una regla de "evitar Q1" (3 fallas).
+
+🔜 **Lo que sigue, ya decidido con Marcos**: C (costo de rotacion) y D (decir
+cuando el consejo historicamente no aplica), y despues A (el historial de
+aciertos de cada recomendacion, que es la idea central). Ver el documento del
+proyecto "que-le-falta-al-informe-para-dar-ideas-de-rotacion".
 
 ### Tanda de ahora (17/09, tercera) — fuera la descarga en vivo
 

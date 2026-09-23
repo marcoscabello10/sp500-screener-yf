@@ -632,6 +632,137 @@ function paresCorrelacionados(con, cov, w) {
   return out.sort((x, y) => y.peso_combinado_pct - x.peso_combinado_pct)
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// MOMENTUM 12-1 — UN EJE APARTE, NUNCA MEZCLADO CON EL PUNTAJE (23/09/2026)
+//
+// QUÉ ES
+// El retorno de los últimos 12 meses SALTEANDO el último. Se saltea porque el
+// mes más reciente tiene reversión de corto plazo —lo que subió mucho la última
+// semana tiende a devolver algo— y esa reversión es el efecto CONTRARIO al que
+// se está midiendo. Mezclarlos apaga los dos.
+//
+// POR QUÉ ENTRA, medido sobre este mismo snapshot el 23/09/2026:
+//
+//     quintil de momentum      retorno de los 126 días siguientes
+//     Q1 (peor)                6,65%
+//     Q2                       6,43%
+//     Q3                       6,54%
+//     Q4                       7,25%
+//     Q5 (mejor)              12,13%      <- +5,59 pp contra el promedio Q1-Q3
+//
+//     correlación entre log(P/E) y momentum: 0,121  (n=459)
+//
+// Ese 0,12 es la razón de ser de este bloque: es información que el puntaje del
+// screener NO contiene. El puntaje es valuación y calidad. Un papel barato que
+// viene subiendo y uno barato que viene cayendo puntúan igual, y no son lo
+// mismo.
+//
+// ⚠️ LO QUE LA MEDICIÓN **NO** BANCA, Y POR ESO NO SE HACE
+//
+//   1. "Evitar el peor momentum". Q1 rindió 6,65% contra 6,43% de Q2 y 6,54% de
+//      Q3: la diferencia es +0,16 pp, o sea nada. Toda la señal está en que Q5
+//      es bueno, no en que Q1 sea malo. Una regla de "sacá lo que viene
+//      cayendo" estaría inventando una señal que estos datos no muestran.
+//
+//   2. "Cuanto más extremo, mejor". En esta muestra el 20% más extremo de Q5
+//      rindió 19,96% contra 7,52% del tramo menos extremo — +12,44 pp. Es
+//      tentador y NO se usa: son 62 ventanas superpuestas de un solo régimen,
+//      y el modo de falla conocido del momentum es exactamente el reverso
+//      brusco (2009, marzo 2020). Construir sobre el tramo extremo de un factor
+//      con una muestra que no contiene un crash de momentum es la forma clásica
+//      de volarse. El número se MUESTRA; la regla no lo usa.
+//
+//   3. Meterlo adentro del puntaje. Sería repetir el error que este proyecto ya
+//      corrigió dos veces. El puntaje es de la EMPRESA; el momentum es del
+//      PRECIO. Se muestran al lado y quien decide los lee por separado.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// 12 meses hábiles, salteando el último mes.
+export const MOM_DIAS = 252
+export const MOM_SALTO = 21
+// Mínimo de días para que el número signifique algo. Un papel listado hace
+// cuatro meses no tiene momentum a 12 meses: tiene un pedazo de uno.
+export const MOM_MINIMO_DIAS = 200
+// El único quintil con ventaja medida. Se nombra en vez de escribir 5 suelto.
+export const MOM_QUINTIL_BUENO = 5
+
+/** El último precio no nulo en `serie` hasta el índice `k` inclusive. */
+function precioHasta(serie, k) {
+  for (let j = Math.min(k, serie.length - 1); j >= 0; j--) {
+    if (serie[j] != null) return { precio: serie[j], idx: j }
+  }
+  return null
+}
+
+/**
+ * Momentum 12-1 de una serie. `null` si no hay historia suficiente.
+ *
+ * No se usa `retornosEn` ni el eje común: el momentum de un papel es suyo y no
+ * depende de con quién se lo esté comparando. Usar el eje común lo ataría a la
+ * historia del papel más corto de la cartera, que no tiene nada que ver.
+ */
+export function momentum12_1(serie, hasta) {
+  if (!Array.isArray(serie)) return null
+  const fin = precioHasta(serie, hasta - MOM_SALTO)
+  const ini = precioHasta(serie, hasta - MOM_DIAS)
+  if (!fin || !ini) return null
+  if (!(fin.precio > 0) || !(ini.precio > 0)) return null
+  // Que existan los dos extremos no alcanza: puede haber un pozo de nulos en el
+  // medio y los dos precios venir del mismo mes.
+  if (fin.idx - ini.idx < MOM_MINIMO_DIAS) return null
+  return fin.precio / ini.precio - 1
+}
+
+/**
+ * Momentum y quintil de cada ticker pedido.
+ *
+ * ⚠️ EL QUINTIL SE CALCULA SOBRE TODO EL UNIVERSO DEL SNAPSHOT, no sobre los
+ * papeles que se piden. "Q5 entre tus seis posiciones" no significa nada: la
+ * mejor de seis puede estar en el medio del mercado. El corte tiene que ser
+ * contra los ~650 papeles que hay, que es contra lo que se midió la ventaja.
+ *
+ * ⚠️ LOS QUE COTIZAN EN PESOS QUEDAN AFUERA, por la misma razón por la que no
+ * entran a la matriz de covarianza: su serie tiene la devaluación adentro, y
+ * "subió 300%" en pesos no es momentum, es la moneda.
+ *
+ * @param snap       el snapshot de `cargarHistorico()`
+ * @param pedidos    tickers de los que se quiere el dato
+ * @param enPesos    Set de tickers que cotizan en pesos, a excluir
+ */
+export function momentumDelUniverso(snap, pedidos = [], enPesos = new Set()) {
+  const out = {}
+  if (!snap?.series || !Array.isArray(snap.fechas)) return out
+  const hasta = snap.fechas.length - 1
+
+  // 1. El universo entero, que es lo que define los cortes.
+  const universo = []
+  for (const t of Object.keys(snap.series)) {
+    if (t === 'SPY' || enPesos.has(t)) continue
+    const m = momentum12_1(snap.series[t], hasta)
+    if (m != null) universo.push({ t, m })
+  }
+  // Menos de 50 papeles no dan para cinco quintiles con sentido. Se devuelve el
+  // momentum sin quintil en vez de partir 20 papeles en cinco grupos de cuatro.
+  const hayQuintiles = universo.length >= 50
+  universo.sort((a, b) => a.m - b.m || a.t.localeCompare(b.t))
+  const quintilDe = {}
+  if (hayQuintiles) {
+    const tam = universo.length / 5
+    universo.forEach((x, i) => { quintilDe[x.t] = Math.min(5, Math.floor(i / tam) + 1) })
+  }
+
+  // 2. Lo que se pidió.
+  for (const t of pedidos) {
+    if (enPesos.has(t)) { out[t] = { momentum_pct: null, quintil: null, motivo: 'cotiza en pesos' }; continue }
+    const m = momentum12_1(snap.series[t], hasta)
+    out[t] = m == null
+      ? { momentum_pct: null, quintil: null, motivo: 'sin historia suficiente' }
+      : { momentum_pct: Math.round(m * 1000) / 10, quintil: quintilDe[t] ?? null }
+  }
+  out._universo = universo.length
+  return out
+}
+
 export async function analizarRiesgo(cart, candidatos = []) {
   // El tope de sector lo calcula `analizarCartera()` y viaja en cada fila de
   // `cart.sectores`. Es el MISMO numero que el informe ya imprime: si acá se
@@ -943,6 +1074,18 @@ export async function analizarRiesgo(cart, candidatos = []) {
     if (!agrego) break
   }
 
+  // ── MOMENTUM, una sola pasada para posiciones y candidatos ───────────────
+  // Se calcula acá y no adentro de cada bucle: el quintil depende del universo
+  // entero, así que ordenar ~650 papeles una vez y repartir es lo correcto y lo
+  // barato. Los que cotizan en pesos se excluyen: su serie tiene la devaluación
+  // adentro (el mismo motivo por el que no entran a la covarianza).
+  const enPesos = new Set((cart.activos || [])
+    .filter(a => a.soloMedible).map(a => a.ticker))
+  const mom = momentumDelUniverso(
+    snap,
+    con.map(c => c.ticker).concat(enRondas.map(c => c.ticker)),
+    enPesos)
+
   const aporteCandidatos = []
   for (const c of enRondas) {
     const serie = snap.series[c.ticker]
@@ -988,6 +1131,10 @@ export async function analizarRiesgo(cart, candidatos = []) {
       beta: c.beta ?? null,
       defensivo: !!c.defensivo,
       metricas: c.metricas ?? null,
+      // Un eje aparte del puntaje, nunca sumado a él. Ver el bloque grande de
+      // arriba de `momentum12_1`.
+      momentum_pct: mom[c.ticker]?.momentum_pct ?? null,
+      momentum_quintil: mom[c.ticker]?.quintil ?? null,
       volatilidad: Math.round(anual(cov2[n][n]) * 10) / 10,
       correlacion_media: p > 0 ? Math.round(corr / p * 100) / 100 : null,
       delta_volatilidad: Math.round((anual(varianzaCartera(w2, cov2)) - volActual) * 100) / 100,
@@ -1028,6 +1175,8 @@ export async function analizarRiesgo(cart, candidatos = []) {
     topes_insuficientes: topesInsuficientes,
     posiciones: con.map((c, i) => ({
       ticker: c.ticker,
+      momentum_pct: mom[c.ticker]?.momentum_pct ?? null,
+      momentum_quintil: mom[c.ticker]?.quintil ?? null,
       volatilidad_pct: Math.round(vol[i] * 10) / 10,
       aporte_al_riesgo_pct: contrib[i] == null ? null : Math.round(contrib[i] * 10) / 10,
       correlacion_media: corrMedia[i] == null ? null : Math.round(corrMedia[i] * 100) / 100,

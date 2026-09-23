@@ -835,6 +835,11 @@ export function armarDatosTesis(cart, estres, candidatos = [], scores = {},
       correlacion_media_con_la_cartera: p.correlacion_media,
       peso_objetivo_pct: p.peso_objetivo_pct,
       limitado_por_tope: p.limitado_por_tope,
+      // El momentum de la posición, como eje aparte del puntaje. Solo se manda
+      // el quintil cuando hay: un `null` acá significa "no se pudo medir", y
+      // eso es distinto de "está en el medio".
+      momentum_pct: p.momentum_pct ?? null,
+      momentum_quintil: p.momentum_quintil ?? null,
     }
   }
   const cob = sym => {
@@ -1105,6 +1110,14 @@ export function armarDatosTesis(cart, estres, candidatos = [], scores = {},
           volatilidad_resultante_pct: c.volatilidad_si_entra_pct,
           mejor_que_el_plan_en_puntos: c.mejora_vs_plan_pts,
           correlacion_con_la_cartera: c.correlacion_media,
+          // Eje aparte del puntaje. `quintil` es contra el universo entero del
+          // snapshot, no contra los candidatos de este sector.
+          momentum_pct: c.momentum_pct ?? null,
+          momentum_quintil: c.momentum_quintil ?? null,
+          // Solo viene cuando el desempate por momentum movió al ganador. Dice
+          // a quién desplazó y cuánto puntaje costó, para que el informe pueda
+          // explicar por qué no está ofreciendo el primero del ranking.
+          desplazo_por_momentum: c.desplazo_por_momentum ?? undefined,
         })),
         // Si esto es verdadero, "comprar mas de lo que ya tenes" NO es una
         // opcion: todas las compras del plan caen en sectores que ya tocan su
@@ -1269,6 +1282,58 @@ export const UMBRAL_AJUSTE_PP = 1.0
 export const UMBRAL_MENU_PTS = 2.0
 export const SECTORES_EN_EL_MENU = 3
 
+// ─────────────────────────────────────────────────────────────────────────────
+// EL DESEMPATE POR MOMENTUM (23/09/2026)
+//
+// Marcos preguntó lo correcto: *"no sé qué tanto afectaría, quizás a otro con
+// mejor fundamental"*. Se midió, con el `puntuarGrupo` real del screener:
+//
+//   tolerancia   sectores donde cambia   puntaje resignado
+//   ± 2 pts       1 de 11                1,8 pts
+//   ± 5 pts       5 de 11                4,2 pts
+//   ±12 pts       8 de 11                6,0 pts
+//
+// Y mirando los cinco casos concretos de ±5 apareció el problema del desempate
+// ingenuo (el que solo compara momentum crudo):
+//
+//   Materials   CF (85,5, Q5, +44%) -> NEM (82,0, Q5, +48%)
+//
+// Los dos están en Q5. Cambiar uno por otro resigna 3,5 puntos de puntaje y no
+// gana nada: es rotación por rotación, que es justo lo que este archivo existe
+// para evitar.
+//
+// POR ESO LA REGLA EXIGE UN SALTO A Q5, no un momentum más alto:
+//
+//   · el alternativo tiene que estar en Q5 (el único quintil con ventaja
+//     medida: +5,59 pp contra el promedio de Q1-Q3);
+//   · el líder por puntaje NO tiene que estar ya en Q5 (si los dos están, el
+//     desempate no aporta y el puntaje manda, como siempre);
+//   · y la diferencia de puntaje tiene que entrar en la tolerancia.
+//
+// Con esta regla, de los cinco casos de ±5 dispara en DOS: Energy y Technology.
+// CHTR->GOOGL no dispara (Q4 no es Q5), SYF->ALL tampoco, CF->NEM muere.
+//
+// ⚠️ NO hay regla de "evitar Q1". Se midió y no tiene sustento: Q1 rindió
+// 6,65% contra 6,43% de Q2 y 6,54% de Q3. Toda la señal está en que Q5 es
+// bueno, no en que Q1 sea malo.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Cuántos puntos de puntaje se está dispuesto a resignar por un salto a Q5.
+// Medido: con ±5 cambia en 5 de 11 sectores y cuesta 4,2 puntos en promedio.
+export const TOLERANCIA_PUNTAJE_MOM = 5
+
+/**
+ * ¿`alt` le gana a `lider` por momentum? Las tres condiciones, juntas.
+ * Se exporta para poder probarla sola: es una decisión, no un detalle.
+ */
+export function ganaPorMomentum(lider, alt) {
+  if (!lider || !alt) return false
+  if (alt.momentum_quintil !== 5) return false          // solo Q5
+  if (lider.momentum_quintil === 5) return false        // si el líder ya está, no aporta
+  const dif = (lider.puntaje ?? 0) - (alt.puntaje ?? 0)
+  return dif >= 0 && dif <= TOLERANCIA_PUNTAJE_MOM
+}
+
 /**
  * Una opción por sector, los tres mejores sectores.
  *
@@ -1297,6 +1362,46 @@ export function menuDeRotacion(cart, riesgo) {
       mejorPorSector[c.sector] = c
     }
   }
+
+  // ── EL DESEMPATE POR MOMENTUM, al final y solo acá ────────────────────────
+  // Se corre DESPUÉS de elegir por puntaje y no adentro del bucle de arriba: el
+  // momentum no compite con el puntaje, solo puede mover al ganador hacia un
+  // papel que esté cerca en puntaje y en Q5. Mezclarlo en la comparación de
+  // arriba lo convertiría en un criterio más, que es exactamente lo que este
+  // proyecto decidió no hacer. Ver el bloque sobre `ganaPorMomentum`.
+  for (const sector of Object.keys(mejorPorSector)) {
+    const lider = mejorPorSector[sector]
+    if (lider.momentum_quintil === 5) continue   // ya está donde queremos
+    let elegido = null
+    for (const c of (riesgo.candidatos || [])) {
+      if (c.sector !== sector || alTope.has(c.sector)) continue
+      if (!(c.mejora_vs_plan_pts >= UMBRAL_MENU_PTS)) continue
+      if (!ganaPorMomentum(lider, c)) continue
+      // Entre varios que califican, el de mejor puntaje. Desempate alfabético
+      // para que dos corridas con los mismos datos den el mismo documento.
+      if (!elegido
+          || (c.puntaje ?? 0) > (elegido.puntaje ?? 0)
+          || ((c.puntaje ?? 0) === (elegido.puntaje ?? 0)
+              && c.ticker.localeCompare(elegido.ticker) < 0)) {
+        elegido = c
+      }
+    }
+    if (elegido) {
+      // Se deja anotado a quién desplazó y por qué. Sin esto, el informe
+      // ofrecería el segundo del ranking sin poder explicar por qué no es el
+      // primero, que es peor que no hacer el desempate.
+      mejorPorSector[sector] = {
+        ...elegido,
+        desplazo_por_momentum: {
+          ticker: lider.ticker,
+          puntaje: lider.puntaje ?? null,
+          momentum_quintil: lider.momentum_quintil ?? null,
+          puntaje_resignado: Math.round(((lider.puntaje ?? 0) - (elegido.puntaje ?? 0)) * 10) / 10,
+        },
+      }
+    }
+  }
+
   return Object.values(mejorPorSector)
     .sort((a, b) => (b.puntaje ?? 0) - (a.puntaje ?? 0)
                  || a.ticker.localeCompare(b.ticker))

@@ -1724,6 +1724,30 @@ El RETORNO ESPERADO que ves es el precio objetivo de los analistas a 12 meses.
 Es un predictor pobre: usalo como contexto, nunca como motivo principal, y
 aclará siempre que es consenso de analistas.
 
+`momentum_quintil` y `momentum_pct` — el retorno de los últimos 12 meses
+salteando el último, y en qué quintil cae contra TODO el universo (no contra
+esta cartera). Es un eje SEPARADO del puntaje, y hay que tratarlo así: el
+puntaje habla de la EMPRESA, el momentum del PRECIO. Nunca los sumes ni digas
+que uno "confirma" al otro.
+  · Lo único con ventaja medida es el quintil 5: rindió 12,13% a 6 meses contra
+    ~6,5% de los quintiles 1 a 3. Cuando una posición o un candidato esté en Q5,
+    se puede nombrar.
+  · Q1 NO es una señal de venta y no la trates como tal. Se midió: Q1 rindió
+    6,65% contra 6,43% de Q2 y 6,54% de Q3. No hay diferencia. Decir "viene
+    cayendo, conviene salir" sería inventar una señal que los datos no muestran.
+  · Un momentum enorme (varios cientos por ciento) NO es mejor que uno de Q5
+    normal. No lo uses como argumento de peso.
+  · Sirve para lo que el puntaje no puede: distinguir un papel barato que el
+    mercado empezó a reconocer de uno barato que sigue cayendo. Eso se dice como
+    contexto, no como pronóstico.
+
+`desplazo_por_momentum` en una fila del menú — esa opción NO es la de mejor
+puntaje de su sector: entró porque está en Q5 y la de mejor puntaje no. El campo
+dice a quién desplazó y cuántos puntos de puntaje costó. Cuando aparezca, decilo
+con esas palabras: "en vez de X (puntaje N) va Y, que puntúa N-k pero está en el
+quintil superior de momentum". Ocultar el intercambio sería ofrecer el segundo
+del ranking sin explicar por qué.
+
 ═══════════════════════════════════════════════════════════════════════════
 4. REGLAS DE DECISIÓN
 ═══════════════════════════════════════════════════════════════════════════
@@ -2369,6 +2393,12 @@ def _comprimir_candidatos(candidatos, plan):
         # Solo lo que cambiaria una decision, y solo si esta.
         if c.get('defensivo'):
             corto['defensivo'] = True
+        # El momentum va SOLO cuando es Q5. Es el unico quintil con ventaja
+        # medida (+5,59 pp contra el promedio de Q1-Q3), asi que es el unico
+        # que puede cambiar una decision. Mandar "Q3" en 40 candidatos seria
+        # pagar tokens por un dato que no mueve nada.
+        if c.get('momentum_quintil') == 5:
+            corto['mom_q5'] = True
         if c.get('delta_volatilidad_cartera') is not None:
             corto['delta_vol'] = c['delta_volatilidad_cartera']
         out.append(corto)

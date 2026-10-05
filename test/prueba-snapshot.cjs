@@ -9,7 +9,9 @@
 //   2. que saltee los null en vez de rellenarlos
 //   3. que recorte por `from`
 //   4. que el interruptor se caiga a Twelve Data en cada motivo previsto
-//   5. que los numeros que salen sean los ya comparados contra F2 el 27/08
+//   5. que los numeros no cambien, sobre una ventana FIJA por fecha (ver el
+//      bloque grande de la seccion 5: la version anterior usaba "los ultimos
+//      N dias" y fallaba sola cada vez que el snapshot avanzaba)
 //
 'use strict';
 const fs = require('fs');
@@ -217,7 +219,7 @@ async function main() {
   }
 
   // ── 5. Los numeros ya comparados contra F2 ────────────────────────────────
-  console.log('\n5. Los numeros salen como los comparados contra F2 el 27/08');
+  console.log('\n5. Los numeros no se mueven: ventana FIJA por fecha');
   sandbox.fetch = async () => ({ ok: true, json: async () => conFecha(1) });
   API._reset();
   const rf = 0.04;   // calcRisk espera fraccion, no porcentaje
@@ -225,47 +227,151 @@ async function main() {
   const spyMap = API.buildSpyMap(r5.spyPrices);
   const spyAl = Object.keys(spyMap).sort().map(d => ({ s: spyMap[d], m: spyMap[d] }));
 
-  // ⚠️ ESTOS NUMEROS ESTAN ANCLADOS A UNA FECHA DEL SNAPSHOT.
-  // El retorno anualizado de los ultimos 756 dias cambia cada vez que el
-  // snapshot avanza: no es un bug, es otra ventana. La primera version de esta
-  // prueba comparaba contra constantes sin decir de que dia eran, asi que
-  // empezaba a "fallar" sola cada vez que Marcos actualizaba el historico —y
-  // una prueba que falla por rutina deja de leerse.
+  // ─────────────────────────────────────────────────────────────────────────
+  // ⚠️ LA VENTANA ES FIJA POR FECHA. NO ES "LOS ULTIMOS N DIAS".
   //
-  // Volatilidad y beta SI son estables (se miden sobre la misma ventana larga),
-  // asi que esas se siguen exigiendo con tolerancia fina. El retorno se exige
-  // fino solo si el snapshot esta en la fecha del ancla; si avanzo, se pide que
-  // siga en un rango sensato y se avisa.
-  // El ancla se identifica por la CANTIDAD de fechas, no por la ultima fecha:
-  // es lo que define la ventana de 756/1260 dias que se esta midiendo.
-  const ANCLA_N = 1669;         // el snapshot con el que se comparo contra F2
-  const ultima = SNAP.fechas[SNAP.fechas.length - 1];
-  const mismaVentana = SNAP.fechas.length === ANCLA_N;
-  if (!mismaVentana) {
-    console.log(`     (el snapshot avanzo: ${ANCLA_N} -> ${SNAP.fechas.length} `
-              + `fechas, ultima ${ultima}. Los retornos se comparan con `
-              + `tolerancia amplia; volatilidad y beta se siguen exigiendo `
-              + `finas. Para volver a anclar: verificar estos valores contra F2 `
-              + `en la maquina y actualizar ANCLA_N y los retornos.)`);
-  }
-  const esperado = {
-    'SPY 3Y': { d: 756, ret: 22.26, vol: 15.33, beta: 1.00 },
-    'SPY 5Y': { d: 1260, ret: 13.41, vol: 17.17, beta: 1.00 },
-    'JPM 3Y': { d: 756, ret: 37.34, vol: 22.96, beta: 0.86 },
-    'JPM 5Y': { d: 1260, ret: 21.13, vol: 24.38, beta: 0.88 },
-  };
-  const tolRet = mismaVentana ? 0.05 : 3.0;
-  for (const [nombre, e] of Object.entries(esperado)) {
-    const [sym, ] = nombre.split(' ');
-    const al = sym === 'SPY' ? spyAl.slice(-e.d)
-                             : API.alignedRet(r5.hist[sym], spyMap).slice(-e.d);
-    const m = API.calcRisk(al, rf);
-    if (!m) { chequear(nombre, false, 'calcRisk devolvio null'); continue; }
+  // LA VERSION ANTERIOR DE ESTE BLOQUE ESTABA MAL, Y FALLO EL 05/10/2026 con
+  // seis "errores" que no eran errores. Decia esto:
+  //
+  //   "Volatilidad y beta SI son estables (se miden sobre la misma ventana
+  //    larga), asi que esas se siguen exigiendo con tolerancia fina."
+  //
+  // Es falso. La ventana era `.slice(-756)`: los ULTIMOS 756 dias del snapshot.
+  // Cuando el snapshot avanzo de 1669 a 1698 fechas entraron 29 ruedas nuevas y
+  // salieron 29 viejas, asi que la volatilidad y el beta se corrieron igual que
+  // el retorno — solo mas despacio. El retorno es un cociente entre dos puntas y
+  // 29 dias lo mueven mucho; la volatilidad es un promedio de cuadrados sobre
+  // 756 dias y lo mueven poco. Pero lo mueven: 15,33 -> 15,26 con tolerancia de
+  // 0,05. La prueba pedia precision sobre algo que se desplaza solo.
+  //
+  // SE VERIFICO QUE NO HABIA REGRESION, truncando el snapshot de hoy a las 1669
+  // fechas del ancla:
+  //
+  //        ancla    truncado a 1669    hoy (1698)
+  //   SPY 3Y vol   15,33     15,33            15,26
+  //   JPM 3Y beta   0,86      0,86             0,87
+  //   JPM 5Y vol   24,38     24,39            24,32
+  //
+  // Los numeros VUELVEN. El codigo hace lo mismo; lo que se movio es la ventana.
+  //
+  // EL ARREGLO. La ventana se define por una FECHA DE CORTE fija, no por el
+  // final del snapshot. Mientras el snapshot contenga ese tramo, los numeros no
+  // cambian nunca, por mas que Marcos corra los bots todos los dias. Lo unico
+  // que los puede mover es:
+  //   · un ajuste retroactivo por dividendos (chico: medido, <= 0,04 en
+  //     volatilidad y <= 0,52 en retorno anualizado entre agosto y octubre), o
+  //   · un cambio real en la matematica, que es justo lo que hay que cazar y
+  //     que mueve los numeros MUCHO (el bug de la matriz desalineada llevo una
+  //     correlacion de 0,816 a 0,037).
+  // Las tolerancias se eligieron para que la primera pase y la segunda falle.
+  // ─────────────────────────────────────────────────────────────────────────
+  // ── QUE CAZA ESTE BLOQUE Y QUE NO (verificado inyectando bugs, 05/10/2026) ─
+  //
+  //   SI caza  · anualizar con 365 en vez de 252  -> 5 fallas
+  //
+  //   NO caza  · dividir la varianza por n en vez de n-1. Con 756 dias el
+  //              efecto es 0,01 en volatilidad, y el piso de ruido de esta
+  //              prueba es el ajuste por dividendos (medido: hasta 0,04). Esta
+  //              DEBAJO del ruido: ninguna tolerancia puede separar las dos
+  //              cosas acá. No se baja la tolerancia para "cazarlo" porque eso
+  //              haria fallar la prueba por rutina, que es el problema que este
+  //              bloque vino a arreglar.
+  //
+  //   NO caza  · parear los retornos por POSICION en vez de por FECHA (el bug
+  //              mas caro del Motor B). Y no es ceguera: SPY y JPM cotizan
+  //              TODOS los dias de la ventana —cero huecos— asi que para ellos
+  //              las dos formas de parear dan lo mismo. Ese bug se caza donde
+  //              corresponde, en `prueba-riesgo.cjs`, que usa papeles con
+  //              huecos y tiene una regresion dedicada (verificado: inyectando
+  //              el mis-pareo, prueba-riesgo da 2 fallas).
+  //
+  // La moraleja, por si alguien viene a "mejorar" las tolerancias: esta suite
+  // prueba que la EXPANSION DEL SNAPSHOT entrega los numeros correctos, no que
+  // la matematica de riesgo sea correcta. Eso ultimo es trabajo de prueba-riesgo.
+  const ANCLA_HASTA = '2026-08-22';   // fecha de corte, FIJA
+  const nAncla = SNAP.fechas.filter(f => f <= ANCLA_HASTA).length;
+
+  // Si alguien regenera el snapshot con menos anios, la ventana de 1260 dias no
+  // entra y mediriamos otra cosa en silencio. Se dice y se corta.
+  const DIAS_MAX = 1260;
+  if (nAncla < DIAS_MAX + 20) {
+    chequear('la ventana del ancla entra en el snapshot', false,
+      `hasta ${ANCLA_HASTA} hay ${nAncla} fechas y hacen falta ${DIAS_MAX}. `
+      + `Si el snapshot se regenero con menos historia, hay que mover ANCLA_HASTA.`);
+  } else {
+    console.log(`     (ventana fija hasta ${ANCLA_HASTA}: ${nAncla} fechas, `
+              + `ultima ${SNAP.fechas[nAncla - 1]}. El snapshot tiene `
+              + `${SNAP.fechas.length} y sigue creciendo, pero esto no se mueve.)`);
+
+    // Las series recortadas a la fecha de corte, con la misma forma que las
+    // devuelve snapshotHistorico.
+    const serieHasta = (sym) => {
+      const out = [];
+      for (let i = 0; i < nAncla; i++) {
+        const c = SNAP.series[sym] ? SNAP.series[sym][i] : null;
+        if (c != null) out.push({ date: SNAP.fechas[i], close: c });
+      }
+      return out;
+    };
+    const spyMapF = API.buildSpyMap(serieHasta('SPY'));
+    const spyAlF = Object.keys(spyMapF).sort().map(d => ({ s: spyMapF[d], m: spyMapF[d] }));
+
+    // Medidos sobre la ventana fija el 05/10/2026, con el codigo de App.jsx.
+    const esperado = {
+      'SPY 3Y': { d: 756,  ret: 21.82, vol: 15.34, beta: 1.00 },
+      'SPY 5Y': { d: 1260, ret: 12.94, vol: 17.18, beta: 1.00 },
+      'JPM 3Y': { d: 756,  ret: 35.73, vol: 23.00, beta: 0.87 },
+      'JPM 5Y': { d: 1260, ret: 20.02, vol: 24.39, beta: 0.88 },
+    };
+    // Tolerancias dimensionadas al ajuste por dividendos, no al azar: ver arriba.
+    const TOL_RET = 1.5, TOL_VOL = 0.15, TOL_BETA = 0.03;
     const cerca = (a, b, tol) => Math.abs(a - b) <= tol;
-    chequear(`${nombre} retorno ${m.annRet.toFixed(2)}% (ancla ${e.ret}, tol ${tolRet})`,
-      cerca(m.annRet, e.ret, tolRet));
-    chequear(`${nombre} volatilidad ${m.sVol.toFixed(2)}% (esperado ${e.vol})`, cerca(m.sVol, e.vol, 0.05));
-    chequear(`${nombre} beta ${m.beta.toFixed(2)} (esperado ${e.beta})`, cerca(m.beta, e.beta, 0.01));
+    const medido = {};
+
+    for (const [nombre, e] of Object.entries(esperado)) {
+      const [sym] = nombre.split(' ');
+      const al = sym === 'SPY' ? spyAlF.slice(-e.d)
+                               : API.alignedRet(serieHasta(sym), spyMapF).slice(-e.d);
+      chequear(`${nombre}: la ventana trae los ${e.d} dias`, al.length === e.d,
+        `trajo ${al.length}`);
+      const m = API.calcRisk(al, rf);
+      if (!m) { chequear(nombre, false, 'calcRisk devolvio null'); continue; }
+      medido[nombre] = m;
+      chequear(`${nombre} retorno ${m.annRet.toFixed(2)}% (ancla ${e.ret}, tol ${TOL_RET})`,
+        cerca(m.annRet, e.ret, TOL_RET));
+      chequear(`${nombre} volatilidad ${m.sVol.toFixed(2)}% (ancla ${e.vol}, tol ${TOL_VOL})`,
+        cerca(m.sVol, e.vol, TOL_VOL));
+      chequear(`${nombre} beta ${m.beta.toFixed(2)} (ancla ${e.beta}, tol ${TOL_BETA})`,
+        cerca(m.beta, e.beta, TOL_BETA));
+    }
+
+    // ── LO QUE NO DEPENDE DE NINGUNA VENTANA ────────────────────────────────
+    // Las anclas de arriba cazan "la matematica cambio". Estas cazan "la
+    // matematica dice una barbaridad", y valen igual aunque el snapshot avance
+    // diez anios. Son las que de verdad protegen.
+    console.log('\n   invariantes (no dependen de la ventana)');
+    const s3 = medido['SPY 3Y'], s5 = medido['SPY 5Y'];
+    const j3 = medido['JPM 3Y'], j5 = medido['JPM 5Y'];
+    if (s3 && j3 && s5 && j5) {
+      chequear('el beta de SPY contra si mismo es exactamente 1',
+        Math.abs(s3.beta - 1) < 1e-9 && Math.abs(s5.beta - 1) < 1e-9,
+        `${s3.beta} / ${s5.beta}`);
+      chequear('la volatilidad del indice cae en un rango creible (8% a 30%)',
+        s3.sVol > 8 && s3.sVol < 30 && s5.sVol > 8 && s5.sVol < 30,
+        `${s3.sVol.toFixed(2)} / ${s5.sVol.toFixed(2)}`);
+      // Un banco suelto SIEMPRE es mas volatil que el indice: el indice es una
+      // cartera de 500. Si esto se da vuelta, la cuenta esta mal.
+      chequear('un papel suelto es mas volatil que el indice',
+        j3.sVol > s3.sVol && j5.sVol > s5.sVol,
+        `JPM ${j3.sVol.toFixed(2)} vs SPY ${s3.sVol.toFixed(2)}`);
+      chequear('el beta de JPM es un numero de banco, no un absurdo (0,3 a 2,0)',
+        j3.beta > 0.3 && j3.beta < 2 && j5.beta > 0.3 && j5.beta < 2,
+        `${j3.beta.toFixed(2)} / ${j5.beta.toFixed(2)}`);
+      // La ventana de 5 anios CONTIENE a la de 3: no pueden dar lo mismo salvo
+      // casualidad, y si dan identico es que el slice no esta recortando.
+      chequear('3Y y 5Y no dan el mismo numero (el recorte recorta)',
+        Math.abs(s3.sVol - s5.sVol) > 0.01 && Math.abs(j3.sVol - j5.sVol) > 0.01);
+    }
   }
 
   resumen();

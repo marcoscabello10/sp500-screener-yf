@@ -6405,10 +6405,293 @@ dos veces en una whitelist, en silencio.
 
 ---
 
+## 💸 C Y D — EL COSTO DE ROTAR Y EL PISO DE MEJORA (23/09/2026)
+
+### Lo que se midió antes de escribir una línea
+
+767 rebalanceos sobre el snapshot real, 60 carteras con semilla fija:
+
+```
+turnover del plan completo:  mediana 31% de la cartera
+                             p10 23% · p25 27% · p75 37% · p90 41%
+mejora por cada 1% movido:   0,083 puntos de volatilidad (mediana 0,066)
+
+promesa        n    se cumplió   mejora REALIZADA   ratio r/v mejora
+< 0,5 pts     123     47%          −0,51 pts             63%
+0,5 a 1,5     139     81%          +1,19 pts             58%
+1,5 a 3       223     92%          +2,15 pts             51%
+3 a 6         168     99%          +4,45 pts             55%
+> 6 pts       114     98%          +6,95 pts             55%
+```
+
+**Dos hallazgos.** El plan completo mueve **un tercio de la cartera** — mucho más
+de lo que parecía. Y abajo de 0,5 puntos prometidos no es que "no urge": es cara
+o cruca (47%) **y la mejora realizada promedio es negativa**. Ejecutarlo dejó la
+cartera más volátil.
+
+⚠️ Y algo incómodo: **la columna del ratio no mejora con el tamaño de la
+promesa** (51-63% en todos los tramos). Una promesa grande da reducción de riesgo
+más confiable, NO mejor resultado ajustado por riesgo. El prompt obliga a decir
+las dos cosas juntas.
+
+### C — el costo, configurable por cartera
+
+```js
+export const COSTO_OPERAR_PCT_DEFECTO = 1.0
+planDePesos(cart, riesgo, costoPct = COSTO_OPERAR_PCT_DEFECTO)
+armarDatosTesis(cart, estres, candidatos, scores, riesgo, costoPct)
+```
+
+El componente tiene `const [costoPct, setCostoPct] = useState(COSTO_OPERAR_PCT_DEFECTO)`:
+es un parámetro de la CARTERA, no del sistema. Un CEDEAR en un broker argentino
+no cuesta lo mismo que AAPL en uno de EE.UU.
+
+**El default es el caso caro a propósito.** Errar por caro hace que el informe
+recomiende MENOS movimientos; errar por barato hace que recomiende de más. La
+asimetría es la razón, y hay una prueba que lo clava.
+
+Lo que viaja al payload:
+
+```
+costo_por_operacion_pct · mueve_pct_de_la_cartera · costo_usd
+costo_pct_de_la_cartera · costo_por_punto_de_mejora_pct
+```
+
+El último es el que decide: 0,6% por 4 puntos es barato, 0,6% por 0,4 puntos es
+tirar plata.
+
+**El turnover es la MITAD de la suma de los cambios** (si se vende 5 pp de A para
+comprar 5 pp de B, se movió el 5%, no el 10%), pero **el costo cobra las dos
+puntas**. Son dos cuentas distintas y la prueba verifica las dos por separado.
+
+### D — el bloqueo, con el antecedente medido
+
+```js
+export const MEJORA_MINIMA_PTS = 0.5
+export const HISTORIAL_POR_PROMESA = [...]   // la tabla de arriba
+export function historialDeLaPromesa(mejoraPts)
+```
+
+Cuando `mejora < 0,5`, `plan.bloqueado` es verdadero y **la tabla no se dibuja**.
+Marcos eligió bloquear en vez de advertir: *un plan en pantalla invita a
+ejecutarlo aunque el texto diga que no conviene*.
+
+El prompt pasa de "no hay urgencia" a: *"NO HAY PLAN QUE ESCRIBIR. Tu sección 1
+es una sola línea. Se midieron 767 rebalanceos y una promesa de menos de 0,5
+puntos se cumplió el 47% de las veces y dejó la cartera 0,51 puntos MÁS volátil.
+NO listes movimientos, NO propongas rotaciones."*
+
+Y `historial_de_esta_promesa` viaja en TODOS los casos, no solo cuando bloquea:
+convierte *"esto va a bajar X"* en *"esto bajó en el Y% de los casos parecidos"*.
+**Es el primer pedazo de A entregado adentro de D.**
+
+### 🔴 Dos cosas que encontró la prueba y no yo
+
+**1. El costo se redondeaba a un decimal.** `0,08%` salía como `0,1%`: un error
+del 25% sobre el número que decide si un movimiento conviene. Los pesos y las
+volatilidades van a un decimal porque ahí un décimo no cambia nada; acá sí.
+Corregido a dos decimales.
+
+**2. Una clave duplicada en `armarDatosTesis`.** `ventana_dias` estaba escrita
+dos veces en el mismo objeto literal, con el mismo valor — la segunda pisaba a
+la primera en silencio. No rompía nada, pero el día que alguien cambie una sola
+de las dos, la que vale es la de abajo. La detectó `esbuild`, no una prueba.
+
+### El presupuesto de tokens, subido a propósito
+
+`prueba-plan.cjs` exigía que el bloque `plan` fuera menor a 300 tokens. Ahora son
+318. Se midió qué cuesta cada cosa:
+
+```
+`costo`                      37 tokens
+`historial_de_esta_promesa`  29 tokens
+                             -- total 66
+```
+
+Se evaluó recortarlos y **se decidió que no**: son justo los números que hacen
+que una recomendación sea defendible en vez de una opinión. Sobre un payload de
+~3.765 tokens con 15 posiciones, 66 es el 1,75%. El límite se subió a 340 con el
+cálculo escrito al lado, y con los candidatos a recorte anotados por si algún día
+hace falta (`costo_por_operacion_pct` y `costo_usd`; los del historial NO, porque
+sacar `ratio_mejora_pct` dejaría solo la buena noticia).
+
+El prompt pasó de 3.821 a 4.199 tokens. Cacheado, así que son ~38 efectivos.
+
+### `test/prueba-costo.cjs` — la vigesimotercera suite
+
+25 comprobaciones. Lo que clava:
+
+- el turnover es la mitad de la suma; el costo cobra las dos puntas
+- bajar el costo baja el costo del plan pero **no** el turnover
+- el default es el caso caro
+- 0,3 bloquea · 0,5 exacto NO bloquea (el piso es "menor a") · un plan que
+  EMPEORA también bloquea
+- la tabla del historial es monótona en cumplimiento, solo el primer tramo tiene
+  mejora negativa, y **el ratio NO crece con la promesa** (esa es la parte
+  incómoda y tiene que seguir estando)
+- todo llega al payload, y dos costos distintos dan payloads distintos
+
+---
+
+## 🧪 LAS 6 "FALLAS" DEL 05/10 NO ERAN FALLAS — Y LA CULPA ERA DE UN COMENTARIO MÍO
+
+Marcos corrió `1-actualizar-datos.bat pruebas` y `prueba-snapshot.cjs` dio 6
+fallas de 41. Ninguna era un bug del código.
+
+### Lo que fallaba
+
+```
+FALLA SPY 3Y volatilidad 15.26% (esperado 15.33)
+FALLA JPM 3Y retorno 34.05% (ancla 37.34, tol 3)
+FALLA JPM 3Y volatilidad 23.10% (esperado 22.96)
+FALLA JPM 3Y beta 0.87 (esperado 0.86)
+FALLA JPM 5Y retorno 17.70% (ancla 21.13, tol 3)
+FALLA JPM 5Y volatilidad 24.32% (esperado 24.38)
+```
+
+### 🔴 El comentario que estaba mal, y lo escribí yo
+
+```
+"Volatilidad y beta SI son estables (se miden sobre la misma ventana larga),
+ asi que esas se siguen exigiendo con tolerancia fina."
+```
+
+**Es falso.** La ventana era `.slice(-756)`: los **últimos** 756 días del
+snapshot. Cuando el snapshot avanzó de 1.669 a 1.698 fechas entraron 29 ruedas
+nuevas y salieron 29 viejas, así que la volatilidad y el beta se corrieron igual
+que el retorno — solo más despacio. El retorno es un cociente entre dos puntas y
+29 días lo mueven mucho; la volatilidad es un promedio de cuadrados sobre 756
+días y lo mueven poco. **Pero lo mueven**: 15,33 → 15,26, con tolerancia de 0,05.
+
+La prueba exigía precisión sobre algo que se desplaza solo. Y lo irónico es que
+su propio comentario advertía del problema: *"empezaba a 'fallar' sola cada vez
+que Marcos actualizaba el historico — y una prueba que falla por rutina deja de
+leerse"*. Se había arreglado para el retorno y no para los otros dos.
+
+### La verificación de que NO había regresión
+
+Truncando el snapshot de hoy a las 1.669 fechas del ancla, los números **vuelven**:
+
+```
+                 ancla    truncado a 1669    hoy (1698)
+SPY 3Y vol       15,33       15,33            15,26
+SPY 5Y vol       17,17       17,18            17,17
+JPM 3Y vol       22,96       23,00            23,10
+JPM 3Y beta       0,86        0,86             0,87
+JPM 5Y vol       24,38       24,39            24,32
+JPM 5Y beta       0,88        0,88             0,87
+```
+
+El código hace exactamente lo mismo. El residuo de 0,01-0,04 es el **ajuste
+retroactivo por dividendos**: los cierres históricos del snapshot cambian un
+poco con el tiempo. Ese residuo es el piso de ruido de esta prueba.
+
+### El arreglo: ventana FIJA por fecha
+
+```js
+const ANCLA_HASTA = '2026-08-22';   // fecha de corte, FIJA
+const nAncla = SNAP.fechas.filter(f => f <= ANCLA_HASTA).length;
+```
+
+Mientras el snapshot contenga ese tramo, los números no cambian **nunca**, por
+más que los bots corran todos los días. Lo único que los puede mover es el
+ajuste por dividendos (chico) o un cambio real en la matemática (grande). Las
+tolerancias se dimensionaron para que lo primero pase y lo segundo falle:
+`TOL_RET 1.5 · TOL_VOL 0.15 · TOL_BETA 0.03`.
+
+Más una guarda: si alguien regenera el snapshot con menos años y la ventana de
+1.260 días no entra, lo dice y corta en vez de medir otra cosa en silencio.
+
+**Verificado simulando 3 meses más de datos** (1.698 → 1.761 fechas, hasta el
+31/12/2026): las 50 comprobaciones siguen pasando. La versión anterior habría
+vuelto a fallar.
+
+### Las invariantes, que son las que de verdad protegen
+
+Las anclas cazan "la matemática cambió". Estas cazan "la matemática dice una
+barbaridad", y valen aunque el snapshot avance diez años:
+
+- el beta de SPY contra sí mismo es **exactamente** 1
+- la volatilidad del índice cae entre 8% y 30%
+- **un papel suelto es más volátil que el índice** (el índice es una cartera de
+  500: si esto se da vuelta, la cuenta está mal)
+- el beta de JPM está entre 0,3 y 2,0
+- 3Y y 5Y no dan el mismo número — o sea que el recorte recorta
+
+41 → 50 comprobaciones.
+
+### ⚠️ QUÉ CAZA Y QUÉ NO, verificado inyectando bugs
+
+| Bug inyectado | Resultado |
+|---|---|
+| anualizar con 365 en vez de 252 | **5 fallas** ✅ |
+| dividir la varianza por `n` en vez de `n-1` | 0 fallas |
+| parear los retornos por POSICIÓN en vez de por FECHA | 0 fallas |
+
+**El segundo no se puede cazar acá.** Con 756 días el efecto es 0,01 en
+volatilidad y el piso de ruido es 0,04. Está *debajo* del ruido. No se baja la
+tolerancia para forzarlo: eso haría fallar la prueba por rutina, que es el
+problema que este arreglo vino a resolver.
+
+**El tercero tampoco, y no es ceguera.** SPY y JPM cotizan **todos** los días de
+la ventana — cero huecos — así que para ellos parear por posición y por fecha da
+lo mismo. Se verificó que ese bug **sí** se caza donde corresponde: inyectándolo
+en `retornosEn()` de `riesgo.js`, **`prueba-riesgo.cjs` da 2 fallas**.
+
+La división de trabajo quedó escrita en el archivo: `prueba-snapshot` prueba que
+**la expansión del snapshot** entregue los números correctos; que la **matemática
+de riesgo** sea correcta es trabajo de `prueba-riesgo`.
+
+---
+
 ## 📦 PENDIENTE DE PUSH — lista acumulada
 
 Todo esto está escrito en la carpeta y **todavía no subido**. Verificar con
 `git status` antes de asumir.
+
+### Tanda de ahora (05/10) — la prueba que fallaba sola
+
+```
+test/prueba-snapshot.cjs     🔴 la ventana pasa de `.slice(-756)` (los ultimos N
+                             dias, que se corren con el snapshot) a FIJA por
+                             fecha: ANCLA_HASTA = '2026-08-22'
+                             + anclas remedidas sobre esa ventana
+                             + tolerancias dimensionadas al ajuste por dividendos
+                             + 5 invariantes que no dependen de la ventana
+                             + una guarda si la ventana no entra en el snapshot
+                             + escrito que caza y que NO caza, con los bugs que
+                               se inyectaron para comprobarlo
+                             41 -> 50 comprobaciones
+CONTEXTO_INFORME_AVANZADO.md
+```
+
+Veintitres suites, 0 fallas. NO se toco ni una linea de codigo de produccion:
+el bug estaba en la prueba.
+
+### Tanda de ahora (23/09, segunda) — C y D
+
+```
+src/informe/cartera.js       COSTO_OPERAR_PCT_DEFECTO · MEJORA_MINIMA_PTS
+                             HISTORIAL_POR_PROMESA · historialDeLaPromesa()
+                             planDePesos(cart, riesgo, costoPct) + turnover,
+                             costo y bloqueo + el costo por fila
+                             🔴 costoPctCartera a DOS decimales (0,08% salia 0,1%)
+                             🔴 fuera la clave ventana_dias duplicada
+src/informe/Cartera.jsx      el estado costoPct + el cartel del bloqueo + la
+                             linea de costo al lado de la mejora
+api/informe.py               el prompt: bloqueo, historial y costo
+PROMPT_CARTERA.txt           regenerado (4.199 tokens)
+test/prueba-costo.cjs        NUEVA — 25 comprobaciones
+test/prueba-plan.cjs         el presupuesto del bloque plan, 300 -> 340, con el
+                             calculo de los 66 tokens escrito al lado
+CONTEXTO_INFORME_AVANZADO.md
+```
+
+Veintitres suites, 0 fallas.
+
+🔜 **Falta A**: el historial de aciertos completo, calculado sobre la cartera
+concreta del cliente en vez de la tabla de referencia. Lo de D es su primera
+mitad.
 
 ### Tanda de ahora (23/09) — el momentum
 

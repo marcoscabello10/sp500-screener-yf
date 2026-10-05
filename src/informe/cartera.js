@@ -819,7 +819,8 @@ const r1 = v => (v == null || !isFinite(v)) ? null : Math.round(v * 10) / 10
 // pocos datos, y la CONFIANZA que declara deja de estar atada a nada medido.
 // Y no daría ningún error: daría una tesis con confianza "alta" en todo.
 export function armarDatosTesis(cart, estres, candidatos = [], scores = {},
-                                riesgo = null) {
+                                riesgo = null,
+                                costoPct = COSTO_OPERAR_PCT_DEFECTO) {
   if (!cart || !Array.isArray(cart.activos)) return null
 
   const exp = exposicion(cart)
@@ -1055,7 +1056,10 @@ export function armarDatosTesis(cart, estres, candidatos = [], scores = {},
     riesgo: riesgo?.disponible ? {
       volatilidad_cartera_pct: riesgo.volatilidad_cartera_pct,
       volatilidad_si_se_llega_al_objetivo_pct: riesgo.volatilidad_si_objetivo_pct,
-      ventana_dias: riesgo.ventana_dias,
+      // ⚠️ `ventana_dias` NO va aca: esta mas abajo, con el resto del bloque de
+      // ventana. Estaba escrito en los dos lugares con el mismo valor, asi que
+      // no rompia nada, pero la segunda pisaba a la primera en silencio — y el
+      // dia que alguien cambie una sola de las dos, la que vale es la de abajo.
       // Si no todas las posiciones tienen historico, la volatilidad es la del
       // pedazo que si lo tiene. Se dice.
       cobertura_del_calculo_pct: riesgo.cobertura_pct,
@@ -1094,7 +1098,7 @@ export function armarDatosTesis(cart, estres, candidatos = [], scores = {},
     // que cuesta poco y le saca al modelo la unica cuenta que podria hacer mal:
     // cuanto mover. Su trabajo es el ORDEN y el porque, no la aritmetica.
     plan: (() => {
-      const pl = planDePesos(cart, riesgo)
+      const pl = planDePesos(cart, riesgo, costoPct)
       if (!pl) return null
       return {
         umbral_pp: pl.umbralPP,
@@ -1133,6 +1137,22 @@ export function armarDatosTesis(cart, estres, candidatos = [], scores = {},
         volatilidad_actual_pct: pl.volActual,
         volatilidad_si_se_ejecuta_pct: pl.volObjetivo,
         mejora_puntos: pl.mejoraVol,
+        // ── LO QUE CUESTA EJECUTARLO ─────────────────────────────────────────
+        // Sin esto el plan recomendaba mover un tercio de la cartera sin que
+        // nadie supiera cuanto se pagaba por hacerlo.
+        costo: {
+          costo_por_operacion_pct: pl.costoPct,
+          mueve_pct_de_la_cartera: pl.turnoverPct,
+          costo_usd: pl.costoUSD,
+          costo_pct_de_la_cartera: pl.costoPctCartera,
+          // 0,6% por 4 puntos es barato; 0,6% por 0,4 puntos es tirar plata.
+          costo_por_punto_de_mejora_pct: pl.costoPorPuntoPct,
+        },
+        // ⚠️ Si esto es verdadero NO HAY PLAN QUE MOSTRAR. Ver `historial`.
+        bloqueado_por_mejora_insuficiente: pl.bloqueado || undefined,
+        // Cuantas veces se cumplio una promesa de este tamaño, medido sobre
+        // 767 rebalanceos historicos. No es un pronostico: es un antecedente.
+        historial_de_esta_promesa: pl.historial || undefined,
         comprar_usd: pl.comprarUSD,
         vender_usd: pl.venderUSD,
         movimientos: pl.filas
@@ -1253,6 +1273,74 @@ export function concentracionPorIndustria(cart) {
 // riesgo: la covarianza es histórica y no tiene esa precisión. Mover por 0,4 pp
 // es ruido con cara de decisión.
 export const UMBRAL_AJUSTE_PP = 1.0
+
+// ─────────────────────────────────────────────────────────────────────────────
+// EL COSTO DE ROTAR, Y CUÁNDO EL PLAN NO SE PAGA A SÍ MISMO (23/09/2026)
+//
+// Hasta hoy el plan no sabía que operar cuesta plata. Un movimiento de 1 pp con
+// mejora prometida de 0,3 puntos se recomendaba igual, y el spread de un CEDEAR
+// se lo come entero.
+//
+// LO QUE SE MIDIÓ (767 rebalanceos sobre el snapshot real):
+//
+//   turnover del plan completo:  mediana 31% de la cartera
+//                                p10 23%  ·  p25 27%  ·  p75 37%  ·  p90 41%
+//   mejora por cada 1% movido:   0,083 puntos de volatilidad (mediana 0,066)
+//
+// Un rebalanceo completo mueve UN TERCIO de la cartera. A 1% por punta eso es
+// 0,63% del total, porque cada punto que se mueve se vende de un lado y se
+// compra del otro.
+//
+// ⚠️ EL COSTO ES UN PARÁMETRO, NO UNA CONSTANTE. Depende del broker, del papel
+// y de la plaza: un CEDEAR en un broker argentino no cuesta lo mismo que AAPL
+// en uno de EE.UU. Se puede editar por cartera; el default es el caso caro,
+// porque errar por caro hace que el informe recomiende MENOS movimientos, y
+// errar por barato hace que recomiende de más. La asimetría importa.
+// ─────────────────────────────────────────────────────────────────────────────
+export const COSTO_OPERAR_PCT_DEFECTO = 1.0
+
+// ─────────────────────────────────────────────────────────────────────────────
+// EL PISO DE MEJORA — MEDIDO, NO ELEGIDO (23/09/2026)
+//
+// El prompt ya decía "si es menor a 0,5 puntos, la respuesta honesta es que no
+// hay urgencia". Se fue a medir si ese 0,5 era el número correcto, y resultó
+// que sí — pero que el problema es peor que falta de urgencia:
+//
+//   promesa        n    se cumplió   mejora REALIZADA   ratio r/v mejora
+//   < 0,5 pts     123     47%          −0,51 pts             63%
+//   0,5 a 1,5     139     81%          +1,19 pts             58%
+//   1,5 a 3       223     92%          +2,15 pts             51%
+//   3 a 6         168     99%          +4,45 pts             55%
+//   > 6 pts       114     98%          +6,95 pts             55%
+//
+// Abajo de 0,5 no es que "no urge": es que ejecutar el plan dejó la cartera
+// MÁS volátil en promedio. Es cara o cruca (47%) y el promedio va para el lado
+// equivocado. Por eso el plan se bloquea en vez de mostrarse con una nota:
+// un plan en pantalla invita a ejecutarlo aunque diga que no conviene.
+//
+// ⚠️ Y algo que NO mejora con el tamaño de la promesa: la última columna. El
+// ratio retorno/volatilidad mejora en ~55% de los casos en TODOS los tramos.
+// Una promesa grande da reducción de riesgo más confiable, no mejor resultado
+// ajustado. El informe tiene que decir las dos cosas.
+// ─────────────────────────────────────────────────────────────────────────────
+export const MEJORA_MINIMA_PTS = 0.5
+
+/**
+ * Cuántas veces se cumplió una promesa de este tamaño, medido.
+ * Devuelve `null` fuera de rango en vez de extrapolar.
+ */
+export const HISTORIAL_POR_PROMESA = [
+  { hasta: 0.5, n: 123, se_cumplio_pct: 47, mejora_real_pts: -0.51, ratio_mejora_pct: 63 },
+  { hasta: 1.5, n: 139, se_cumplio_pct: 81, mejora_real_pts: 1.19, ratio_mejora_pct: 58 },
+  { hasta: 3.0, n: 223, se_cumplio_pct: 92, mejora_real_pts: 2.15, ratio_mejora_pct: 51 },
+  { hasta: 6.0, n: 168, se_cumplio_pct: 99, mejora_real_pts: 4.45, ratio_mejora_pct: 55 },
+  { hasta: Infinity, n: 114, se_cumplio_pct: 98, mejora_real_pts: 6.95, ratio_mejora_pct: 55 },
+]
+
+export function historialDeLaPromesa(mejoraPts) {
+  if (mejoraPts == null || !isFinite(mejoraPts)) return null
+  return HISTORIAL_POR_PROMESA.find(x => mejoraPts < x.hasta) || null
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // EL MENÚ DE ROTACIÓN, POR SECTOR
@@ -1408,7 +1496,7 @@ export function menuDeRotacion(cart, riesgo) {
     .slice(0, SECTORES_EN_EL_MENU)
 }
 
-export function planDePesos(cart, riesgo) {
+export function planDePesos(cart, riesgo, costoPct = COSTO_OPERAR_PCT_DEFECTO) {
   if (!cart || !Array.isArray(cart.activos)) return null
   if (!riesgo || !riesgo.disponible) return null
 
@@ -1433,6 +1521,11 @@ export function planDePesos(cart, riesgo) {
     const acciones = (montoUSD != null && precio > 0)
       ? Math.trunc(montoUSD / precio) : null
 
+    // Lo que cuesta ejecutar ESTE movimiento. Una punta sola: el dinero sale de
+    // un papel y entra en otro, así que el viaje completo se cobra dos veces —
+    // pero cada fila es una sola punta y la suma del plan ya las cuenta todas.
+    const costoUSD = (montoUSD != null && costoPct > 0)
+      ? Math.abs(montoUSD) * costoPct / 100 : null
     const mueve = delta != null && Math.abs(delta) >= UMBRAL_AJUSTE_PP
     return {
       ticker: p.ticker,
@@ -1449,6 +1542,7 @@ export function planDePesos(cart, riesgo) {
       // Un refuerzo DENTRO de un sector que ya toca su techo no es rotacion:
       // es mover plata de un bolsillo al otro del mismo pantalon.
       refuerzoEnSectorAlTope: !!p.refuerzo_en_sector_al_tope,
+      costoUSD: costoUSD == null ? null : Math.round(costoUSD * 100) / 100,
       topeClase: a.topeClase ?? null,
       accionCartera: a.accion || null,
       // Un papel puede pesar de más y aportar POCO riesgo (o al revés). Marcar
@@ -1468,7 +1562,48 @@ export function planDePesos(cart, riesgo) {
   const ventas = filas.filter(f => f.movimiento === 'vender')
   const suma = (arr) => arr.reduce((acc, f) => acc + Math.abs(f.montoUSD || 0), 0)
 
+  // ── EL COSTO DEL PLAN ENTERO ──────────────────────────────────────────────
+  // Turnover = la mitad de la suma de los cambios absolutos. Es la fracción de
+  // la cartera que cambia de manos: si se vende 5 pp de A para comprar 5 pp de
+  // B, se movió el 5%, no el 10%.
+  const mueven = filas.filter(f => f.movimiento !== 'mantener')
+  const turnoverPct = round1(
+    mueven.reduce((a, f) => a + Math.abs(f.delta || 0), 0) / 2)
+  // El costo SÍ cuenta las dos puntas: se paga al vender y al comprar.
+  const costoUSD = Math.round(mueven.reduce((a, f) => a + (f.costoUSD || 0), 0))
+  // ⚠️ DOS decimales, no uno. Un costo de 0,08% redondeado a 0,1% es un error
+  // del 25% sobre un numero que decide si un movimiento conviene. Los pesos y
+  // las volatilidades van a un decimal porque ahi un decimo no cambia nada;
+  // acá sí.
+  const costoPctCartera = (valor > 0) ? Math.round(costoUSD / valor * 10000) / 100 : null
+
+  const mejora = (riesgo.volatilidad_cartera_pct != null
+                  && riesgo.volatilidad_si_objetivo_pct != null)
+    ? round1(riesgo.volatilidad_cartera_pct - riesgo.volatilidad_si_objetivo_pct)
+    : null
+
+  // ⚠️ EL BLOQUEO. Abajo del piso medido el plan no se muestra: no es que "no
+  // urge", es que en 767 rebalanceos históricos eso se cumplió el 47% de las
+  // veces y dejó la cartera 0,51 puntos MÁS volátil en promedio. Mostrarlo con
+  // una nota al pie invitaría a ejecutarlo igual.
+  const bloqueado = mejora != null && mejora < MEJORA_MINIMA_PTS
+  const historial = historialDeLaPromesa(mejora)
+
   return {
+    // Cuánto cuesta ejecutar todo esto, y contra qué se compara.
+    costoPct,
+    turnoverPct,
+    costoUSD,
+    costoPctCartera,
+    // Cuánto cuesta cada punto de volatilidad que se gana. Es el número que
+    // convierte "cuesta 0,6%" en una decisión: 0,6% por 4 puntos es barato,
+    // 0,6% por 0,4 puntos es tirar plata.
+    costoPorPuntoPct: (mejora != null && mejora > 0 && costoPctCartera != null)
+      ? Math.round(costoPctCartera / mejora * 100) / 100 : null,
+    bloqueado,
+    // El antecedente de una promesa de este tamaño. No es un pronóstico: es
+    // cuántas veces pasó, medido.
+    historial,
     filas,
     // Las que no tienen histórico no se esconden ni se les inventa un objetivo:
     // se nombran aparte, igual que las métricas fundamentales que faltan.
@@ -1486,10 +1621,7 @@ export function planDePesos(cart, riesgo) {
     // hacer nada — y el informe tiene que poder decirlo.
     volActual: riesgo.volatilidad_cartera_pct ?? null,
     volObjetivo: riesgo.volatilidad_si_objetivo_pct ?? null,
-    mejoraVol: (riesgo.volatilidad_cartera_pct != null
-                && riesgo.volatilidad_si_objetivo_pct != null)
-      ? round1(riesgo.volatilidad_cartera_pct - riesgo.volatilidad_si_objetivo_pct)
-      : null,
+    mejoraVol: mejora,
     coberturaPct: riesgo.cobertura_pct ?? null,
     topesInsuficientes: riesgo.topes_insuficientes || null,
     // Viajan por acá para que la sección del informe lea UNA sola fuente. Si

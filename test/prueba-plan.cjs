@@ -225,7 +225,24 @@ chequear('la mejora de volatilidad viaja al prompt',
 console.log('\n7. Lo que suma al payload');
 const tok = Math.round(JSON.stringify(datos.plan).length / 4);
 console.log(`     el bloque \`plan\` son ~${tok} tokens`);
-chequear('el bloque plan es barato', tok < 300, `${tok} tokens`);
+// ⚠️ EL PRESUPUESTO SUBIO DE 300 A 340 EL 23/09/2026, A PROPOSITO.
+// Se agregaron dos bloques y se midio exactamente lo que cuestan:
+//
+//   `costo`                      37 tokens
+//   `historial_de_esta_promesa`  29 tokens
+//                                -- total 66
+//
+// Se evaluo recortarlos y se decidio que no. Son justo los numeros que hacen
+// que una recomendacion sea defendible en vez de una opinion: cuanto cuesta
+// ejecutar el plan, y cuantas veces una promesa de este tamaño se cumplio.
+// Sobre un payload de ~3.765 tokens con 15 posiciones, 66 es el 1,75%.
+//
+// Si alguien necesita bajar esto, el candidato es `costo_por_operacion_pct`
+// (es el parametro de entrada, no un resultado) y `costo_usd` (se deduce del
+// porcentaje y el valor de la cartera, que el modelo ya tiene). Los del
+// historial NO: `ratio_mejora_pct` es la parte incomoda de la medicion y sacarlo
+// dejaria solo la buena noticia.
+chequear('el bloque plan es barato', tok < 340, `${tok} tokens`);
 
 // ── 8. EL PLAN NO ES LA UNICA OPCION (31/08/2026) ─────────────────────────
 // El agujero mas grande del Motor B, y lo encontro Marcos leyendo la salida:

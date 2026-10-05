@@ -8,7 +8,7 @@ import { analizarCartera, stressTest, exposicion, concentracionPorIndustria,
          CLASE_TEXTO, ESTADO_TEXTO,
          ACCION_PESO_TEXTO, ORIGEN_PESOS, PERFIL_POR_DEFECTO,
          OBJETIVO_POR_DEFECTO, HORIZONTE_POR_DEFECTO,
-         armarDatosTesis, planDePesos,
+         armarDatosTesis, planDePesos, COSTO_OPERAR_PCT_DEFECTO,
          suficienciaDeDatos } from './cartera.js'
 import { C, F, semaforo, colorSeveridad, num, pct, fecha } from './estilos.js'
 
@@ -81,13 +81,20 @@ export default function Cartera({ informes, meta, stocks, scores, conAnexo,
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cart.activos.map(a => `${a.ticker}:${a.peso}`).join(',')])
 
-  const datosTesis = armarDatosTesis(cart, stress, candidatos, scores, riesgo)
+  // ── CUANTO CUESTA OPERAR ─────────────────────────────────────────────────
+  // Es un parametro de la CARTERA, no del sistema: un CEDEAR en un broker
+  // argentino no cuesta lo mismo que AAPL en uno de EE.UU. El default es el
+  // caso caro a proposito — errar por caro hace que el informe recomiende
+  // MENOS movimientos, y errar por barato hace que recomiende de mas.
+  const [costoPct, setCostoPct] = React.useState(COSTO_OPERAR_PCT_DEFECTO)
+
+  const datosTesis = armarDatosTesis(cart, stress, candidatos, scores, riesgo, costoPct)
 
   // La tabla ACTUAL vs OBJETIVO. Sale del MISMO planDePesos() que viaja dentro
   // de `datosTesis`, asi que el texto de la tesis y esta tabla no pueden decir
   // montos distintos. Si el historico no esta, `plan` queda null y la seccion
   // no se dibuja: el resto del informe no cambia.
-  const planPesos = planDePesos(cart, riesgo)
+  const planPesos = planDePesos(cart, riesgo, costoPct)
   // El nivel fino de la concentracion: "Financials 80%" puede ser cuatro bancos
   // o tres bancos y una aseguradora, y la tabla de sectores los dibuja igual.
   const industrias = concentracionPorIndustria(cart)
@@ -1126,11 +1133,45 @@ function ActualVsObjetivo({ plan }) {
         <Dato valor={String(plan.nMovimientos)} etiqueta={`Movimiento${plan.nMovimientos === 1 ? '' : 's'}`} />
       </div>
 
-      {!valeLaPena && (
+      {/* ── EL BLOQUEO ────────────────────────────────────────────────────────
+          Medido sobre 767 rebalanceos: una promesa de menos de 0,5 puntos se
+          cumplió el 47% de las veces y dejó la cartera 0,51 puntos MÁS volátil
+          en promedio. No es falta de urgencia: es que ejecutarlo empeora. Por
+          eso la tabla no se dibuja — un plan en pantalla invita a ejecutarlo
+          aunque el texto diga que no conviene. */}
+      {plan.bloqueado ? (
+        <div style={{ fontSize: 13.5, color: C.ambar, background: C.ambarFondo,
+                      borderRadius: 7, padding: '11px 13px' }}>
+          <b>No hay nada que hacer, y hacerlo empeoraría la cartera.</b> El plan
+          bajaría la volatilidad {num(plan.mejoraVol, 1)} puntos.
+          {plan.historial && <> Medido sobre {plan.historial.n} rebalanceos
+            históricos, una mejora prometida de este tamaño se cumplió apenas el
+            {' '}{plan.historial.se_cumplio_pct}% de las veces, y en promedio la
+            cartera terminó {num(Math.abs(plan.historial.mejora_real_pts), 2)} puntos
+            {' '}<b>más</b> volátil, no menos.</>}
+          {plan.costoPctCartera != null && plan.costoPctCartera > 0 && <> Además,
+            mover el {num(plan.turnoverPct, 1)}% de la cartera costaría
+            {' '}{num(plan.costoPctCartera, 2)}% del total en comisiones y spread.</>}
+        </div>
+      ) : !valeLaPena && (
         <p style={{ fontSize: 13.5, color: C.tenue, marginTop: 0 }}>
           <b>Los ajustes no cambian el riesgo de forma apreciable</b> ({plan.mejoraVol != null
           ? `${num(plan.mejoraVol, 1)} puntos` : 'sin medir'}). La cartera ya está razonablemente
           repartida: se pueden hacer, pero no hay urgencia en hacerlos.
+        </p>
+      )}
+
+      {/* El costo, al lado de la mejora. Sin esto el plan proponía mover un
+          tercio de la cartera sin decir cuánto se pagaba por hacerlo. */}
+      {!plan.bloqueado && plan.nMovimientos > 0 && plan.costoPctCartera != null && (
+        <p style={{ fontSize: 13.5, color: C.tenue, marginTop: 0 }}>
+          Ejecutarlo mueve el <b>{num(plan.turnoverPct, 1)}%</b> de la cartera y cuesta
+          ~<b>{num(plan.costoPctCartera, 2)}%</b> del total
+          {' '}(US$ {num(plan.costoUSD, 0)}) a {num(plan.costoPct, 1)}% por operación
+          {plan.costoPorPuntoPct != null && <>, o sea <b>{num(plan.costoPorPuntoPct, 2)}%
+            por cada punto de volatilidad que se gana</b></>}.
+          {plan.historial && <> Una mejora prometida de este tamaño se cumplió en el
+            {' '}{plan.historial.se_cumplio_pct}% de {plan.historial.n} rebalanceos históricos.</>}
         </p>
       )}
 
